@@ -17,7 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,6 +26,9 @@ const SCRIPT = join(HERE, "..", "..", "..", "scripts", "collect-orchestrator-usa
 
 // Driver rates chosen for hand-checkable dollars. No explicit cache-write
 // rate, so the 1.25× premium fallback is in the arithmetic under test.
+// pricing_override: true is what makes the collector bill this card (labelled
+// custom) instead of the price list, exactly as dispatch does; every other
+// transcript model is priced from the list.
 const POLICY = `
 version: 1
 name: check-collect
@@ -34,6 +37,7 @@ models:
     adapter: builtin-anthropic
     model_name: claude-opus-4-8
     pricing: { input: 1, input_cached: 0.1, output: 5 }
+    pricing_override: true
   - id: worker
     adapter: mcp:model-dispatch
     model_name: gemini-3.5-flash
@@ -56,10 +60,10 @@ function tLine(id, model, usage, ts) {
  * transcript tree (session + subagent files). The run window is
  * [now−30m, now−10m]; in-window messages sit at now−20m.
  *
- * Expected overhead at the driver rate:
+ * Expected overhead, each message at its own model's price:
  *   msg_A  1,000,000 in + 2,000,000 cached + 400,000 cache-write + 100,000 out
- *          = 1 + 0.2 + (0.4 × 1.25) + 0.5           = $2.20
- *   msg_B    500,000 in + 200,000 out (subagent)     = $1.50
+ *          at the driver's custom card = 1 + 0.2 + (0.4 × 1.25) + 0.5 = $2.20
+ *   msg_B    500,000 in + 200,000 out (subagent, Haiku 4.5 list $1 / $5) = $1.50
  *   total                                            = $3.70
  * plus the manifest's dispatched $0.05 → true total    $3.75
  */
@@ -102,8 +106,8 @@ function makeFixture() {
       JSON.stringify({ type: "user", message: { content: "hi" } }),
     ].join("\n") + "\n"
   );
-  // Subagent transcript — in-session driver work; a model label differing
-  // from the derived driver must WARN but still be counted at the driver rate.
+  // Subagent transcript — in-session work on a model other than the driver's:
+  // priced at that model's own list price, never at the driver's rate.
   writeFileSync(
     join(subDir, "agent-1.jsonl"),
     tLine("msg_B", "claude-haiku-4-5", { input_tokens: 500_000, output_tokens: 200_000 }, inWindow) + "\n"
@@ -137,9 +141,12 @@ test("collector dedupes, windows, excludes synthetic, includes subagents, and wr
     assert.match(r.stdout, /1 duplicate content-block line\(s\) skipped, 1 synthetic, 1 outside window/);
     assert.match(r.stdout, /"claude-opus-4-8":1/);
     assert.match(r.stdout, /"claude-haiku-4-5":1/);
-    // The single-rate assumption is surfaced, not silent.
-    assert.match(r.stderr, /WARNING/);
-    assert.match(r.stderr, /claude-haiku-4-5/);
+    // Each message is priced on its own model (the single-rate WARNING this
+    // test used to expect is gone with the single rate): the Opus 4.8 driver at
+    // its pricing_override card, the Haiku 4.5 subagent at the list.
+    assert.doesNotMatch(r.stderr, /assume a single rate/);
+    assert.match(r.stdout, /session claude-opus-4-8 \[custom policy price \(pricing_override\)\]: .*= \$2\.2\b/);
+    assert.match(r.stdout, /helper {2}claude-haiku-4-5 \[list .*\]: .*= \$1\.5\b/);
     // The dispatched event ran inside the session (provenance "estimated"), so
     // it is already inside the transcript overhead: subtracted once, said aloud.
     assert.match(r.stdout, /in-session dispatch: 1 event\(s\) totaling \$0\.05/);
@@ -167,7 +174,11 @@ test("collector dedupes, windows, excludes synthetic, includes subagents, and wr
     assert.equal(m.total_cost_usd, 0.05); // dispatched figure NEVER grows
     // No command turn and no run log: both anchors are the manifest's dispatch
     // stamps ± 5 minutes, the window is approximate, and the block says so.
-    const { window, ...overhead } = m.orchestrator_overhead;
+    const { window, per_model, unpriced, pricing_basis, price_list_verified, ...overhead } = m.orchestrator_overhead;
+    assert.deepEqual(per_model.map((e) => [e.role, e.model, e.price_basis, e.cost_usd]), [["session", "claude-opus-4-8", "custom", 2.2], ["helper", "claude-haiku-4-5", "list", 1.5]]);
+    assert.deepEqual(unpriced, []);
+    assert.match(pricing_basis, /^each message at its own model's list price on its own day \(price list verified \d{4}-\d{2}-\d{2}\); custom policy price under pricing_override for claude-opus-4-8$/);
+    assert.match(price_list_verified, /^\d{4}-\d{2}-\d{2}$/);
     assert.deepEqual(window, {
       start: new Date(Date.parse(m.started_at) - 5 * MIN).toISOString(),
       end: new Date(Date.parse(m.ended_at) + 5 * MIN).toISOString(),
@@ -189,11 +200,20 @@ test("collector dedupes, windows, excludes synthetic, includes subagents, and wr
       output_tokens: 300_000,
       events: 1,
       provenance: "transcript",
-      pricing_basis: "the policy's derived driver model",
+      pricing_complete: true,
       cost_source: "transcript (no receipt; unverified; LOWER BOUND — window opens at the first dispatch)",
       transcript_cost_usd: 3.7,
       receipt_cost_usd: null,
       receipt_path: null,
+      // Fix D fields (collectReceiptBooking.test.mjs): no receipt, so nothing is booked from one; no
+      // command turn and no receipt session, so no session file is pinned and attribution cannot be checked.
+      receipt_cli_usd: null,
+      // v0.7.3 review fix: the booked part's list figure; null, since no receipt was booked.
+      booked_cost_usd: null,
+      unlogged_billed: null,
+      attribution_complete: null,
+      missing_helper_ids: [],
+      unreferenced_helper_files: [],
       dispatched_in_session_cost_usd: 0.05,
       dispatched_in_session_events: 1,
     });
@@ -312,6 +332,62 @@ test("transcript discovery ignores non-transcript files", () => {
     const found = candidateTranscripts(dir, 0);
     assert.ok(found.every((p) => p.endsWith(".jsonl")));
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+/*
+ * Claude Code names a project's transcript directory by replacing every
+ * character that is not a letter or digit with "-". Replacing only "/" and
+ * whitespace pointed the collector at a directory that does not exist for
+ * any project path holding a dot or an underscore (a checkout named v0.6.0),
+ * and the run then found no messages to price.
+ */
+import { transcriptsDirFor } from "../../../scripts/collect-orchestrator-usage.mjs";
+import { claudeProjectsDir } from "../dist/adapters/claudeCliLedger.js";
+import { cpSync } from "node:fs";
+import { resolve } from "node:path";
+
+test("transcriptsDirFor names the directory the way Claude Code does: every character that is not a letter or digit becomes '-'", () => {
+  // An explicit empty env and home, so the machine's own CLAUDE_CONFIG_DIR can never change the answer.
+  const name = (p) => transcriptsDirFor(p, {}, "/home/dev").split("/").pop();
+  assert.equal(name("/Users/dev/Desktop/repro-main-v0.6.0-headless/project"), "-Users-dev-Desktop-repro-main-v0-6-0-headless-project");
+  assert.equal(name("/private/tmp/claude-501/-Users-dev/scratch pad/cc_folder.test"), "-private-tmp-claude-501--Users-dev-scratch-pad-cc-folder-test");
+  assert.equal(transcriptsDirFor("/a/b", {}, "/home/dev"), join("/home/dev", ".claude", "projects", "-a-b"));
+});
+
+/*
+ * Claude Code writes its transcripts under $CLAUDE_CONFIG_DIR/projects when
+ * that variable is set, and the claude-cli worker ledger already looked there
+ * (claudeProjectsDir in src/adapters/claudeCliLedger.ts). The collector read
+ * ~/.claude/projects whatever the variable said, so a run launched with
+ * CLAUDE_CONFIG_DIR found no message in its window and exited 1 unless
+ * --transcripts-dir was passed by hand.
+ */
+test("transcriptsDirFor honours CLAUDE_CONFIG_DIR exactly as the worker ledger does; an empty value counts as unset", () => {
+  assert.equal(transcriptsDirFor("/a/b", { CLAUDE_CONFIG_DIR: "/cfg" }, "/home/dev"), join("/cfg", "projects", "-a-b"));
+  assert.equal(transcriptsDirFor("/a/b", { CLAUDE_CONFIG_DIR: "" }, "/home/dev"), join("/home/dev", ".claude", "projects", "-a-b"));
+  for (const env of [{}, { CLAUDE_CONFIG_DIR: "/cfg" }, { CLAUDE_CONFIG_DIR: "" }]) {
+    assert.equal(transcriptsDirFor("/a/b", env, "/home/dev"), join(claudeProjectsDir(env, "/home/dev"), "-a-b"), `same root as the worker ledger for ${JSON.stringify(env)}`);
+  }
+});
+
+test("without --transcripts-dir the collector reads $CLAUDE_CONFIG_DIR/projects/<project dir>, not ~/.claude/projects", () => {
+  const fix = makeFixture();
+  try {
+    const home = join(fix.root, "home");
+    mkdirSync(home);
+    const cfg = join(fix.root, "claude-config");
+    const dir = join(cfg, "projects", resolve(fix.root).replace(/[^A-Za-z0-9]/g, "-"));
+    cpSync(fix.tDir, dir, { recursive: true });
+    const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: cfg };
+    delete env.MMO_SELECT;
+    const r = spawnSync(process.execPath, [SCRIPT, fix.passDir, "--project-root", fix.root, "--dry-run"], { env, encoding: "utf-8" });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.ok(r.stdout.includes(`transcripts: ${dir}`), r.stdout);
+    // msg_A (its duplicate line skipped) and the subagent's msg_B; the synthetic and out-of-window lines are not counted.
+    assert.match(r.stdout, /counted 2 unique API message\(s\)/);
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true });
+  }
 });
 
 /*
@@ -483,11 +559,15 @@ test("pass3: a Gemini-only policy still prices the Opus session that drove it, f
   assert.ok(trueTotal > 21.3 && trueTotal < 22.4, `true total ${trueTotal} is not in the corrected-dashboard range`);
 });
 
-test("pass2: a transcript tree missing a subagent file sits far below the receipt — refused with exit 3, nothing written", () => {
+test("pass2: a transcript tree missing a subagent file, whose window also holds input the receipt never billed — refused with exit 3, nothing written", () => {
   const r = fixRun("pass2", "receivables-hybrid");
   assert.equal(r.status, 3, r.stdout + r.stderr);
-  assert.match(r.stderr, /BELOW the CLI's own receipt/);
-  assert.match(r.stderr, /subagent transcript not copied/);
+  // Re-derived under Fix D (collectReceiptBooking.test.mjs header): the cache buckets sit far below the receipt (a
+  // subagent file is missing), but input sits ABOVE it (78 > 56), so the window also holds messages this receipt never
+  // billed. ABOVE decides first, as the rule says; the old exact rule reported the shortfall first. Exit 3 either way.
+  assert.match(r.stdout, /claude-opus-5: in 78>56 · .* → over the receipt/);
+  assert.match(r.stderr, /the window holds messages the receipt never billed \(claude-opus-5 input: transcript 78 > receipt 56\) and no continuation turn explains them: the scan is not pinned to a session file/);
+  assert.doesNotMatch(r.stderr, /BELOW the CLI's own receipt/);
   assert.match(r.stdout, /receipt cross-check: transcript \$2\.6[0-9]+ vs receipt \$4\.76/);
 });
 
@@ -514,7 +594,7 @@ test("an explicit --receipt path that does not exist is an error, not a silent u
   assert.match(r.stderr, /--receipt .*no-such-receipt\.json does not exist/);
 });
 
-test("receipt-only: no transcript in the window but a receipt beside the manifest — its dollars are used verbatim and said so", () => {
+test("receipt-only: no transcript in the window but a receipt beside the manifest — its token counts are priced from the list and said so", () => {
   const root = mkdtempSync(join(tmpdir(), "mmo-collect-receipt-only-"));
   try {
     const passDir = join(root, "pass"); mkdirSync(passDir);
@@ -522,8 +602,11 @@ test("receipt-only: no transcript in the window but a receipt beside the manifes
     const empty = join(root, "empty"); mkdirSync(empty);
     const r = spawnSync(process.execPath, [SCRIPT, passDir, "--project-root", FIX, "--policy-path", join(FIX, "policies", "receivables-floor.yaml"), "--transcripts-dir", empty, "--dry-run"], { encoding: "utf-8", env: { ...process.env, MMO_SELECT: "" } });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stderr, /its \$16\.235409 is used verbatim/);
-    assert.match(r.stdout, /= \$16\.235409 \[receipt-only\]/);
+    // Fix D: Claude Code's dollars are never booked. The receipt's top-level usage equals Opus 5's four counts, so
+    // its all-1-hour write split is Opus 5's own, and the list figure equals Claude Code's to the micro-dollar.
+    assert.match(r.stderr, /priced from the list they come to \$16\.235409 \(Claude Code's own figure: \$16\.235409\)/);
+    assert.match(r.stdout, /not logged claude-opus-5 \(no logged message\): .*\[receipt usage; no logged message: API-default speed, service_tier and inference_geo\] = \$16\.235409/);
+    assert.match(r.stdout, /= \$16\.235409 \[receipt-only \(Anthropic token counts priced at the price list\)\]/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -603,6 +686,23 @@ test("inSessionDispatched: a claude-cli worker is inside only when its session w
   assert.equal(inSessionDispatched([{ ...ambiguous[0], model_id: "d" }], policy, {}, 1).cost, 0, "model_id names the API seat");
 });
 
+test("inSessionDispatched: a claude-cli event carrying transcript_logged_cost_usd subtracts only that share, so its receipt-only and unlogged dollars stay in the total (review finding M4)", async () => {
+  const { inSessionDispatched } = await helpers();
+  const policy = { models: [{ id: "w", model_name: "claude-sonnet-5", adapter: "claude-cli" }, { id: "g", model_name: "gemini-3.7-flash", adapter: "mcp:model-dispatch" }] };
+  const events = [
+    // Ledger $6, of which $4.50 is tokens the worker's transcript explains (the rest: a side call and unlogged tokens).
+    { model: "claude-sonnet-5", model_id: "w", provenance: "vendor", cost_usd: 6, transcript_logged_cost_usd: 4.5 },
+    // Written before the field existed: its whole cost is subtracted, as before.
+    { model: "claude-sonnet-5", model_id: "w", provenance: "vendor", cost_usd: 2 },
+    { model: "gemini-3.7-flash", model_id: "g", provenance: "vendor", cost_usd: 1 },
+  ];
+  const r = inSessionDispatched(events, policy, { totals: { models_used: ["claude-sonnet-5", "gemini-3.7-flash"] } }, 9, { claudeCliScanned: true });
+  assert.deepEqual([r.cost, r.count, r.consistent], [6.5, 2, true]);
+  assert.equal(inSessionDispatched(events, policy, {}, 9, { claudeCliScanned: false }).cost, 0, "an unscanned worker session subtracts nothing");
+  // A logged share is never more than the event's own cost.
+  assert.equal(inSessionDispatched([{ ...events[0], transcript_logged_cost_usd: 7 }], policy, {}, 6, { claudeCliScanned: true }).cost, 6);
+});
+
 test("filesForSession: pins to the receipt's session when a file carries the id, falls back to everything otherwise", async () => {
   const { filesForSession } = await helpers();
   const files = ["/t/aaaa-1111.jsonl", "/t/bbbb-2222.jsonl", "/t/aaaa-1111/subagents/x.jsonl"];
@@ -638,10 +738,12 @@ models:
     adapter: builtin-anthropic
     model_name: claude-opus-5
     pricing: { input: 1, input_cached: 0.1, output: 5 }
+    pricing_override: true
   - id: worker
     adapter: claude-cli
     model_name: claude-sonnet-5
     pricing: { input: 1, input_cached: 0.1, output: 5 }
+    pricing_override: true
 rules:
   - when: { phase: codegen }
     use: worker
@@ -702,8 +804,13 @@ test("pass2 in receipt-only mode: the Gemini vendor spend survives the in-sessio
     assert.equal(r.status, 0, r.stderr);
     const gemini = telemetryOf("pass2").filter((e) => e.model === "gemini-3.7-flash").reduce((s, e) => s + e.cost_usd, 0);
     const trueTotal = num(/→ true total \$([0-9.]+)/, r.stdout);
-    const receipt = receiptOf("pass2").total_cost_usd;
-    assert.ok(trueTotal >= receipt + gemini - 0.000002, `true total ${trueTotal} lost Gemini's $${gemini.toFixed(4)} (receipt ${receipt})`);
+    // Fix D: the receipt's token counts at the list, not Claude Code's $4.766478. Its top-level usage is a per-turn
+    // snapshot that matches no model's counts, so its 263,021 cache writes are priced at the 5-minute rate and
+    // flagged, and the drift NOTE says Claude Code's figure is 1.3% higher.
+    assert.match(r.stdout, /= \$4\.703347 \[receipt-only \(Anthropic token counts priced at the price list\)\]/);
+    assert.match(r.stdout, /\[5-minute \(assumed\); no logged message: API-default speed, service_tier and inference_geo; no cache-write split for these writes: the 5-minute rate\] = \$4\.703347/);
+    assert.match(r.stderr, /NOTE: Claude Code's own price table differs from the price list on this run: .*\$4\.703347 at the price list \(booked\), but the receipt says \$4\.766478 \(\+1\.3% against the booked figure\)/);
+    assert.ok(trueTotal >= 4.703347 + gemini - 0.000002, `true total ${trueTotal} lost Gemini's $${gemini.toFixed(4)} (booked receipt $4.703347)`);
     assert.match(r.stderr, /rewritten after the run/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -721,7 +828,10 @@ test("a Gemini-only policy with a two-model receipt still takes the receipt bran
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, /receipt bills claude-opus-5 \+ claude-haiku-4-5/);
     assert.match(r.stderr, /NOTE: the receipt also bills claude-haiku-4-5 \(110 tokens, \$0\.01\) for calls the transcript does not record/);
-    assert.match(r.stdout, /= \$16\.245409 \[receipt \(transcript agrees; no policy rate for a rate check\)\]/);
+    // Fix D: the receipt's token counts at the list: Opus 5 $16.235409 as logged, plus Haiku's 10 in / 100 out at
+    // $1 / $5 per 1M ($0.00051), not Claude Code's $16.245409. Within 0.5% of it, so no drift NOTE.
+    assert.match(r.stdout, /= \$16\.235919 \[receipt \(Anthropic token counts priced at the price list\); 0\.0% billed but not logged\]/);
+    assert.doesNotMatch(r.stderr, /price table differs/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -815,6 +925,7 @@ models:
     adapter: builtin-anthropic
     model_name: claude-opus-4-8
     pricing: { input: 1, input_cached: 0.1, output: 10 }
+    pricing_override: true
 rules:
   - default: driver
 `;
@@ -867,7 +978,7 @@ test("the window opens at the run's command turn and closes at the end of the se
     assert.match(r.stdout, /counted 3 unique API message\(s\)/);
     assert.match(r.stdout, /1 outside window/);
     assert.match(r.stdout, AGREES);
-    assert.match(r.stdout, /= \$30 \[receipt \(transcript agrees, \+0\.0%\)\]/);
+    assert.match(r.stdout, /= \$30 \[receipt \(Anthropic token counts priced at the price list; custom policy price for claude-opus-4-8\); 0\.0% billed but not logged\]/);
     assert.match(r.stdout, /→ true total \$30\.5/);
     assert.doesNotMatch(r.stdout, /approximate/);
     assert.doesNotMatch(r.stderr, /NOTE: run\.start is/); // 12 minutes, well under the stale-log note's hour
@@ -884,7 +995,7 @@ test("the window closes at the next human turn after run.end: a later prompt on 
     assert.match(r.stdout, /closes at the next human turn 2026-09-05T19:20:00\.000Z after run\.end 2026-09-05T19:06:30\.000Z in .*orchestrator\.log \(exact: that turn starts the next invocation and is excluded\)/);
     assert.match(r.stdout, /counted 3 unique API message\(s\)/);
     assert.match(r.stdout, /2 outside window/);
-    assert.match(r.stdout, /= \$30 \[receipt \(transcript agrees, \+0\.0%\)\]/);
+    assert.match(r.stdout, /= \$30 \[receipt \(Anthropic token counts priced at the price list; custom policy price for claude-opus-4-8\); 0\.0% billed but not logged\]/);
     assert.doesNotMatch(r.stdout, /approximate/);
   } finally { fix.rm(); }
 });
@@ -896,7 +1007,7 @@ test("no run.end line but no human turn after the command turn: the session file
     const r = fix.run();
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /closes at the end of the session file: no run\.end line in .*orchestrator\.log, and no human turn after the window opens \(exact\)/);
-    assert.match(r.stdout, /= \$30 \[receipt \(transcript agrees, \+0\.0%\)\]/);
+    assert.match(r.stdout, /= \$30 \[receipt \(Anthropic token counts priced at the price list; custom policy price for claude-opus-4-8\); 0\.0% billed but not logged\]/);
     assert.doesNotMatch(r.stdout, /approximate/);
   } finally { fix.rm(); }
 });
@@ -911,7 +1022,7 @@ test("no run.end line and a human turn after the command turn: only run.end coul
     assert.match(r.stdout, /closes at the manifest's ended_at 2026-09-05T19:06:00\.000Z \(= last dispatched event\) plus 5 minutes \(approximate: no run\.end line in .*orchestrator\.log, and a human turn after the window opens that only run\.end could place\)/);
     // The receipt rule is what decides whether the approximate close held — here it did.
     assert.match(r.stdout, /counted 3 unique API message\(s\)/);
-    assert.match(r.stdout, /= \$30 \[receipt \(transcript agrees, \+0\.0%\)\]/);
+    assert.match(r.stdout, /= \$30 \[receipt \(Anthropic token counts priced at the price list; custom policy price for claude-opus-4-8\); 0\.0% billed but not logged\]/);
   } finally { fix.rm(); }
 });
 
@@ -948,7 +1059,11 @@ test("the manifest records the window it measured: anchors, exactness and the pi
     const m = JSON.parse(readFileSync(join(fix.passDir, "manifest.json"), "utf-8"));
     const o = m.orchestrator_overhead;
     assert.deepEqual(o.window, { start: COMMAND_TS, end: null, start_anchor: "command turn", end_anchor: "end of session", exact: true, session_id: "sess-a", source: "manifest", lower_bound: false });
-    assert.equal(o.cost_source, "receipt (transcript agrees, +0.0%)");
+    assert.equal(o.cost_source, "receipt (Anthropic token counts priced at the price list; custom policy price for claude-opus-4-8); 0.0% billed but not logged");
+    assert.equal(o.receipt_cli_usd, 30);
+    assert.deepEqual([o.unlogged_billed.cost_usd, o.unlogged_billed.per_model], [0, []]);
+    // Pinned to sess-a, which ran no helpers: nothing named, nothing missing.
+    assert.equal(o.attribution_complete, true);
     assert.equal(o.cost_usd, 30);
     assert.equal(o.transcript_cost_usd, 30);
     assert.equal(o.receipt_cost_usd, 30);
@@ -958,9 +1073,9 @@ test("the manifest records the window it measured: anchors, exactness and the pi
   } finally { fix.rm(); }
 });
 
-// ── The exact receipt rule ──────────────────────────────────────────────────
+// ── The receipt rule ────────────────────────────────────────────────────────
 
-test("SHORT: a bucket below the receipt means billed messages are missing from the tree — refused, exit 3, nothing written", () => {
+test("SHORT: below the receipt with a receipt that names no session — the window cannot be proven to be its invocation, so it is refused, exit 3, nothing written", () => {
   // Real-shaped usage: cache reads carry the evidence, so a missing message shows as a cache_read shortfall.
   const full = (id, ts, cached) => JSON.stringify({ type: "assistant", timestamp: ts, message: { id, model: "claude-opus-4-8", stop_reason: "end_turn", usage: { input_tokens: 10, cache_read_input_tokens: cached, cache_creation_input_tokens: 0, output_tokens: 1000 } } });
   const receipt = { total_cost_usd: 1, modelUsage: { "claude-opus-4-8": { inputTokens: 30, cacheReadInputTokens: 6_000_000, cacheCreationInputTokens: 0, outputTokens: 3000, costUSD: 1 } } };
@@ -972,12 +1087,20 @@ test("SHORT: a bucket below the receipt means billed messages are missing from t
     assert.match(r.stdout, /claude-opus-4-8: in 20<30 · cached 3000000<6000000 · cache_write 0=0 · out 2000≤3000 → short of the receipt/);
     assert.match(r.stderr, /BELOW the CLI's own receipt \(claude-opus-4-8 input: transcript 20 < receipt 30; claude-opus-4-8 input_cached: transcript 3000000 < receipt 6000000/);
     assert.match(r.stderr, /has no tolerance to widen/);
+    // Fix D: an exact window alone does not prove the invocation; the receipt must name the pinned session.
+    assert.match(r.stderr, /cannot be proven to be the receipt's invocation: the receipt names no session/);
     assert.doesNotMatch(r.stdout, /true total/);
     assert.equal(JSON.parse(readFileSync(join(fix.passDir, "manifest.json"), "utf-8")).orchestrator_overhead, undefined);
   } finally { fix.rm(); }
 });
 
-test("two invocations on one session: the receipt covers only the last leg, which verifies; the whole window is written transcript-priced and labelled so", () => {
+test("two invocations on one session: the receipt covers only the last leg, which equals it; that leg's receipt is booked and the earlier one stays transcript-priced, labelled so", () => {
+  // RE-DERIVED (Q1, v0.7.3): the last leg gets the main path's rule, so a leg
+  // EQUAL to the receipt books it (equality is its own proof; this receipt names
+  // no session, which only a leg BELOW the receipt would need). Same $30: the
+  // leg's logged $10 plus a zero gap, plus the earlier $20 transcript-priced.
+  // The label was "transcript (receipt covers only the last invocation,
+  // verified +0.0%; 1 earlier invocation(s) unverified)".
   const [mOld, mSetup, mPre, mIn] = ANCHOR_LINES;
   const lastLeg = { total_cost_usd: 10, modelUsage: { "claude-opus-4-8": { inputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: 1_000_000, costUSD: 10 } } };
   const fix = anchorRun([commandTurn(), mOld, mSetup, mPre, uLine("2026-09-05T18:58:00.000Z", "Continue the run from where it stopped."), mIn], lastLeg);
@@ -988,8 +1111,8 @@ test("two invocations on one session: the receipt covers only the last leg, whic
     assert.match(r.stdout, /claude-opus-4-8: in 0=0 · cached 0=0 · cache_write 0=0 · out 3000000>1000000 → over the receipt/);
     assert.match(r.stdout, /last invocation \(from the human turn at 2026-09-05T18:58:00\.000Z, 1 earlier turn\(s\) in the window\):/);
     assert.match(r.stdout, /claude-opus-4-8: in 0=0 · cached 0=0 · cache_write 0=0 · out 1000000≤1000000 → agrees/);
-    assert.match(r.stdout, /transcript \$10 vs receipt \$10 → \+0\.0%; the last invocation agrees with the receipt/);
-    assert.match(r.stdout, /= \$30 \[transcript \(receipt covers only the last invocation, verified \+0\.0%; 1 earlier invocation\(s\) unverified\)\]/);
+    assert.match(r.stdout, /transcript \$10 vs receipt \$10 → \+0\.0% \(informational; the decision is per token bucket\)/);
+    assert.match(r.stdout, /= \$30 \[receipt for the last invocation \(Anthropic token counts priced at the price list; custom policy price for claude-opus-4-8\); 0\.0% of it billed but not logged; 1 earlier invocation\(s\) transcript-priced, unverified\]/);
     assert.match(r.stderr, /NOTE: the receipt bills only the last invocation/);
   } finally { fix.rm(); }
 });
@@ -1028,7 +1151,7 @@ test("a receipt for another session cannot referee this run: exit 3", () => {
   } finally { fix.rm(); }
 });
 
-test("a receipt model the transcript never recorded is a NOTE, not a mismatch: its dollars are inside the booked total", () => {
+test("a receipt model the transcript never recorded is a NOTE, not a mismatch: its tokens are booked, priced from the list ($0.00045), not at Claude Code's $0.02", () => {
   const receipt = { total_cost_usd: 30.02, modelUsage: { ...ANCHOR_RECEIPT.modelUsage, "claude-haiku-4-5": { inputTokens: 200, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: 50, costUSD: 0.02 } } };
   const fix = anchorRun([commandTurn(), ...ANCHOR_LINES], receipt);
   try {
@@ -1036,19 +1159,21 @@ test("a receipt model the transcript never recorded is a NOTE, not a mismatch: i
     const r = fix.run();
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(r.stderr, /NOTE: the receipt also bills claude-haiku-4-5 \(250 tokens, \$0\.02\) for calls the transcript does not record/);
-    assert.match(r.stdout, /= \$30\.02 \[receipt \(transcript agrees, -0\.1%\)\]/);
+    // Fix D: $30 logged at the run's card + Haiku's 200 in / 50 out at the list's $1 / $5 per 1M.
+    assert.match(r.stdout, /= \$30\.00045 \[receipt \(Anthropic token counts priced at the price list; custom policy price for claude-opus-4-8\); 0\.0% billed but not logged\]/);
   } finally { fix.rm(); }
 });
 
-test("rate drift: the receipt's own tokens at the policy card no longer reproduce its dollars — booked, and the NOTE names the gap", () => {
+test("rate drift: Claude Code's dollars no longer match the receipt's tokens at the run's price — the tokens are booked ($30, not $33) and the NOTE names the gap", () => {
   const receipt = { total_cost_usd: 33, modelUsage: { "claude-opus-4-8": { ...ANCHOR_RECEIPT.modelUsage["claude-opus-4-8"], costUSD: 33 } } };
   const fix = anchorRun([commandTurn(), ...ANCHOR_LINES], receipt);
   try {
     withRunLog(fix, RUN_LOG);
     const r = fix.run();
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stderr, /NOTE: rate drift — the receipt's own 'claude-opus-4-8' tokens priced at the policy card come to \$30, but the receipt bills \$33 for them \(-9\.1%\)/);
-    assert.match(r.stdout, /= \$33 \[receipt \(transcript agrees, -9\.1%\)\]/);
+    // Fix D: Claude Code's own dollars are a check only (its price table was stale on Aug 24 2026).
+    assert.match(r.stderr, /NOTE: Claude Code's own price table differs from the price list on this run: the receipt's token counts come to \$30 at the price list and the policy's pricing_override cards \(booked\), but the receipt says \$33 \(\+10\.0% against the booked figure\)\. Per model: claude-opus-4-8 \$30 vs \$33/);
+    assert.match(r.stdout, /= \$30 \[receipt \(Anthropic token counts priced at the price list; custom policy price for claude-opus-4-8\); 0\.0% billed but not logged\]/);
   } finally { fix.rm(); }
 });
 
@@ -1076,7 +1201,7 @@ test("no command turn: the window opens at run.start minus 5 minutes, says appro
     assert.match(r.stdout, /counted 3 unique API message\(s\)/);
     assert.match(r.stdout, /1 outside window/);
     assert.match(r.stdout, AGREES);
-    assert.match(r.stdout, /= \$30 \[receipt \(transcript agrees, \+0\.0%\)\]/);
+    assert.match(r.stdout, /= \$30 \[receipt \(Anthropic token counts priced at the price list; custom policy price for claude-opus-4-8\); 0\.0% billed but not logged\]/);
     assert.doesNotMatch(r.stderr, /NOTE: run\.start is/);
   } finally { fix.rm(); }
 });
@@ -1089,7 +1214,7 @@ test("no command turn and a run.end line: closes at run.end plus 5 minutes, appr
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /window 2026-09-05T18:48:03\.107Z → 2026-09-05T19:11:30\.000Z \(approximate\)/);
     assert.match(r.stdout, /closes at run\.end 2026-09-05T19:06:30\.000Z in .*orchestrator\.log plus 5 minutes \(approximate: the scan is not pinned to a session file, so no human turn can bound it\)/);
-    assert.match(r.stdout, /= \$30 \[receipt \(transcript agrees, \+0\.0%\)\]/);
+    assert.match(r.stdout, /= \$30 \[receipt \(Anthropic token counts priced at the price list; custom policy price for claude-opus-4-8\); 0\.0% billed but not logged\]/);
   } finally { fix.rm(); }
 });
 

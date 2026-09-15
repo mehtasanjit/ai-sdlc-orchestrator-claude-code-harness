@@ -18,8 +18,16 @@
  *   1. The env var must be set BEFORE the `claude` process launches. A Bash
  *      `export` issued mid-session runs in a child shell and dies with it —
  *      it can never reach the CLI process's environment. So this script does
- *      not try to fix anything; it verifies, and on failure prints the exact
- *      export line so the user can relaunch correctly.
+ *      not try to fix anything; it verifies, and on failure prints where to
+ *      set it for each way of launching, so the user can relaunch correctly.
+ *      Where Claude Code picks it up depends on that (verified 2026-09-14 on
+ *      Claude Code 2.1.270): the terminal CLI, headless and interactive, sees
+ *      a shell export and the `env` block of
+ *      <project>/.claude/settings.local.json; the desktop app sees neither —
+ *      it has no login shell and ignores project settings files' `env` — and
+ *      reads only the `env` block of ~/.claude/settings.json. (Before v0.7.3
+ *      this script said a project settings file never applies, which is true
+ *      only for the desktop app.)
  *   2. The driver model must be derived by the SAME routing code the dispatch
  *      server uses. Re-implementing rule matching here (the line-scanning
  *      style the other setup scripts use to stay dependency-free) could
@@ -131,22 +139,85 @@ export function deriveDriverModel(policy, routing, overrides = {}) {
 }
 
 /**
- * Claude Code does not apply an `env` block from a project's
- * .claude/settings.json — only the user file at ~/.claude/settings.json. A
- * reader who follows the obvious instinct sets it in the project file, sees no
- * effect across repeated app restarts, and has nothing to tell them why. Return
- * the value declared there so the failure can name that trap instead of
- * repeating generic advice.
+ * The project settings files whose `env` block is read for a stranded value, in
+ * Claude Code's precedence order (local over shared).
+ *
+ * Whether a value declared in one of them reaches the session depends on how
+ * claude was launched (verified 2026-09-14 on Claude Code 2.1.270): the
+ * terminal CLI, headless and interactive, applies the `env` block of
+ * <project>/.claude/settings.local.json; the desktop app applies no project
+ * settings file's `env`, only ~/.claude/settings.json (measured 2026-09-02: a
+ * value in a project's .claude/settings.json stayed unset across three app
+ * restarts). Whether the terminal CLI applies .claude/settings.json's `env` was
+ * not verified, so the failure text never recommends that file.
+ *
+ * Before v0.7.3 this comment, and the failure text, said a project settings file
+ * never applies. That is right for the desktop app and wrong for the terminal,
+ * where it pushed a per-project value into the machine-wide user file; and only
+ * .claude/settings.json was read, so a value stranded in settings.local.json
+ * (the file the terminal route now names) went undiagnosed.
+ */
+export const PROJECT_SETTINGS_FILES = ["settings.local.json", "settings.json"];
+
+/**
+ * Every CLAUDE_CODE_SUBAGENT_MODEL value this project's settings files declare,
+ * as [{ path, file, value }] in PROJECT_SETTINGS_FILES order. A reader who set
+ * the value in one of them and still hits the failure needs to be told which
+ * file holds it and why it has not reached this session, not generic advice.
+ * Missing, unparsable or empty entries are skipped. Read for the message only:
+ * the check itself decides on the environment the session sees.
+ */
+export function projectSettingsDeclarations(projectRoot) {
+  if (!projectRoot) return [];
+  const found = [];
+  for (const file of PROJECT_SETTINGS_FILES) {
+    const path = join(resolve(projectRoot), ".claude", file);
+    try {
+      const declared = JSON.parse(readFileSync(path, "utf8"))?.env?.CLAUDE_CODE_SUBAGENT_MODEL;
+      if (typeof declared === "string" && declared !== "") found.push({ path, file, value: declared });
+    } catch {
+      // Absent or unreadable: nothing declared there.
+    }
+  }
+  return found;
+}
+
+/**
+ * Exported before v0.7.3, kept for back-compat: the first value declared in
+ * precedence order, or undefined. It used to read .claude/settings.json only.
  */
 export function declaredInProjectSettings(projectRoot) {
-  if (!projectRoot) return undefined;
-  try {
-    const raw = readFileSync(join(resolve(projectRoot), ".claude", "settings.json"), "utf8");
-    const declared = JSON.parse(raw)?.env?.CLAUDE_CODE_SUBAGENT_MODEL;
-    return typeof declared === "string" && declared !== "" ? declared : undefined;
-  } catch {
-    return undefined;
+  return projectSettingsDeclarations(projectRoot)[0]?.value;
+}
+
+/**
+ * The note for one declared value, worded for where it sits. A value equal to
+ * what the session sees is not stranded: the file may be where the wrong model
+ * came from. Otherwise it has not reached this session, and the fix depends on
+ * the file and on how claude is launched (see PROJECT_SETTINGS_FILES).
+ */
+export function declarationNote(declaration, actual, expected, policyName) {
+  const { path, file, value } = declaration;
+  if (actual !== undefined && actual !== "" && value === actual) {
+    return (
+      `NOTE: ${path} declares CLAUDE_CODE_SUBAGENT_MODEL=${value}, the value this session sees, ` +
+      `but policy '${policyName}' prices the driver tier as '${expected}': if that file is where ` +
+      `the value came from, change it to ${expected} there.`
+    );
   }
+  const lead = `NOTE: ${path} already declares CLAUDE_CODE_SUBAGENT_MODEL=${value}, and it has not taken effect in this session.`;
+  if (file === "settings.local.json") {
+    return (
+      `${lead} The terminal CLI applies this file's "env" block when claude launches in this folder, ` +
+      `so relaunch claude from ${dirname(dirname(path))} with no other CLAUDE_CODE_SUBAGENT_MODEL ` +
+      `exported in that shell. The desktop app ignores it: from the app, move the entry to ~/.claude/settings.json.`
+    );
+  }
+  return (
+    `${lead} The desktop app does not apply an "env" block from a project's settings files — only ` +
+    `from ~/.claude/settings.json. Move the entry there to launch from the app; from a terminal, use ` +
+    `the export or .claude/settings.local.json below.`
+  );
 }
 
 function parseArgs(argv) {
@@ -207,27 +278,41 @@ export async function main(argv = process.argv.slice(2)) {
         `whatever this session's model happens to be`
       : `CLAUDE_CODE_SUBAGENT_MODEL=${actual}, but policy '${policy.name}' prices ` +
         `the driver tier as '${derived.modelName}'`;
-  const stranded = declaredInProjectSettings(args.projectRoot);
-  const strandedNote = stranded
-    ? `\n\nNOTE: ${join(String(args.projectRoot), ".claude", "settings.json")} already ` +
-      `declares CLAUDE_CODE_SUBAGENT_MODEL=${stranded}, and it has not taken effect. ` +
-      `Claude Code does not apply an "env" block from a project settings file — ` +
-      `only from ~/.claude/settings.json. Move the entry there.`
-    : "";
+  // Message only (Fix F, v0.7.3): name every project settings file that declares
+  // a value, worded for that file, then give each launch route its own fix. The
+  // pass/fail decision above is unchanged: it reads the environment the session
+  // sees, never these files.
+  const notes = projectSettingsDeclarations(args.projectRoot).map((d) =>
+    declarationNote(d, actual, derived.modelName, policy.name)
+  );
+  const localSettings = args.projectRoot
+    ? join(resolve(args.projectRoot), ".claude", "settings.local.json")
+    : "<project>/.claude/settings.local.json";
+  const model = derived.modelName;
 
+  // Terminal: an export, or the project's settings.local.json, which the CLI
+  // (headless and interactive) applies at launch — verified on Claude Code
+  // 2.1.270, 2026-09-14. Desktop app: ~/.claude/settings.json only; it has no
+  // login shell and ignores project settings files' "env". The previous text
+  // said a project settings file is never applied, true only for the app.
   console.error(
     `driver-model-check FAILED: ${problem} — the report would price driver work ` +
-      `against a model that did not run.${strandedNote}\n\n` +
+      `against a model that did not run.${notes.map((n) => `\n\n${n}`).join("")}\n\n` +
       `Fix (must happen BEFORE claude launches — an export inside the session ` +
       `cannot reach the CLI process):\n\n` +
-      `  Terminal:     export CLAUDE_CODE_SUBAGENT_MODEL=${derived.modelName}\n` +
-      `  Desktop app:  add "CLAUDE_CODE_SUBAGENT_MODEL": "${derived.modelName}" to the\n` +
-      `                "env" block of ~/.claude/settings.json — the app is not\n` +
-      `                launched from a login shell, so an export never reaches it,\n` +
-      `                and an "env" block in a project's .claude/settings.json is\n` +
-      `                not applied. That user file is machine-wide: it pins the\n` +
-      `                driver model for every session on this machine, so remove\n` +
-      `                the entry once the run is done\n\n` +
+      `  Terminal:     export CLAUDE_CODE_SUBAGENT_MODEL=${model}\n` +
+      `                in the shell you launch claude from, or add\n` +
+      `                "CLAUDE_CODE_SUBAGENT_MODEL": "${model}" to the "env" block of\n` +
+      `                ${localSettings}\n` +
+      `                (this folder only; applied when claude launches here)\n` +
+      `  Desktop app:  add "CLAUDE_CODE_SUBAGENT_MODEL": "${model}" to the\n` +
+      `                "env" block of ~/.claude/settings.json — the only place the\n` +
+      `                app reads it: the app is not launched from a login shell, so\n` +
+      `                an export never reaches it, and it ignores the "env" block of\n` +
+      `                a project's .claude/settings.json and\n` +
+      `                .claude/settings.local.json. That user file is machine-wide:\n` +
+      `                it pins the driver model for every session on this machine,\n` +
+      `                so remove the entry once the run is done\n\n` +
       `then relaunch claude and restart the run.`
   );
   return 1;

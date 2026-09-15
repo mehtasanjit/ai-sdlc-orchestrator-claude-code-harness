@@ -1,0 +1,41 @@
+{
+  "pass": "pass1",
+  "policy_name": "receivables-premium",
+  "started_at": "2026-08-16T05:17:06.918Z",
+  "ended_at": "2026-08-16T06:04:13.802Z",
+  "totals": {
+    "dispatched_cost_usd": 3.739405,
+    "events": 89,
+    "models_used": [
+      "claude-opus-5"
+    ]
+  },
+  "orchestrator_overhead": {
+    "cost_usd": 16.152465,
+    "input_tokens": 158,
+    "input_tokens_cached": 15843890,
+    "input_tokens_cache_write": 355943,
+    "input_tokens_cache_write_1h": 355943,
+    "output_tokens": 186812,
+    "events": 1,
+    "provenance": "transcript",
+    "pricing_basis": "the policy's derived driver model",
+    "cost_source": "transcript (no receipt; unverified; LOWER BOUND — window opens at the first dispatch)",
+    "transcript_cost_usd": 16.152465,
+    "receipt_cost_usd": null,
+    "receipt_path": null,
+    "dispatched_in_session_cost_usd": 3.739405,
+    "dispatched_in_session_events": 89,
+    "window": {
+      "start": "2026-08-16T05:12:06.918Z",
+      "end": "2026-08-16T06:09:13.802Z",
+      "start_anchor": "manifest started_at - 5m",
+      "end_anchor": "manifest ended_at + 5m",
+      "exact": false,
+      "lower_bound": true,
+      "session_id": null,
+      "source": "manifest"
+    }
+  },
+  "true_total_cost_usd": 16.152465
+}

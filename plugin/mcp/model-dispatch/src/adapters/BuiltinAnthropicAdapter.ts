@@ -10,6 +10,7 @@ import type { AttemptRecord, ExecutionResult, ModelConfig, TaskPacket } from "..
 import { computeCostUsd, estimateTokens } from "../pricing.js";
 import type { ModelAdapter } from "./ModelAdapter.js";
 import { log } from "../log.js";
+import { DispatchPricer, unpricedRefusal, type Clock } from "./dispatchPricer.js";
 
 // Fallback when the policy YAML omits max_output_tokens_absolute. 32000 is
 // the current Opus 4.7 output ceiling.
@@ -22,10 +23,12 @@ export class BuiltinAnthropicAdapter implements ModelAdapter {
   readonly modelConfig: ModelConfig;
   private client: Anthropic;
   private cachedSystem = "";
+  private readonly pricer: DispatchPricer;
 
-  constructor(config: ModelConfig) {
+  constructor(config: ModelConfig, options: { now?: Clock } = {}) {
     this.id = config.id;
     this.modelConfig = config;
+    this.pricer = new DispatchPricer(config, options.now);
     const envKey = config.auth?.env ?? "ANTHROPIC_API_KEY";
     const apiKey = process.env[envKey];
     if (!apiKey) {
@@ -49,6 +52,25 @@ export class BuiltinAnthropicAdapter implements ModelAdapter {
 
     const attempts: AttemptRecord[] = [];
     let ceiling = Math.min(packet.budget.maxOutputTokens, absoluteCeiling);
+
+    // Priced on the day the dispatch starts, from the dated list (or the
+    // policy block under pricing_override). A model with no price is refused
+    // before any API call, so no unpriced tokens are ever bought.
+    const dispatchDate = this.pricer.now();
+    const basePrice = this.pricer.price(dispatchDate);
+    if (basePrice.unpriced) {
+      attempts.push({
+        attempt_number: 1,
+        ceiling_used: ceiling,
+        hit_output_cap: false,
+        tokens: { input: 0, input_cached: 0, output: 0 },
+        cost_usd: 0,
+        latency_ms: 0,
+        success: false,
+        error: unpricedRefusal(this.modelConfig, dispatchDate, basePrice.reason),
+      });
+      return this.finalizeResult(attempts, null, false, "vendor_error");
+    }
 
     // Doubling loop; returns attempts[] so the caller can emit one telemetry
     // event per attempt with a shared task_id.
@@ -107,10 +129,11 @@ export class BuiltinAnthropicAdapter implements ModelAdapter {
           ceiling_used: ceiling,
           hit_output_cap: false,
           tokens: failTokens,
-          cost_usd: computeCostUsd(failTokens, this.modelConfig.pricing),
+          cost_usd: computeCostUsd(failTokens, basePrice.pricing),
           latency_ms: Date.now() - attemptStart,
           success: false,
           error: vendorError,
+          price_basis: basePrice.basis,
         };
         attempts.push(attempt);
         // Not an output-cap; no reason to double.
@@ -137,15 +160,28 @@ export class BuiltinAnthropicAdapter implements ModelAdapter {
       const stopReason = resp.stop_reason as string | undefined;
       const hitOutputCap = stopReason === "max_tokens";
 
+      // The response says how it was billed (service tier, speed, region).
+      // The adapter requests none of the non-standard ones, but a value the
+      // list has no price for (a priority tier, say) makes these tokens
+      // unpriced and says so, rather than billing them at the standard card.
+      const priced = this.pricer.price(dispatchDate, {
+        speed: usage?.speed,
+        service_tier: usage?.service_tier,
+        inference_geo: usage?.inference_geo,
+      });
+
       const attempt: AttemptRecord = {
         attempt_number: attemptNumber,
         ceiling_used: ceiling,
         stop_reason: stopReason,
         hit_output_cap: hitOutputCap,
         tokens: attemptTokens,
-        cost_usd: computeCostUsd(attemptTokens, this.modelConfig.pricing),
+        cost_usd: priced.unpriced ? 0 : computeCostUsd(attemptTokens, priced.pricing),
         latency_ms: Date.now() - attemptStart,
         success: !hitOutputCap,
+        ...(priced.unpriced
+          ? { unpriced_models: [{ model: this.modelConfig.model_name, reason: priced.reason }] }
+          : { price_basis: priced.basis }),
       };
       attempts.push(attempt);
 

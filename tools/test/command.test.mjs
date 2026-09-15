@@ -249,6 +249,31 @@ test("the agent frontmatter grants the MCP tools under BOTH install-route names"
   }
 });
 
+test("Q3: estimate rates come from load_policy's effective_price, the price the server bills, never from a policy file's pricing block", () => {
+  // The orchestrator is a model reading this text: rule 6 IS the pricing code for
+  // estimated events. It told it to read the policy YAML's `pricing:` block, and
+  // even to keep reading the block when pre-flight warned that the block differs
+  // from the list, so estimates and billing could disagree on the same run.
+  const agent = read(AGENT);
+  const start = agent.indexOf("6. **Telemetry");
+  const end = agent.indexOf("7. **Stateless workers");
+  assert.ok(start > 0 && end > start, "rule 6 and rule 7 headings must exist");
+  const rule6 = agent.slice(start, end);
+  assert.match(rule6, /load_policy/);
+  assert.match(rule6, /effective_price/);
+  assert.doesNotMatch(rule6, /source rates from the loaded policy YAML's `pricing` block/);
+  assert.doesNotMatch(rule6, /come ONLY from the loaded policy YAML's `pricing` block/);
+  assert.doesNotMatch(rule6, /take your estimate rates from the block/);
+  // Rule 0 no longer describes a halt for an in-session model with no block.
+  assert.doesNotMatch(agent, /no pricing block under/);
+
+  const skill = read("plugin/skills/pipeline/SKILL.md");
+  assert.match(skill, /effective_price/);
+  assert.doesNotMatch(skill, /source pricing constants from the loaded policy's `pricing:` block/);
+  assert.doesNotMatch(skill, /Pricing constants come from the loaded policy YAML's `pricing:` block/);
+  assert.doesNotMatch(skill, /no pricing block under `estimated`/);
+});
+
 test("the orchestrator can spawn every subagent the workflow tells it to invoke", () => {
   // SKILL.md delegates three phases to dedicated subagents. Delegation needs a
   // subagent-spawning tool, and TaskCreate/TaskUpdate/TaskList are not it —

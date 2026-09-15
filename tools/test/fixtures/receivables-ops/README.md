@@ -27,8 +27,8 @@ The fixtures live here, beside the repo-level test corpus, rather than inside `p
 
 | pass | policy | what it proves |
 |---|---|---|
-| pass1 | receivables-premium (Opus in-session) | 1h cache-write pricing (the receipt's own dollars imply the $10/M rate). NEGATIVE under the exact receipt rule: with no human turns, the eight-message preamble that preceded the run's own command turn cannot be separated from the run, every bucket sits above the receipt, and the collector refuses (exit 3) rather than book a figure 5.8% high. Without a receipt it still proves that in-session dispatch is inside the transcript |
-| pass2 | receivables-hybrid | NEGATIVE: the committed transcript is missing a subagent file — the receipt cross-check must fail loudly |
-| pass3 | receivables-floor (Gemini-only policy, Opus driver) | the policy cannot yield a Claude driver model; the receipt prices the session anyway |
+| pass1 | receivables-premium (Opus in-session) | 1h cache-write pricing (the receipt's own dollars imply the $10/M rate). NEGATIVE under the receipt rule: with no human turns, the eight-message preamble that preceded the run's own command turn cannot be separated from the run, every bucket sits above the receipt, and the collector refuses (exit 3) rather than book a figure 5.8% high. Without a receipt it still proves that in-session dispatch is inside the transcript |
+| pass2 | receivables-hybrid | NEGATIVE: the committed transcript is missing a subagent file, so its cache buckets sit far below the receipt (-44.7%), while its input sits above it (78 > 56): the window also holds messages the receipt never billed. The collector refuses (exit 3). With no human turns kept, the window could not be proven to be the receipt's invocation either |
+| pass3 | receivables-floor (Gemini-only policy, Opus driver) | the policy cannot yield a Claude driver model; every bucket equals the receipt, so the receipt's token counts, priced from the list, book the session anyway |
 
 Policies are copied with the orchestrator repo's `gemini-thinking` adapter renamed to `antigravity-worker`, an adapter this plugin knows (the worker adapter is irrelevant to what these fixtures test).

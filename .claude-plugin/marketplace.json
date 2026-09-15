@@ -11,7 +11,7 @@
       "name": "mmo",
       "source": "./plugin",
       "description": "Runs a multi-model SDLC pipeline against a project brief. Routes judgment phases to Claude and mechanical phases to a cost-efficient model per policy, and reports what the run spent.",
-      "version": "0.7.2",
+      "version": "0.7.3",
       "author": { "name": "Tilicho Labs" },
       "homepage": "https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness",
       "repository": "https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness",

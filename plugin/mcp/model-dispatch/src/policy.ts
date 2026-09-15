@@ -155,7 +155,13 @@ function validateSelect(raw: any, modelIds: Set<string>): Set<string> {
 }
 
 function validateModel(m: any) {
-  for (const key of ["id", "adapter", "model_name", "pricing"]) {
+  // `pricing` is no longer required: the dated price list (src/prices.ts)
+  // prices every dispatch (effectivePrice.ts), so a model the list knows
+  // needs no block. A block is still validated when present, because
+  // pricing_override bills it and a shipped block documents the list's card.
+  // The orchestrator's estimates read load_policy's effective price since
+  // v0.7.3 Q3, not the block.
+  for (const key of ["id", "adapter", "model_name"]) {
     if (!(key in m)) throw new Error(`Policy model: missing '${key}'`);
   }
   // The adapter id must be one the registry can actually construct. Without
@@ -170,8 +176,33 @@ function validateModel(m: any) {
         `Register new adapters in adapters/index.ts.`
     );
   }
+  // pricing_override is the only way a policy block is billed, so it must be
+  // unambiguous: a string "yes" or a flag with nothing to bill is refused at
+  // load, before any run could be priced on a misread intent.
+  if (m.pricing_override !== undefined && typeof m.pricing_override !== "boolean") {
+    throw new Error(`Policy model '${m.id}': pricing_override must be true or false, got ${JSON.stringify(m.pricing_override)}`);
+  }
+  if (m.pricing === undefined || m.pricing === null) {
+    if (m.pricing_override === true) {
+      throw new Error(
+        `Policy model '${m.id}': pricing_override: true needs a pricing block to bill, and this model has none. ` +
+          `Add the block, or remove pricing_override to price the model from the price list.`
+      );
+    }
+    return;
+  }
+  if (typeof m.pricing !== "object" || Array.isArray(m.pricing)) {
+    throw new Error(`Policy model '${m.id}': pricing must be a map of USD-per-1M rates`);
+  }
   for (const k of ["input", "input_cached", "output"]) {
     if (typeof m.pricing[k] !== "number") {
+      throw new Error(`Policy model '${m.id}': pricing.${k} must be number`);
+    }
+  }
+  // The write rates are optional (computeCostUsd falls back to input x 1.25 /
+  // x 2), but a declared one must be a number: a string would price as NaN.
+  for (const k of ["input_cache_write", "input_cache_write_1h"]) {
+    if (m.pricing[k] !== undefined && typeof m.pricing[k] !== "number") {
       throw new Error(`Policy model '${m.id}': pricing.${k} must be number`);
     }
   }

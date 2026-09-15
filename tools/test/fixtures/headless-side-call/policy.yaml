@@ -1,0 +1,8 @@
+version: 1
+name: side-call
+models:
+  - id: driver
+    adapter: builtin-anthropic
+    model_name: claude-opus-5
+rules:
+  - default: driver

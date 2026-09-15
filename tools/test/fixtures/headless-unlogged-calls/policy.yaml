@@ -1,0 +1,28 @@
+version: 1
+name: my-policy
+
+models:
+  - id: opus
+    adapter: builtin-anthropic
+    model_name: claude-opus-4-8
+
+  - id: flash-completion
+    adapter: mcp:model-dispatch
+    model_name: gemini-3.7-flash
+
+rules:
+  - when: { phase: requirements_analysis }
+    use: opus
+  - when: { phase: architecture_design }
+    use: opus
+  - when: { phase: plan_task_packets }
+    use: opus
+  - when: { phase: senior_code_review }
+    use: opus
+  - when: { phase: security_review }
+    use: opus
+  - when: { phase: discovery }
+    use: opus
+  - when: { phase: change_plan }
+    use: opus
+  - default: flash-completion

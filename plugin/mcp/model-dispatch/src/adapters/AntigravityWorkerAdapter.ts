@@ -23,7 +23,8 @@ import type {
 } from "../types.js";
 import { computeCostUsd } from "../pricing.js";
 import type { ModelAdapter } from "./ModelAdapter.js";
-import { applyVertexSurcharge, resolveGcpLocation, resolveGcpProject } from "./geminiTransports.js";
+import { applyVertexSurcharge, resolveGcpProject, workerVertexLocation } from "./geminiTransports.js";
+import { DispatchPricer, geminiRates, unpricedRefusal, type BilledPrice, type Clock } from "./dispatchPricer.js";
 import {
   DEFAULT_WORKER_TIMEOUT_SEC,
   WORKER_KILL_GRACE_SEC,
@@ -60,17 +61,17 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
   readonly location: string;
   /** Absolute path to the interpreter. */
   readonly python: string;
-  /** Pricing adjusted for a pinned regional endpoint. Cost reports read from here. */
-  readonly billedPricing: ModelPricing;
+  private readonly pricer: DispatchPricer;
 
   /**
    * Strict on purpose. preflight_dispatch constructs every adapter before the
    * run starts, so a missing project / interpreter / worker script surfaces
    * once at the start, not as a crash after premium phases are billed.
    */
-  constructor(config: ModelConfig) {
+  constructor(config: ModelConfig, options: { now?: Clock } = {}) {
     this.id = config.id;
     this.modelConfig = config;
+    this.pricer = new DispatchPricer(config, options.now);
 
     const project = resolveGcpProject(process.env as Record<string, string | undefined>);
     if (!project) {
@@ -83,11 +84,11 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     }
     this.project = project;
 
-    // Same precedence as the Vertex transport: policy leaf's `region:`, then
-    // GOOGLE_CLOUD_LOCATION, then `global`. Passed to the worker explicitly so
-    // the region in the manifest and on the endpoint match by construction.
-    this.location =
-      config.region ?? resolveGcpLocation(process.env as Record<string, string | undefined>);
+    // The policy leaf's `region:`, then GOOGLE_CLOUD_LOCATION, then `global`
+    // (workerVertexLocation, the rule the what-if replay bills by too). Passed
+    // to the worker explicitly so the region in the manifest and on the
+    // endpoint match by construction.
+    this.location = workerVertexLocation(config, process.env as Record<string, string | undefined>);
 
     if (!existsSync(WORKER_SCRIPT)) {
       throw new Error(
@@ -100,12 +101,30 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       workerDir: WORKER_DIR,
       exists: existsSync,
     });
+  }
 
-    this.billedPricing = applyVertexSurcharge(config.pricing, {
+  /**
+   * The price of a delegation on `date`: the effective rates (the dated list,
+   * or the policy block under pricing_override) with the +10% regional
+   * surcharge for this leaf's Vertex location. Resolved per delegation, not
+   * once at construction, because a list period can end while the server runs.
+   */
+  pricingOn(date: Date = this.pricer.now()): BilledPrice {
+    const price = this.pricer.price(date);
+    if (price.unpriced) return { unpriced: true, reason: price.reason };
+    const rates = geminiRates(price.pricing);
+    const billed = applyVertexSurcharge(rates, {
       backend: "vertex-adc",
       location: this.location,
-      modelName: config.model_name,
+      modelName: this.modelConfig.model_name,
     });
+    return { unpriced: false, basis: price.basis, rates, billed, period: price.period };
+  }
+
+  /** Rates billed for a delegation now, surcharge applied; undefined when the model has no price today. */
+  get billedPricing(): ModelPricing | undefined {
+    const price = this.pricingOn();
+    return price.unpriced ? undefined : price.billed;
   }
 
   /** `cacheContext` accepted and ignored — no cache handle for agent sessions. */
@@ -116,6 +135,15 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
   ): Promise<ExecutionResult> {
     const started = Date.now();
     const startedAt = new Date(started).toISOString();
+
+    // Priced on the day the delegation starts. A model with no price is
+    // refused before the brief is staged or the worker is spawned, so no
+    // unpriced session is ever billed.
+    const dispatchDate = this.pricer.now();
+    const price = this.pricingOn(dispatchDate);
+    if (price.unpriced) {
+      return this.failure(started, unpricedRefusal(this.modelConfig, dispatchDate, price.reason));
+    }
 
     // Workspace the agent may act in. Refused rather than defaulted to a
     // temp dir whose edits nobody would look at.
@@ -192,7 +220,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     // Read whatever the exit status: a failed delegation still spent tokens.
     const sidecar = readJsonIfPresent(usageFile);
     const tokens = mapSidecarTokens(sidecar);
-    const cost = computeCostUsd(tokens, this.billedPricing);
+    const cost = computeCostUsd(tokens, price.billed);
     const latency = Date.now() - started;
 
     if (sidecar) {
@@ -261,6 +289,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         latency_ms: latency,
         success: false,
         error: run.error,
+        price_basis: price.basis,
       };
       return {
         result: null,
@@ -294,6 +323,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       cost_usd: cost,
       latency_ms: latency,
       success: true,
+      price_basis: price.basis,
     };
     return {
       result: parsed,

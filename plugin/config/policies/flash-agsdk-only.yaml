@@ -10,20 +10,25 @@
 version: 1
 name: flash-agsdk-only
 
+# Pricing blocks mirror the dated price list (plugin/mcp/model-dispatch/src/prices.ts),
+# which bills every dispatch and the orchestrator's transcript; test/prices.test.mjs
+# fails when a block drifts from it. A block is billed only under pricing_override: true.
+# Estimated-mode telemetry reads load_policy's effective_price (the same list price),
+# not this block: a block without pricing_override: true is documentation.
 models:
   - id: flash
     adapter: antigravity-worker
     model_name: gemini-3.7-flash
     display_name: gemini-3.7-flash (Antigravity agent)
-    # Gemini 3.7 Flash introductory rate card, in force 13 Aug 2026 – 31 Dec 2026 (reverts to
-    # $1.50 / $7.50 on 1 Jan 2027). Same pin as the SWE-bench Pro v2 harness and the
-    # orchestrator repo's receivables policies; confirmed 2026-09-03.
-    # from gemini-3.5-flash as a placeholder. Vertex adds +10% on REGIONAL
-    # endpoints; the geminiTransports.ts::applyVertexSurcharge applies it at
-    # dispatch — do not hand-edit x1.10 in.
+    # Gemini 3.7 Flash introductory card, in force 13 Aug 2026 – 31 Dec 2026. From 1 Jan 2027
+    # the price list bills 1.50 / 0.15 / 7.50, published on both Google pricing pages (verified
+    # 2026-09-14); on that day this card must change to match, and test/prices.test.mjs fails
+    # until it does. A 2027 run is not halted: it bills the list's card, and this card draws a
+    # price warning until it is changed. Vertex adds +10% on REGIONAL endpoints;
+    # geminiTransports.ts::applyVertexSurcharge applies it at dispatch — do not hand-edit x1.10 in.
     pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-19
+    pricing_last_verified: 2026-09-14
     # `region:` unpinned so this leaf follows GOOGLE_CLOUD_LOCATION and hits
     # the flat global endpoint by default. Vertex-only: the Antigravity SDK is
     # ADC-only and has no API-key door, so no `auth:` block.

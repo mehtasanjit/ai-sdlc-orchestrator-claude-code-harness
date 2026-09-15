@@ -172,9 +172,12 @@ template from [plugin/skills/pipeline/SKILL.md](/plugin/skills/pipeline/SKILL.md
 - **Test command** — `baseline.test_command_proposed`. Accept an override.
 - **Auth mode** — ask `vendor` (billed via API keys) or `estimated` (Claude Code subscription
   auth, cost is an estimate). Required — the orchestrator aborts without it. `estimated` also
-  requires `CLAUDE_CODE_SUBAGENT_MODEL` to have been exported before `claude` launched (it is
-  what the driver subagents execute on); the orchestrator's run-start driver-model check stops
-  the run with the exact export line when it is unset or disagrees with the policy's driver model.
+  requires `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched (it is what
+  the driver subagents execute on): from a terminal, exported or in the `env` block of the
+  project's `.claude/settings.local.json`; from the desktop app, in the `env` block of
+  `~/.claude/settings.json`, since the app ignores project settings files. The orchestrator's
+  run-start driver-model check stops the run, printing where to set it, when it is unset or
+  disagrees with the policy's driver model.
 - **Policy** — read `payload.project.default_policy` from the session-hydrate output already
   captured in step 1 of this command. This is what setup wrote to `.sdlc/project.json`. If
   it is null, setup was not completed for this project — abort Gate 0 and tell the user to

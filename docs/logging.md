@@ -64,7 +64,7 @@ Greppable by the `MMO:` prefix, parseable as logfmt after it.
 | Level | Emitted | Contents |
 |---|---|---|
 | `ERROR` | always | dispatch failures, halts, worker crashes |
-| `WARN` | always | write-contract denials, preflight warnings, retired names still in use |
+| `WARN` | always | write-contract denials, preflight warnings, price mismatches and unpriced models, retired names still in use |
 | `INFO` | always | phase and gate boundaries, routing decisions, dispatch summaries, AG SDK spawn and exit |
 | `DEBUG` | verbose only | per-call detail, adapter internals, env and credential resolution |
 | `TRACE` | verbose only, explicit `MMO_LOG_LEVEL=trace` | worker stderr passthrough, payload byte counts, inventory detail |
@@ -116,6 +116,7 @@ event-name index for `grep`.
 | Vendor / Agent Platform API | `api.anthropic.request`, `api.anthropic.response`, `api.gemini.backend`, `api.gemini.request`, `api.gemini.response`, `api.gemini.cache.create`, `api.gemini.cache.hit` | The adapters under `plugin/mcp/model-dispatch/src/adapters/` |
 | AG SDK worker delegation | `agsdk.spawn`, `agsdk.inventory.before`, `agsdk.worker.stderr`, `agsdk.sidecar`, `agsdk.toolcall`, `agsdk.diff`, `agsdk.exit`, `agsdk.record.write` | `AntigravityWorkerAdapter.ts` |
 | Policy, preflight, credentials | `policy.load`, `policy.adapter.deprecated`, `preflight.model`, `preflight.result`, `credential.discover`, `env.legacy_name`, `env.placeholder.strip` | `server.ts`, `credential-discovery.mjs`, `envBootstrap.ts` |
+| Pricing | `pricing.policy_mismatch`, `pricing.custom`, `pricing.unpriced`, `pricing.cli_cost_mismatch` | `adapters/dispatchPricer.ts`, `adapters/ClaudeCliAdapter.ts`, `server.ts` |
 | Write contract and provenance | `write.allow`, `write.deny`, `provenance.before`, `provenance.after`, `provenance.finalize` | `write-contract-check.mjs`, `write-provenance.mjs` |
 
 ## Implementation, if you're changing it

@@ -1,0 +1,2 @@
+MMO: 2026-09-10T17:29:06.050Z INFO   run.start run_id=pass1 mode=greenfield
+MMO: 2026-09-10T18:16:20.212Z INFO   run.end run_id=pass1 outcome=completed total_cost_usd=1.58159

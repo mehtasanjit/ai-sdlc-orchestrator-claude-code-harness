@@ -1,6 +1,6 @@
 # Repo guide
 
-This repository holds `mmo` (Multi-Model Orchestrator) v0.6.0 — a Claude Code plugin that runs a
+This repository holds `mmo` (Multi-Model Orchestrator) v0.7.3 — a Claude Code plugin that runs a
 full software-delivery pipeline against a brief (requirements → design → code → senior review →
 tests → security review), routes each phase to the model that fits it, and records what each phase
 cost — plus the harness, tests and documentation that ship it.

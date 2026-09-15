@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.6.0-blue)](.claude-plugin/marketplace.json)
+[![Version](https://img.shields.io/badge/version-0.7.3-blue)](.claude-plugin/marketplace.json)
 
 ![How the plugin works — you paste two prompts, an orchestrator routes premium work to Claude Opus and mechanical work to Gemini Flash, and your project gets both generated code and a full audit trail](docs/assets/hero.svg)
 
@@ -244,7 +244,7 @@ Every artifact lands under `./.sdlc/` (for `/mmo:greenfield`) or `examples/<stud
 | `provenance.json` | Every file the run touched, with pre-run hash — the input `/mmo:revert` reads. |
 | `delegation/` | Only on runs that used the agent path. Three files per delegated packet: task brief, worker usage sidecar, receipt. |
 | `.hook-logs/hook.jsonl` | One line per `execute_with_model` call. Backup heartbeat; safe to delete. |
-| Cost report | `node tools/report.mjs <pass-dir>` — per-phase table, delegation table if any, total cost labeled by scope (dispatched-only, or true total once the orchestrator-overhead collector has run), methodology footer. |
+| Cost report | `node tools/report.mjs <pass-dir>` — per-phase table, delegation table if any, total cost labeled by scope (dispatched-only, or true total once the orchestrator-overhead collector has run), the orchestrator figure by model (session and helpers) with what a booked receipt billed but no transcript logged, or a floor note when no receipt was booked, methodology footer. |
 
 Full reference in [docs/understanding-output.md](docs/understanding-output.md).
 

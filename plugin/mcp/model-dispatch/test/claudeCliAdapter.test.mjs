@@ -7,15 +7,26 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { ClaudeCliAdapter } from "../dist/adapters/ClaudeCliAdapter.js";
+import { computeCostUsd } from "../dist/pricing.js";
 
+// The card equals Sonnet 5 on the price list (2 / 0.2 / 10), so no test here
+// logs a policy-mismatch warning. Pricing itself is pinned in
+// claudeCliPricing.test.mjs.
 const BASE_CONFIG = {
   id: "sonnet-cli",
   adapter: "claude-cli",
   model_name: "claude-sonnet-5",
-  pricing: { input: 3, input_cached: 0.3, output: 15 },
+  pricing: { input: 2, input_cached: 0.2, output: 10 },
 };
+
+// The adapter looks up the worker session's transcript to split cache writes
+// by TTL. Point it at an empty directory so these tests never read ~/.claude.
+const NO_TRANSCRIPTS = mkdtempSync(join(tmpdir(), "claude-cli-adapter-test-"));
 
 const PACKET = {
   id: "pkt-1",
@@ -91,9 +102,10 @@ const SUCCESS_RESPONSE = {
   },
 };
 
-test("returns a successful ExecutionResult and preserves vendor cost verbatim", async () => {
+test("returns a successful ExecutionResult priced from its tokens, keeping the CLI's figure beside it", async () => {
   const adapter = new ClaudeCliAdapter(BASE_CONFIG, {
     probeBinary: () => {},
+    projectsDir: NO_TRANSCRIPTS,
     spawnFn: fakeSpawn(() => ({ stdout: JSON.stringify(SUCCESS_RESPONSE), code: 0 })),
   });
   const out = await adapter.execute(PACKET);
@@ -101,15 +113,24 @@ test("returns a successful ExecutionResult and preserves vendor cost verbatim", 
   assert.equal(out.success, true);
   assert.equal(out.terminal_reason, "success");
   assert.deepEqual(out.result, { ok: true });
-  // Cache writes are their own bucket now, no longer folded into `input`:
-  // the fold hid a systematically mispriced quantity (cache writes bill at
-  // a premium over fresh input — see pricing.ts). Cost is unaffected here,
-  // since this adapter passes the CLI's billed figure through verbatim.
+  // Cache writes are their own bucket, never folded into `input`.
   assert.equal(out.tokens.input, 2);
   assert.equal(out.tokens.input_cache_write, 18765);
+  assert.equal(out.tokens.input_cache_write_1h, 0);
   assert.equal(out.tokens.input_cached, 30992);
   assert.equal(out.tokens.output, 4);
-  assert.equal(out.cost_usd, 0.1219536, "cost passes through untouched from total_cost_usd");
+  // Changed expectation (v0.7.3): cost_usd was total_cost_usd verbatim. It is
+  // now the list price of the tokens. This payload has no modelUsage and no
+  // cache_creation TTL split, so its writes are priced as 5-minute and the
+  // split is flagged approximate; the CLI's own figure is kept as a check.
+  // (Its 0.1219536 is these tokens at Sonnet 3/15 with 1-hour writes, the
+  // card from before the Sonnet 5 price was confirmed at 2/10.)
+  assert.equal(
+    out.cost_usd,
+    computeCostUsd({ input: 2, input_cached: 30992, input_cache_write: 18765, input_cache_write_1h: 0, output: 4 }, { input: 2, input_cached: 0.2, output: 10, input_cache_write: 2.5, input_cache_write_1h: 4 }),
+  );
+  assert.equal(out.attempts[0].cli_reported_cost_usd, 0.1219536, "the CLI's figure is kept, never used as the cost");
+  assert.equal(out.attempts[0].ttl_split, "approximate");
   assert.equal(out.latency_ms, 2518, "latency comes from duration_api_ms, not duration_ms");
   assert.equal(out.cache_hit, true, "any cache_read_input_tokens > 0 flips cache_hit");
   assert.equal(out.attempts.length, 1, "no doubling loop — always one attempt");
@@ -127,6 +148,7 @@ test("classifies is_error responses as a vendor_error ExecutionResult", async ()
   };
   const adapter = new ClaudeCliAdapter(BASE_CONFIG, {
     probeBinary: () => {},
+    projectsDir: NO_TRANSCRIPTS,
     spawnFn: fakeSpawn(() => ({ stdout: JSON.stringify(errorResponse), code: 0 })),
   });
   const out = await adapter.execute(PACKET);
@@ -147,6 +169,7 @@ test("a non-success subtype is an error even when is_error is false", async () =
   };
   const adapter = new ClaudeCliAdapter(BASE_CONFIG, {
     probeBinary: () => {},
+    projectsDir: NO_TRANSCRIPTS,
     spawnFn: fakeSpawn(() => ({ stdout: JSON.stringify(maxTurns), code: 0 })),
   });
   const out = await adapter.execute(PACKET);
@@ -163,6 +186,7 @@ test("a payload with no subtype at all lands on the error side", async () => {
   delete noSubtype.subtype;
   const adapter = new ClaudeCliAdapter(BASE_CONFIG, {
     probeBinary: () => {},
+    projectsDir: NO_TRANSCRIPTS,
     spawnFn: fakeSpawn(() => ({ stdout: JSON.stringify(noSubtype), code: 0 })),
   });
   const out = await adapter.execute(PACKET);
@@ -174,6 +198,7 @@ test("a payload with no subtype at all lands on the error side", async () => {
 test("garbage stdout is reported as a vendor_error, not thrown", async () => {
   const adapter = new ClaudeCliAdapter(BASE_CONFIG, {
     probeBinary: () => {},
+    projectsDir: NO_TRANSCRIPTS,
     spawnFn: fakeSpawn(() => ({ stdout: "not JSON at all", code: 0 })),
   });
   const out = await adapter.execute(PACKET);
@@ -186,6 +211,7 @@ test("garbage stdout is reported as a vendor_error, not thrown", async () => {
 test("a hanging subprocess is killed after the configured timeout", async () => {
   const adapter = new ClaudeCliAdapter(BASE_CONFIG, {
     probeBinary: () => {},
+    projectsDir: NO_TRANSCRIPTS,
     spawnFn: fakeSpawn(() => ({ hang: true })),
     timeoutSec: 0.05,
   });

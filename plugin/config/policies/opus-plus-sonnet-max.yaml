@@ -5,6 +5,11 @@
 version: 1
 name: opus-plus-sonnet-max
 
+# Pricing blocks mirror the dated price list (plugin/mcp/model-dispatch/src/prices.ts),
+# which bills every dispatch and the orchestrator's transcript; test/prices.test.mjs
+# fails when a block drifts from it. A block is billed only under pricing_override: true.
+# Estimated-mode telemetry reads load_policy's effective_price (the same list price),
+# not this block: a block without pricing_override: true is documentation.
 models:
   - id: opus
     adapter: builtin-anthropic
@@ -12,21 +17,24 @@ models:
     # Opus 5 list card: input 5.00 / cached 0.50 / output 25.00 per 1M; cache writes 1.25x (5m) or 2x (1h)
     # of input. Confirmed 2026-09-03 against Claude Code's own session receipts (two real runs,
     # reproduced to the cent; see tools/test/fixtures/receivables-ops).
-    # before shipping. Values carried over from opus-only.yaml as placeholder.
     pricing: { input: 5.00, input_cached: 0.50, output: 25.00 }
-    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
-    pricing_last_verified: 2026-08-19
+    pricing_source: https://platform.claude.com/docs/en/about-claude/pricing
+    pricing_last_verified: 2026-09-14
     auth: { env: ANTHROPIC_API_KEY }
     max_output_tokens_absolute: 32000
 
   - id: sonnet
     adapter: claude-cli
     model_name: claude-sonnet-5
-    # Cost is reported directly by `claude -p` (total_cost_usd); these list
-    # rates are informational only and never used to derive cost.
-    pricing: { input: 3.00, input_cached: 0.30, output: 15.00 }
-    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
-    pricing_last_verified: 2026-08-19
+    # The worker's cost is its own token ledger priced from the price list
+    # (plugin/mcp/model-dispatch/src/prices.ts); claude -p's total_cost_usd
+    # is kept only as a check. This card is not billed (it would be only
+    # under pricing_override: true). It must still equal claude-sonnet-5 on
+    # the list (2.00 / 0.20 / 10.00 since the 3.00 / 15.00 increase was
+    # cancelled); test/prices.test.mjs fails when it does not.
+    pricing: { input: 2.00, input_cached: 0.20, output: 10.00 }
+    pricing_source: https://platform.claude.com/docs/en/about-claude/pricing
+    pricing_last_verified: 2026-09-14
     max_output_tokens_absolute: 16000
 
 rules:

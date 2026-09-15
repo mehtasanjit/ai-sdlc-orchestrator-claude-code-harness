@@ -354,7 +354,7 @@ function renderModels() {
       <span class="mono">${escapeHtml(m.id)}</span>
       <span class="adapter-badge">${escapeHtml(adapterLabel[m.adapter] ?? m.adapter)}</span>
       <span class="mono">${escapeHtml(m.model_name)}</span>
-      <span class="rate tnum">$${m.pricing.input.toFixed(2)} in / $${m.pricing.output.toFixed(2)} out /1M</span>
+      <span class="rate tnum" title="${rateTitle(m)}">${rateLabel(m)}</span>
     `;
     list.appendChild(el);
   }
@@ -392,7 +392,7 @@ function renderDefaultPhases() {
       <div class="model-thinking-pair">
         <select onchange="setPhaseModel('${phase.id}', this.value)">${options}</select>${seg}
       </div>
-      <div class="rate tnum">${model ? `<b>$${model.pricing.input.toFixed(2)}</b> in / <b>$${model.pricing.output.toFixed(2)}</b> out /1M` : ""}</div>
+      <div class="rate tnum" title="${rateTitle(model)}">${rateLabel(model, true)}</div>
     `;
     container.appendChild(row);
   }
@@ -648,6 +648,27 @@ async function doSave() {
 }
 
 // ── util ───────────────────────────────────────────────────────
+
+// v0.7.3: a model's `pricing:` block is optional, because every dispatch is
+// priced from the dated price list, and a block is billed only under
+// `pricing_override: true`. The page used to read `pricing.input` unguarded,
+// so a block-less policy threw and blanked the editor, and it showed any block
+// as the rate. These two helpers are the only place the page reads a rate;
+// tools/test/policy-console-pricing.test.mjs pins them.
+function rateLabel(model, bold) {
+  if (!model) return "";
+  const p = model.pricing;
+  if (!p || typeof p.input !== "number" || typeof p.output !== "number") return "list price";
+  const b = (text) => (bold ? `<b>${text}</b>` : text);
+  return `${b(`$${p.input.toFixed(2)}`)} in / ${b(`$${p.output.toFixed(2)}`)} out /1M`;
+}
+
+function rateTitle(model) {
+  if (!model) return "";
+  if (model.pricing_override === true) return "Billed: this policy card (pricing_override: true).";
+  if (model.pricing) return "Policy card, for reference. Runs bill the dated price list; a card is billed only with pricing_override: true.";
+  return "No policy card. Runs bill the dated price list.";
+}
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[c]);

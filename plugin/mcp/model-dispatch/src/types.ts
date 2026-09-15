@@ -2,6 +2,10 @@
  * Shared types for the multi-model orchestration layer.
  */
 
+// Type-only (erased at build): the orchestrator event's Fix E fields reuse the
+// manifest block's shapes, which live beside Manifest in telemetry.ts.
+import type { OrchestratorModelCost, OrchestratorUnloggedBilled, OrchestratorUnpriced } from "./telemetry.js";
+
 export type Phase =
   | "requirements_analysis"
   | "architecture_design"
@@ -115,10 +119,55 @@ export interface TelemetryEvent {
    * still folded into `input_tokens` lack it; readers treat absence as 0.
    */
   input_tokens_cache_write?: number;
+  /**
+   * The 1-hour-TTL SHARE of `input_tokens_cache_write` (which stays the total
+   * written). The collector's `tier: "orchestrator"` event and claude-cli
+   * worker events carry it; a reader prices `min(total, this)` at the 1-hour
+   * rate and the rest at the 5-minute rate. Absent = every write is 5-minute.
+   */
+  input_tokens_cache_write_1h?: number;
   output_tokens: number;
   /** Thinking/reasoning tokens; already counted in output_tokens. */
   output_tokens_reasoning?: number;
   cost_usd: number;
+  /** Copied from the attempt: `list` or `custom` (policy block under pricing_override). */
+  price_basis?: PriceBasis;
+  /** Copied from the attempt; `cost_usd` excludes these models' tokens. */
+  unpriced_models?: UnpricedModel[];
+  /** claude-cli only: Claude Code's own dollar figure, kept as a check. */
+  cli_reported_cost_usd?: number;
+  /** claude-cli only: where the cache-write TTL split came from. */
+  ttl_split?: TtlSplit;
+  /**
+   * claude-cli only, copied from the attempt: the share of cost_usd for the
+   * tokens the worker's own transcript explains. The collector subtracts only
+   * this share of an in-session worker; absent on events written before it existed.
+   */
+  transcript_logged_cost_usd?: number;
+  /*
+   * Orchestrator event only (`tier: "orchestrator"`, written by
+   * collect-orchestrator-usage.mjs): the Fix E fields of the manifest's
+   * `orchestrator_overhead` block, with the same meanings (see Manifest in
+   * telemetry.ts), so telemetry.jsonl alone says which model each dollar ran
+   * on, what a booked receipt billed beyond the transcript, and whether every
+   * helper's transcript was read. The collector wrote most of these from the
+   * per-message and receipt fixes on while this interface did not declare
+   * them; since v0.7.3 orchestratorOverheadFields.test.mjs type-checks its real
+   * output against this interface so the two cannot drift again.
+   */
+  transcript_cost_usd?: number | null;
+  receipt_cost_usd?: number | null;
+  receipt_cli_usd?: number | null;
+  /** The booked part at the price list: the whole receipt, or a resumed window's last invocation. receipt_cli_usd is checked against it; null unless a receipt was booked. */
+  booked_cost_usd?: number | null;
+  unlogged_billed?: OrchestratorUnloggedBilled | null;
+  attribution_complete?: boolean | null;
+  missing_helper_ids?: string[];
+  unreferenced_helper_files?: string[];
+  per_model?: OrchestratorModelCost[];
+  unpriced?: OrchestratorUnpriced[];
+  pricing_complete?: boolean;
+  price_list_verified?: string;
   /** `null` on the direct tier — no stopwatch ever ran. `0` would mean "instant". */
   latency_ms: number | null;
   success: boolean;
@@ -151,6 +200,91 @@ export interface AttemptRecord {
   latency_ms: number;
   success: boolean;
   error?: string;
+  /**
+   * Where `cost_usd`'s rates came from: `list` (src/prices.ts) or `custom`
+   * (the policy block under `pricing_override: true`; on a claude-cli attempt,
+   * set when any model in it was custom-priced). Absent on an attempt refused
+   * before dispatch.
+   */
+  price_basis?: PriceBasis;
+  /**
+   * Models whose tokens were billed but have no price (unknown model, no
+   * period for the day, or a modifier value the list does not price).
+   * `cost_usd` excludes them. Empty when everything was priced.
+   */
+  unpriced_models?: UnpricedModel[];
+  /**
+   * claude-cli only: Claude Code's own `total_cost_usd` for the call, kept as
+   * a check. It comes from Claude Code's price table, which has been stale
+   * (2026-08-24: Opus at 0.6x), so it is never the cost.
+   */
+  cli_reported_cost_usd?: number;
+  /**
+   * claude-cli only, when the worker's transcript was read: the dollars of
+   * `cost_usd` for the tokens that transcript explains (each model's logged
+   * tokens at that model's price). The rest of cost_usd is what the result
+   * billed that no transcript line logged: receipt-only side calls (a Haiku
+   * call) and unlogged tokens. collect-orchestrator-usage.mjs subtracts only
+   * this share of a worker its scan swept in, because the scan counts only the
+   * logged tokens; subtracting the whole cost took the unlogged dollars out of
+   * the true total (review finding M4).
+   */
+  transcript_logged_cost_usd?: number;
+  /**
+   * claude-cli only: where the 5-minute / 1-hour cache-write split came from.
+   * `transcript` = the worker session's own transcript explained every
+   * written token; `approximate` = some model's writes were not all explained
+   * by it: the one model whose four token counts equal the result's top-level
+   * `usage` takes that usage's `cache_creation` split, and any other model's
+   * unexplained writes are priced at the 5-minute rate (written into its
+   * `per_model[].assumed`); `no_cache_writes` = nothing to split.
+   */
+  ttl_split?: TtlSplit;
+  /** claude-cli only: the per-model ledger behind `cost_usd`. */
+  per_model?: WorkerModelCost[];
+}
+
+export type PriceBasis = "list" | "custom";
+
+export type TtlSplit = "transcript" | "approximate" | "no_cache_writes";
+
+export interface UnpricedModel {
+  /** The model name as the vendor reported it. */
+  model: string;
+  reason: string;
+}
+
+/** One model's share of a claude-cli worker call. */
+export interface WorkerModelCost {
+  /** The price-list id, or the reported name when it is not on the list. */
+  model: string;
+  /** Every name the result used for this model (e.g. `claude-opus-5[1m]`). */
+  reported_as: string[];
+  /** Disjoint buckets: `input_cache_write` is the 5-minute share, `input_cache_write_1h` the 1-hour share. */
+  tokens: { input: number; input_cached: number; input_cache_write: number; input_cache_write_1h: number; output: number };
+  /** null when unpriced. */
+  price_basis: PriceBasis | null;
+  /** null when unpriced. */
+  cost_usd: number | null;
+  /** The CLI's `modelUsage[*].costUSD` for these names, when it reported one. */
+  cli_cost_usd: number | null;
+  ttl_split: TtlSplit;
+  unpriced_reason?: string;
+  /**
+   * What the price had to assume, in words: cache writes that no worker
+   * transcript line explains are priced at the 5-minute rate, unless the
+   * result's top-level `usage` proves this model's split. Absent when nothing
+   * was assumed.
+   */
+  assumed?: string[];
+  /** Web search requests the result bills for this model (`modelUsage[*].webSearchRequests`). Absent when none. */
+  web_search_requests?: number;
+  /**
+   * Their fee at the list's per-search price, included in cost_usd. Null when
+   * the list has no per-search price for the model (the searches are then in
+   * `unpriced_models`). Absent when none.
+   */
+  web_search_cost_usd?: number | null;
 }
 
 export interface ModelPricing {
@@ -183,8 +317,25 @@ export interface ModelConfig {
   adapter: string;
   model_name: string;
   display_name?: string;
-  pricing: ModelPricing;
+  /**
+   * The policy's copy of the model's rates. Optional, and by default NOT what
+   * a dispatch is billed at: every adapter prices from the dated price list
+   * (src/prices.ts) via effectivePrice.ts, and a block that differs from the
+   * list by more than 0.5% is ignored with a warning. Under
+   * `pricing_override: true` it IS the price (labelled custom); otherwise it is
+   * documentation. The orchestrator's `--auth=estimated` estimates no longer
+   * read it (v0.7.3 Q3): load_policy returns each model's `effective_price`
+   * (effectivePrice.ts withEffectivePrices), orchestrator.md rule 6 prices from
+   * that, and so no model needs a block in either auth mode.
+   */
+  pricing?: ModelPricing;
+  /**
+   * Bill `pricing` instead of the price list, for this leaf's own model.
+   * Telemetry labels the dollars `price_basis: "custom"`. Requires a block.
+   */
+  pricing_override?: boolean;
   pricing_source?: string;
+  pricing_last_verified?: string;
   auth?: { env: string };
   endpoint?: string;
   reasoning?: ReasoningConfig;

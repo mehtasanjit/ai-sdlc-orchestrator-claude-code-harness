@@ -185,7 +185,9 @@ export function pricingNote(pinned, billed, region) {
     pinned?.input_cached === billed?.input_cached &&
     pinned?.output === billed?.output;
   if (same) {
-    return `billed at the policy's pinned rates (region '${region}' carries no surcharge)`;
+    // "pinned" = the rates in force for this leaf today (the price list, or the
+    // policy block under pricing_override); main() prints which one.
+    return `billed at the pinned rates (region '${region}' carries no surcharge)`;
   }
   return (
     `billed at the pinned rates plus Google's regional surcharge, because this leaf runs in ` +
@@ -260,9 +262,24 @@ async function main() {
   log(`  project     ${adapter.project}`);
   log(`  region      ${adapter.location}`);
   log(`  interpreter ${adapter.python}`);
-  log(`  rates       ${pricingNote(leaf.pricing, adapter.billedPricing, adapter.location)}`);
-  if (leaf.pricing_source) log(`  pinned from ${leaf.pricing_source}`);
-  if (leaf.pricing_last_verified) log(`  verified    ${leaf.pricing_last_verified}`);
+  // The delegation is billed at the leaf's effective price for today (the
+  // dated price list, or its policy block under pricing_override), with the
+  // regional surcharge. The policy block alone is no longer the price, and a
+  // leaf may have none. A leaf with no price is not probed: the probe spends
+  // real money, and a run would refuse the same dispatch.
+  const price = adapter.pricingOn();
+  if (price.unpriced) {
+    log(`  price       none for today: ${price.reason}`);
+    log("\n  ✗ Not delegating: this leaf has no price, so a run would refuse to dispatch to it too.\n");
+    return 1;
+  }
+  log(`  rates       ${pricingNote(price.rates, price.billed, adapter.location)}`);
+  log(
+    price.basis === "custom"
+      ? "  priced from the policy's pricing block (pricing_override: true, labelled custom)"
+      : `  priced from the price list, period ${price.period.from}..${price.period.to ?? "open"} ` +
+          `(${price.period.source_url}, verified ${price.period.verified})`
+  );
 
   const dirs = makeProbeDirs();
   log(`\n  workspace   ${dirs.workspace}  (empty, temporary)`);

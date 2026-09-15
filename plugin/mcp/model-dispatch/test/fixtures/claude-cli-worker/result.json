@@ -1,0 +1,48 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "{\"ok\":true}",
+  "duration_ms": 6323,
+  "duration_api_ms": 6936,
+  "num_turns": 2,
+  "stop_reason": "end_turn",
+  "session_id": "58591543-407d-4a7a-8a86-b29f035f1e7d",
+  "total_cost_usd": 0.18417050000000001,
+  "usage": {
+    "input_tokens": 34,
+    "cache_creation_input_tokens": 8837,
+    "cache_read_input_tokens": 28810,
+    "output_tokens": 154,
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 8837,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 928,
+      "outputTokens": 15,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 0,
+      "costUSD": 0.001003
+    },
+    "claude-opus-5[1m]": {
+      "inputTokens": 34,
+      "outputTokens": 154,
+      "cacheReadInputTokens": 28810,
+      "cacheCreationInputTokens": 8837,
+      "costUSD": 0.10679499999999999
+    },
+    "claude-opus-4-8": {
+      "inputTokens": 2,
+      "outputTokens": 4,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 12202,
+      "costUSD": 0.0763725
+    }
+  }
+}

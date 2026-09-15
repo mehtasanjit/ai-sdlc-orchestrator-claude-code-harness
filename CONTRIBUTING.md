@@ -4,7 +4,7 @@
 
 - **Bug fixes** in the setup wizard, report tool, or plugin code.
 - **Documentation improvements** — typos, unclear phrasing, additional troubleshooting entries.
-- **Additional policies** under `plugin/config/policies/`. Include a short comment header describing what the policy demonstrates and what keys it needs.
+- **Additional policies** under `plugin/config/policies/`. Include a short comment header describing what the policy demonstrates and what keys it needs. Give every model a `pricing:` block equal to its model's current period on the dated price list (`plugin/mcp/model-dispatch/src/prices.ts`), as documentation of the card: dispatches and the orchestrator's estimates use the list itself. A model the list does not carry needs a verified period there first. `npm test` fails otherwise.
 - **Portability fixes** for Windows/WSL, non-mac Linux distributions, or other environments.
 
 ## Discuss first

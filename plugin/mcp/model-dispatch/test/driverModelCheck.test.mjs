@@ -19,7 +19,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "..", "..", "..", "scripts", "driver-model-check.mjs");
@@ -169,10 +169,13 @@ test("the failure remediation covers the desktop app, not just a shell export", 
     assert.match(r.stderr, /export CLAUDE_CODE_SUBAGENT_MODEL=/, "the terminal route must still be given");
     assert.match(r.stderr, /~\/\.claude\/settings\.json/, "the desktop-app route must name the user file");
     assert.match(r.stderr, /login shell/, "and why an export cannot work there");
+    // Changed expectation (Fix F, v0.7.3): this used to require the blanket claim that
+    // "an env block in a project's .claude/settings.json is not applied". That is true of the
+    // desktop app and wrong for the terminal, so the claim is now scoped to the app.
     assert.match(
       r.stderr,
-      /project'?s? \.claude\/settings\.json is\s+not applied/,
-      "and must say the project settings file does not work, since that is the instinctive place to put it",
+      /Desktop app:[\s\S]*ignores the "env" block of\s+a project's \.claude\/settings\.json and\s+\.claude\/settings\.local\.json/,
+      "and must say the app ignores the project settings files, since that is the instinctive place to put it",
     );
   });
 });
@@ -196,6 +199,108 @@ test("a value stranded in the project settings file is diagnosed by name", () =>
     assert.match(r.stderr, /already declares CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8/);
     assert.match(r.stderr, /has not taken effect/);
     assert.match(r.stderr, /Move the entry there/);
+  });
+});
+
+/*
+ * T12 (Fix F, v0.7.3). Verified 2026-09-14 on Claude Code 2.1.270: the terminal
+ * CLI, headless and interactive, applies the `env` block of
+ * <project>/.claude/settings.local.json; the desktop app applies no project
+ * settings file's `env`, only ~/.claude/settings.json. The message used to say a
+ * project settings file never applies, which sent terminal users to the
+ * machine-wide user file for a per-project value, and the stranded-value note
+ * never looked at settings.local.json at all. The check's pass/fail logic is
+ * unchanged: only the text it prints and the files the note reads.
+ */
+const settingsFile = (root, name, value) => {
+  mkdirSync(join(root, ".claude"), { recursive: true });
+  writeFileSync(join(root, ".claude", name), JSON.stringify({ env: { CLAUDE_CODE_SUBAGENT_MODEL: value } }));
+  return join(root, ".claude", name);
+};
+/** The part of the failure text between two route labels. */
+const route = (stderr, from, to) => stderr.slice(stderr.indexOf(from), to ? stderr.indexOf(to) : undefined);
+
+test("T12: the terminal route offers an export or this project's .claude/settings.local.json; the desktop route is ~/.claude/settings.json alone", () => {
+  withPolicy(UNIFIED_POLICY, (root) => {
+    const r = run(["--project-root", root]);
+    assert.equal(r.code, 1);
+    const terminal = route(r.stderr, "Terminal:", "Desktop app:");
+    const desktop = route(r.stderr, "Desktop app:");
+    assert.match(terminal, /export CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8/);
+    assert.ok(terminal.includes(join(root, ".claude", "settings.local.json")), `the terminal route must name this project's settings.local.json by path:\n${terminal}`);
+    assert.match(terminal, /"CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-4-8"/, "with the exact entry to add");
+    assert.match(desktop, /~\/\.claude\/settings\.json — the only place the\s+app reads it/);
+    assert.doesNotMatch(desktop, /settings\.local\.json"? block|add .* to .*settings\.local\.json/, "the desktop route must never send the reader to a project file");
+    // The old blanket claim is gone: it is false for the terminal.
+    assert.doesNotMatch(r.stderr, /Claude Code does not apply an "env" block from a project settings file/);
+  });
+});
+
+test("T12: without --project-root the terminal route names <project>/.claude/settings.local.json", () => {
+  const r = run(["--policy", "opus-plus-flash"]);
+  assert.equal(r.code, 1);
+  assert.match(route(r.stderr, "Terminal:", "Desktop app:"), /<project>\/\.claude\/settings\.local\.json/);
+});
+
+test("T12: a value stranded in .claude/settings.local.json is diagnosed by name, with the terminal relaunch and the desktop route", () => {
+  withPolicy(UNIFIED_POLICY, (root) => {
+    const local = settingsFile(root, "settings.local.json", "claude-opus-4-8");
+    const r = run(["--project-root", root]);
+    assert.equal(r.code, 1, "the session does not see the value, so the check still fails");
+    assert.ok(r.stderr.includes(`NOTE: ${local} already declares CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8`), r.stderr);
+    assert.match(r.stderr, /has not taken effect in this session/);
+    assert.match(r.stderr, /The terminal CLI applies this file's "env" block when claude launches in this folder/);
+    assert.match(r.stderr, /The desktop app ignores it: from the app, move the entry to ~\/\.claude\/settings\.json/);
+  });
+});
+
+test("T12: both project settings files are read, and each one declaring a value is named", () => {
+  withPolicy(UNIFIED_POLICY, (root) => {
+    const shared = settingsFile(root, "settings.json", "claude-opus-5");
+    const local = settingsFile(root, "settings.local.json", "claude-opus-4-8");
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-sonnet-5" });
+    assert.equal(r.code, 1);
+    assert.ok(r.stderr.includes(`${local} already declares CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8`), r.stderr);
+    assert.ok(r.stderr.includes(`${shared} already declares CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5`), r.stderr);
+  });
+});
+
+test("T12: a project file declaring the very value the session sees is named as the source of the wrong model, not as stranded", () => {
+  withPolicy(UNIFIED_POLICY, (root) => {
+    const local = settingsFile(root, "settings.local.json", "claude-opus-5");
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5" });
+    assert.equal(r.code, 1);
+    assert.ok(r.stderr.includes(`NOTE: ${local} declares CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5, the value this session sees`), r.stderr);
+    assert.match(r.stderr, /change it to claude-opus-4-8 there/);
+    assert.doesNotMatch(r.stderr, /has not taken effect/);
+  });
+});
+
+test("T12: no logic change — the check reads the environment the session sees, never the settings files", () => {
+  withPolicy(UNIFIED_POLICY, (root) => {
+    settingsFile(root, "settings.local.json", "claude-opus-4-8");
+    assert.equal(run(["--project-root", root]).code, 1, "a matching file value alone does not pass");
+  });
+  withPolicy(UNIFIED_POLICY, (root) => {
+    settingsFile(root, "settings.local.json", "claude-opus-5");
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-4-8" });
+    assert.equal(r.code, 0, "a matching environment passes whatever a file says");
+    assert.doesNotMatch(r.stderr + r.stdout, /NOTE:/);
+  });
+});
+
+test("T12: projectSettingsDeclarations lists settings.local.json before settings.json, and skips unreadable or empty entries", async () => {
+  const { projectSettingsDeclarations, declaredInProjectSettings } = await import(pathToFileURL(SCRIPT).href);
+  withPolicy(UNIFIED_POLICY, (root) => {
+    assert.deepEqual(projectSettingsDeclarations(root), []);
+    settingsFile(root, "settings.json", "claude-opus-5");
+    writeFileSync(join(root, ".claude", "settings.local.json"), "{ not json");
+    assert.deepEqual(projectSettingsDeclarations(root), [{ path: join(root, ".claude", "settings.json"), file: "settings.json", value: "claude-opus-5" }]);
+    settingsFile(root, "settings.local.json", "claude-opus-4-8");
+    assert.deepEqual(projectSettingsDeclarations(root).map((d) => d.file), ["settings.local.json", "settings.json"]);
+    // Back-compat export: the first declared value, in Claude Code's precedence (local over shared).
+    assert.equal(declaredInProjectSettings(root), "claude-opus-4-8");
+    assert.deepEqual(projectSettingsDeclarations(undefined), []);
   });
 });
 

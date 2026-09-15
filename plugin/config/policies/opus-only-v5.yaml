@@ -4,6 +4,11 @@
 version: 1
 name: opus-only-v5
 
+# Pricing blocks mirror the dated price list (plugin/mcp/model-dispatch/src/prices.ts),
+# which bills every dispatch and the orchestrator's transcript; test/prices.test.mjs
+# fails when a block drifts from it. A block is billed only under pricing_override: true.
+# Estimated-mode telemetry reads load_policy's effective_price (the same list price),
+# not this block: a block without pricing_override: true is documentation.
 models:
   - id: opus
     adapter: builtin-anthropic
@@ -11,14 +16,12 @@ models:
     # Opus 5 list card: input 5.00 / cached 0.50 / output 25.00 per 1M; cache writes 1.25x (5m) or 2x (1h)
     # of input. Confirmed 2026-09-03 against Claude Code's own session receipts (two real runs,
     # reproduced to the cent; see tools/test/fixtures/receivables-ops).
-    # before shipping. Values below carried over from opus-only.yaml (Opus 4.7)
-    # as a conservative placeholder.
     pricing:
       input: 5.00          # USD per 1M tokens
       input_cached: 0.50
       output: 25.00
-    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
-    pricing_last_verified: 2026-08-19
+    pricing_source: https://platform.claude.com/docs/en/about-claude/pricing
+    pricing_last_verified: 2026-09-14
     auth:
       env: ANTHROPIC_API_KEY
     # Doubling loop clamps here; requests beyond this return 400.

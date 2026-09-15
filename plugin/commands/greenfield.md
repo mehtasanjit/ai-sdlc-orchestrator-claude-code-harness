@@ -205,10 +205,12 @@ The run records tokens and cost in one of two modes. Present the choice; do not 
   reports. Requires `ANTHROPIC_API_KEY`. Use this whenever the numbers will be shown to anyone.
 - **Estimated** — the judgment-phase tokens are estimated from character counts. No API key needed;
   a Claude Code subscription covers the run. The mechanical-phase numbers are still vendor-reported.
-  This mode also requires `CLAUDE_CODE_SUBAGENT_MODEL` to have been exported before `claude`
-  launched, set to the policy's driver model — the orchestrator's run-start check stops the run
-  otherwise and prints the exact export line, because the driver subagents execute whatever that
-  variable names while the policy only prices the work.
+  This mode also requires `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched,
+  to the policy's driver model: from a terminal, exported or in the `env` block of the project's
+  `.claude/settings.local.json`; from the desktop app, in the `env` block of
+  `~/.claude/settings.json` (the app ignores project settings files). The orchestrator's run-start
+  check stops the run otherwise and prints where to set it, because the driver subagents execute
+  whatever that variable names while the policy only prices the work.
 
 If `ANTHROPIC_API_KEY` is set, recommend vendor and say why: the numbers reconcile against the
 console. If it is absent, recommend estimated and say what is lost: the judgment-phase figures are

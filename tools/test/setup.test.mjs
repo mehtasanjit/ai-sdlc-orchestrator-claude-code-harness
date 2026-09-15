@@ -198,7 +198,8 @@ test("every credential the check accepts is one the server actually honours", ()
   // Comments are stripped first — a name that survives only in prose after its
   // handling was deleted would otherwise still pass.
   const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-  const source = ["geminiTransports.ts", "GeminiFlashAdapter.ts"]
+  // geminiEndpoint.ts holds the door precedence since the v0.7.3 review fix.
+  const source = ["geminiTransports.ts", "geminiEndpoint.ts", "GeminiFlashAdapter.ts"]
     .map((f) =>
       stripComments(
         readFileSync(join(ROOT, "plugin/mcp/model-dispatch/src/adapters", f), "utf8"),

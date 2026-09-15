@@ -1,0 +1,11 @@
+{
+  "pass": "side-call",
+  "policy_name": "side-call",
+  "started_at": "2026-09-14T11:19:00.046Z",
+  "ended_at": "2026-09-14T11:19:03.237Z",
+  "totals": {
+    "dispatched_cost_usd": 0,
+    "events": 0,
+    "models_used": []
+  }
+}

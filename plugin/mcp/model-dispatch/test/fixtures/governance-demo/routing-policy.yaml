@@ -1,0 +1,126 @@
+version: 4
+name: opus-plus-flash
+models:
+  - id: opus
+    adapter: builtin-anthropic
+    model_name: claude-opus-4-7
+    pricing:
+      input: 5
+      input_cached: 0.5
+      output: 25
+    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
+    pricing_last_verified: 2026-08-04
+    auth:
+      env: ANTHROPIC_API_KEY
+    max_output_tokens_absolute: 32000
+  - id: flash-completion
+    adapter: mcp:model-dispatch
+    model_name: gemini-3.5-flash
+    display_name: gemini-3.5-flash
+    pricing:
+      input: 1.5
+      input_cached: 0.15
+      output: 9
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
+    pricing_last_verified: 2026-08-04
+    auth:
+      env: GEMINI_API_KEY
+    max_output_tokens_absolute: 8192
+  - id: flash-lite
+    adapter: mcp:model-dispatch
+    model_name: gemini-3.5-flash-lite
+    display_name: gemini-3.5-flash-lite
+    pricing:
+      input: 0.5
+      input_cached: 0.05
+      output: 3
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
+    pricing_last_verified: 2026-08-04
+    auth:
+      env: GEMINI_API_KEY
+    max_output_tokens_absolute: 8192
+  - id: flash-agsdk-worker
+    adapter: antigravity-worker
+    model_name: gemini-3.5-flash
+    display_name: gemini-3.5-flash (Antigravity agent)
+    pricing:
+      input: 1.5
+      input_cached: 0.15
+      output: 9
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
+    pricing_last_verified: 2026-08-04
+    worker_timeout_sec: 540
+select:
+  gemini-flash:
+    default: flash-completion
+    options:
+      - flash-completion
+      - flash-agsdk-worker
+    reason: "How the mechanical tier reaches Gemini: one completion call (cheap, predictable) or an agent session with tools and a workspace (costlier per packet, does its own reading and editing)."
+rules:
+  - when:
+      phase: requirements_analysis
+    use: opus
+    reason: Judgment-heavy, low volume
+  - when:
+      phase: architecture_design
+    use: opus
+    reason: Foundational, decision-bearing
+  - when:
+      phase: plan_task_packets
+    use: opus
+    reason: Needs full context to slice work cleanly
+  - when:
+      phase: senior_code_review
+    use: opus
+    reason: Cross-file reasoning + judgment
+  - when:
+      phase: security_review
+    use: opus
+    reason: Risk-bearing, low volume
+  - when:
+      phase: discovery
+    use: opus
+    reason: "Judgment: understanding an unknown repo is high-stakes"
+  - when:
+      phase: change_plan
+    use: opus
+    reason: "Judgment: delta design for feature-extend / refactor / deps"
+  - when:
+      phase: codegen
+      task_type:
+        - controller_handler
+        - service_method
+        - dto
+        - module_wiring
+        - migration
+        - seed_data
+        - entity
+        - guard
+        - interceptor
+        - filter
+        - react_component
+        - react_page
+        - api_client
+        - frontend_util
+        - frontend_config
+        - frontend_html
+    use: flash-lite
+    reason: Schema-driven boilerplate; the cheapest tier is enough for shape-only work
+  - when:
+      phase: tests
+    use: flash-completion
+    reason: tests deserve the stronger Flash
+  - when:
+      phase: debug
+      retry_count:
+        gte: 2
+    use: opus
+    reason: "Escalation: 2 mechanical-tier attempts failed"
+  - when:
+      phase: debug
+    use: gemini-flash
+    reason: Most debugs have clear cause
+  - default: opus
+    reason: Unrecognized task — fail safe to premium
+hard_cost_cap_usd: 50

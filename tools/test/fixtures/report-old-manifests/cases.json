@@ -1,0 +1,33 @@
+[
+  {
+    "name": "dispatched-only",
+    "manifest": "../../receivables-ops/pass1/manifest.json",
+    "telemetry": [
+      "../../receivables-ops/pass1/telemetry.jsonl"
+    ]
+  },
+  {
+    "name": "no-receipt-v072",
+    "manifest": "manifest.json",
+    "telemetry": [
+      "../../receivables-ops/pass1/telemetry.jsonl",
+      "orchestrator-event.jsonl"
+    ]
+  },
+  {
+    "name": "receipt-agrees-v072",
+    "manifest": "manifest.json",
+    "telemetry": [
+      "../../receivables-ops/pass3/telemetry.jsonl",
+      "orchestrator-event.jsonl"
+    ]
+  },
+  {
+    "name": "telemetry-only-v072",
+    "manifest": "../../receivables-ops/pass1/manifest.json",
+    "telemetry": [
+      "../../receivables-ops/pass1/telemetry.jsonl",
+      "../no-receipt-v072/orchestrator-event.jsonl"
+    ]
+  }
+]

@@ -303,11 +303,16 @@ test("the registry builds the worker adapter and prices it where it will run", (
   // Any file that exists satisfies the interpreter check; this test never runs it.
   process.env[WORKER_PYTHON_ENV] = process.execPath;
   try {
+    // pricing_override keeps this card (not the list's 1.5 / 0.15 / 9) as the
+    // price, so the assertions stay about where the surcharge is resolved.
+    // Without it the adapter bills the list and warns about the card, which
+    // geminiAdapterPricing.test.mjs pins.
     const base = {
       id: "flash-agsdk-worker",
       adapter: "antigravity-worker",
       model_name: "gemini-3.5-flash",
       pricing: { input: 0.3, input_cached: 0.075, output: 2.5 },
+      pricing_override: true,
     };
 
     const global = createAdapter(base);

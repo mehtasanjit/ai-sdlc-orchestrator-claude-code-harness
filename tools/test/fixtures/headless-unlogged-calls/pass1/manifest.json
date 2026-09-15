@@ -1,0 +1,15 @@
+{
+  "pass_id": "pass1",
+  "policy": "my-policy",
+  "auth_mode": "estimated",
+  "totals": {
+    "events": 53,
+    "input_tokens": 64442,
+    "input_tokens_cached": 0,
+    "output_tokens": 109689,
+    "cost_usd": 1.58159,
+    "events_success": 46,
+    "events_failed": 7,
+    "hard_cost_cap_usd": 50
+  }
+}

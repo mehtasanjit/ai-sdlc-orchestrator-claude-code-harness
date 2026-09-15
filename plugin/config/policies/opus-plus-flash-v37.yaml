@@ -6,6 +6,11 @@
 version: 1
 name: opus-plus-flash-v37
 
+# Pricing blocks mirror the dated price list (plugin/mcp/model-dispatch/src/prices.ts),
+# which bills every dispatch and the orchestrator's transcript; test/prices.test.mjs
+# fails when a block drifts from it. A block is billed only under pricing_override: true.
+# Estimated-mode telemetry reads load_policy's effective_price (the same list price),
+# not this block: a block without pricing_override: true is documentation.
 models:
   - id: opus
     adapter: builtin-anthropic
@@ -13,10 +18,9 @@ models:
     # Opus 5 list card: input 5.00 / cached 0.50 / output 25.00 per 1M; cache writes 1.25x (5m) or 2x (1h)
     # of input. Confirmed 2026-09-03 against Claude Code's own session receipts (two real runs,
     # reproduced to the cent; see tools/test/fixtures/receivables-ops).
-    # before shipping. Values carried over from opus-only.yaml as placeholder.
     pricing: { input: 5.00, input_cached: 0.50, output: 25.00 }
-    pricing_source: https://platform.claude.com/docs/en/docs/about-claude/pricing
-    pricing_last_verified: 2026-08-19
+    pricing_source: https://platform.claude.com/docs/en/about-claude/pricing
+    pricing_last_verified: 2026-09-14
     auth: { env: ANTHROPIC_API_KEY }
     max_output_tokens_absolute: 32000
 
@@ -28,13 +32,14 @@ models:
     # Flat global/AI-Studio rates. Vertex adds +10% on every token class for
     # REGIONAL endpoints (Gemini 3+, effective 2026-07-01). Do not hand-edit a
     # x1.10 in — geminiTransports.ts::applyVertexSurcharge does it at dispatch.
-    # Gemini 3.7 Flash introductory rate card, in force 13 Aug 2026 – 31 Dec 2026 (reverts to
-    # $1.50 / $7.50 on 1 Jan 2027). Same pin as the SWE-bench Pro v2 harness and the
-    # orchestrator repo's receivables policies; confirmed 2026-09-03.
-    # from gemini-3.5-flash as a starting placeholder.
+    # Gemini 3.7 Flash introductory card, in force 13 Aug 2026 – 31 Dec 2026. From 1 Jan 2027
+    # the price list bills 1.50 / 0.15 / 7.50, published on both Google pricing pages (verified
+    # 2026-09-14); on that day this card must change to match, and test/prices.test.mjs fails
+    # until it does. A 2027 run is not halted: it bills the list's card, and this card draws a
+    # price warning until it is changed.
     pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-19
+    pricing_last_verified: 2026-09-14
     # AI Studio door. Unset → adapter falls through to Vertex ADC, same rates.
     auth: { env: GEMINI_API_KEY }
     max_output_tokens_absolute: 8192
@@ -47,12 +52,14 @@ models:
     adapter: antigravity-worker
     model_name: gemini-3.7-flash
     display_name: gemini-3.7-flash (Antigravity agent)
-    # Gemini 3.7 Flash introductory rate card, in force 13 Aug 2026 – 31 Dec 2026 (reverts to
-    # $1.50 / $7.50 on 1 Jan 2027). Same pin as the SWE-bench Pro v2 harness and the
-    # orchestrator repo's receivables policies; confirmed 2026-09-03.
+    # Gemini 3.7 Flash introductory card, in force 13 Aug 2026 – 31 Dec 2026. From 1 Jan 2027
+    # the price list bills 1.50 / 0.15 / 7.50, published on both Google pricing pages (verified
+    # 2026-09-14); on that day this card must change to match, and test/prices.test.mjs fails
+    # until it does. A 2027 run is not halted: it bills the list's card, and this card draws a
+    # price warning until it is changed.
     pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }
     pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio + Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing (regional +10%)
-    pricing_last_verified: 2026-08-19
+    pricing_last_verified: 2026-09-14
     # `region:` deliberately unpinned so this leaf follows GOOGLE_CLOUD_LOCATION
     # and hits the flat global endpoint by default, same as flash-completion.
     # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so

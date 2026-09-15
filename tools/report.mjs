@@ -172,16 +172,78 @@ const trueTotalLabel = inSessionSubtracted != null ? "True total (dispatched −
 const receiptCost = manifest.orchestrator_overhead?.receipt_cost_usd ?? null;
 const costSource = manifest.orchestrator_overhead?.cost_source ?? null;
 // The collector's cost_source vocabulary, matched by prefix:
-//   "receipt (transcript agrees…)"   every token bucket in the window equals the receipt's: verified, the receipt's dollars booked
-//   "receipt-only"                   no transcript message fell in the window; the receipt's dollars stand alone
-//   "transcript (receipt covers only the last invocation…)"   a --resume continuation: only the last leg was verified
+//   "receipt (Anthropic token counts…)"  no transcript bucket above the receipt, and the window provably its invocation (or
+//                                    every bucket equal): verified, the receipt's token counts booked at the price list
+//   "receipt (transcript agrees…)"   collected before v0.7.3: every bucket equal, Claude Code's own dollars booked
+//   "receipt-only"                   no transcript message fell in the window; the receipt's token counts at the list stand
+//                                    alone (before v0.7.3, its dollars)
+//   "receipt for the last invocation (Anthropic token counts…)"   a --resume continuation (v0.7.3 Q1): the last leg's receipt
+//                                    booked at the price list, the earlier legs transcript-priced: partly verified
+//   "transcript (receipt covers only the last invocation…)"   the same case collected before Q1: only the last leg was
+//                                    checked, and the whole window was transcript-priced
 //   "transcript (receipt pending…)"  the headless capture has no result line yet
 //   "transcript (no receipt…)"       nothing to verify against
 //   "transcript (receipt-verified…)" / "transcript"   written by the collector BEFORE the exact rule (a 5% tolerance,
 //                                    receipt as a floor): say so, and ask for a re-collect rather than call it verified
 const receiptUSD = receiptCost != null ? `$${receiptCost.toFixed(4)}` : "n/a";
+
+// ─── v0.7.3 orchestrator fields (Fix E) ───────────────────────────────
+// Beside the figures above, the v0.7.3 collector writes: per_model (the
+// transcript's cost per model and role, one entry per price), unlogged_billed
+// (what a booked receipt billed that no transcript message recorded),
+// attribution_complete with missing_helper_ids / unreferenced_helper_files,
+// unpriced, price_basis "custom" on a per_model entry priced by a policy's
+// pricing_override card, receipt_cli_usd (Claude Code's own figure, a check
+// only) and price_list_verified. Before, the report printed one orchestrator
+// figure: a Fable 5.1 session with Opus 5 helpers read as one number, an
+// interactive transcript figure read as the whole bill although Claude Code
+// bills calls it never logs, and a booked receipt printed Claude Code's own
+// dollars as if they were booked. Every line below keys on a field no earlier
+// collector wrote, so an older manifest renders exactly as before
+// (tools/test/report-old-manifests.test.mjs). The manifest block is read
+// first; the collector's orchestrator event carries the same fields and stands
+// in when the manifest has not been patched.
+const ohFields = manifest.orchestrator_overhead ?? orchEvents.at(-1) ?? null;
+const perModel = Array.isArray(ohFields?.per_model) ? ohFields.per_model : null;
+const unlogged = ohFields?.unlogged_billed != null && typeof ohFields.unlogged_billed === "object" ? ohFields.unlogged_billed : null;
+// Only a booked receipt writes unlogged_billed: the figure is the receipt's
+// token counts at the price list, not a transcript measurement, and the labels say so.
+const receiptBooked = unlogged != null;
+// Q1: a receipt booked for a resumed window's last invocation covers that
+// invocation only; the earlier invocations in the figure are still transcript-measured.
+const partlyBooked = typeof costSource === "string" && costSource.startsWith("receipt for the last invocation");
+const overheadHow = partlyBooked
+  ? "last invocation's receipt tokens at the price list, earlier invocations transcript-measured"
+  : receiptBooked ? "receipt tokens at the price list" : "transcript-measured";
+
+// Claude Code's own figure beside a v0.7.3 booked receipt: a check, never the
+// booked figure. Its distance from the booked figure is stated past 0.5%, the
+// collector's own note threshold (a stale Claude Code price table shows here).
+const cliCheck = () => {
+  const cli = ohFields?.receipt_cli_usd ?? receiptCost;
+  if (cli == null) return "";
+  // v0.7.3 review fix: Claude Code's figure bills only the booked part, so it is
+  // measured against that part's list figure (booked_cost_usd). On a resumed
+  // run cost_usd also holds the earlier, transcript-priced invocations, and a
+  // run that matched to the cent printed "14.43% below the booked figure".
+  // A manifest from before the field falls back to cost_usd, as it rendered then.
+  const booked = ohFields?.booked_cost_usd ?? ohFields?.cost_usd;
+  const pct = booked ? ((cli - booked) / booked) * 100 : 0;
+  const drift = Math.abs(pct) > 0.5 ? ` (${Math.abs(pct).toFixed(2)}% ${pct > 0 ? "above" : "below"} the booked figure)` : "";
+  return `Claude Code's own figure, $${cli.toFixed(4)}, is a check and never booked${drift}`;
+};
+
 const verifiedLine = costSource == null
   ? null
+  // v0.7.3 labels first: each also starts with a pre-v0.7.3 prefix below.
+  // Q1: a resumed window whose receipt was booked for its last invocation only.
+  // It starts with "receipt", so without this branch it would read as fully verified.
+  : costSource.startsWith("receipt for the last invocation")
+    ? `PARTLY VERIFIED — ${costSource}; the receipt's token counts are booked for the last invocation only, the earlier ones are transcript-priced${cliCheck() ? `; ${cliCheck()}` : ""}`
+  : costSource.startsWith("receipt-only (Anthropic token counts")
+    ? `Booked from the receipt's token counts at the price list (${costSource}); no transcript message fell inside the window to cross-check it${cliCheck() ? `, and ${cliCheck()}` : ""}`
+  : costSource.startsWith("receipt (Anthropic token counts")
+    ? `Verified against Claude Code's own receipt (${costSource})${cliCheck() ? `; ${cliCheck()}` : ""}`
   : costSource.startsWith("receipt-only")
     ? `Booked from Claude Code's own receipt (${receiptUSD}); no transcript message fell inside the window to cross-check it`
   : costSource.startsWith("receipt")
@@ -235,8 +297,84 @@ const scopeLabel = hasOverhead
   ? "dispatched work + orchestrator overhead"
   : "dispatched work only — excludes orchestrator overhead";
 const scopeHint = hasOverhead
-  ? `the run's own loop (${fmtUSD(orchCost)}, transcript-measured) is a separate line in Costs, never blended into dispatched totals`
+  ? `the run's own loop (${fmtUSD(orchCost)}, ${overheadHow}) is a separate line in Costs, never blended into dispatched totals`
   : "the orchestrator's own loop never passes through the MCP server; measure and add it with the collector (see Costs)";
+
+// The v0.7.3 orchestrator lines, printed under the true total beside the
+// verification and window lines (without their trailing period). Each is keyed
+// on a field only the v0.7.3 collector writes; see "v0.7.3 orchestrator fields".
+const roleName = (role) => (role === "helper" ? "helpers" : "session");
+const fmtCount = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+const tokenTotal = (tokens) => Object.values(tokens ?? {}).reduce((s, n) => s + (Number(n) || 0), 0);
+// One figure per role and model: per_model has one entry per PRICE, so a model
+// that crossed a price period or ran partly in fast mode has several entries.
+// Session before helpers, then the larger figure first.
+const byRoleModel = (entries) => {
+  const sums = new Map();
+  for (const e of entries) {
+    // JSON key: a role or model name can never collide across the pair.
+    const key = JSON.stringify([e.role, e.model]);
+    const s = sums.get(key) ?? { role: e.role, model: e.model, cost: 0 };
+    s.cost += e.cost_usd ?? 0;
+    sums.set(key, s);
+  }
+  const rank = (role) => (role === "session" ? 0 : role === "helper" ? 1 : 2);
+  return [...sums.values()].sort((a, b) => rank(a.role) - rank(b.role) || b.cost - a.cost || a.model.localeCompare(b.model));
+};
+const orchLines = [];
+if (perModel && perModel.length > 0) {
+  // Which model the session and its helpers ran on, and what each cost. For a
+  // booked receipt these are the logged messages; the unlogged rest is the next line.
+  orchLines.push(
+    `By model: ${byRoleModel(perModel).map((s) => `${roleName(s.role)} (${s.model}): ${fmtUSD(s.cost)}`).join(" · ")}` +
+      (ohFields.price_list_verified ? ` (price list verified ${ohFields.price_list_verified})` : ""),
+  );
+}
+if (unlogged) {
+  // Headless: the receipt billed these tokens and no transcript message recorded them
+  // (calls Claude Code never logs, or a helper transcript that was not read).
+  const gap = (unlogged.per_model ?? []).map((g) => `${g.model}${g.receipt_only ? " (receipt only)" : ""} ${fmtUSD(g.cost_usd ?? 0)}`);
+  orchLines.push(
+    `Of the booked receipt, billed but not logged: ${fmtUSD(unlogged.cost_usd ?? 0)} (${Number(unlogged.pct_of_booked ?? 0).toFixed(2)}%)` +
+      (gap.length ? ` — ${gap.join(" · ")}` : ""),
+  );
+} else if (perModel) {
+  // Interactive (or any figure not booked from a receipt): the transcript is all
+  // there is, and it misses what Claude Code bills without logging, measured at
+  // 2.3% (Sep 10 2026 headless run) and 22% (another measured run).
+  orchLines.push("No receipt booked, so this is a floor: excludes calls Claude Code bills but does not log (2.3%–22% on measured runs)");
+}
+const customEntries = (perModel ?? []).filter((e) => e.price_basis === "custom");
+if (customEntries.length > 0) {
+  orchLines.push(
+    `Custom price, from the policy's pricing_override card and not the price list: ` +
+      byRoleModel(customEntries).map((s) => `${roleName(s.role)} (${s.model}) ${fmtUSD(s.cost)}`).join(" · "),
+  );
+}
+const unpricedParts = [
+  ...(Array.isArray(ohFields?.unpriced) ? ohFields.unpriced : []).map(
+    (u) => `${roleName(u.role)} (${u.model}) ${fmtCount(tokenTotal(u.tokens))} tokens${u.messages != null ? ` on ${u.messages} message(s)` : ""}, ${u.reason}`,
+  ),
+  ...(Array.isArray(unlogged?.unpriced) ? unlogged.unpriced : []).map(
+    (u) => `billed but not logged (${u.model}) ${fmtCount(tokenTotal(u.tokens))} tokens, ${u.reason}`,
+  ),
+];
+if (unpricedParts.length > 0) orchLines.push(`Unpriced, so in no figure above: ${unpricedParts.join(" · ")}`);
+if (ohFields?.attribution_complete === false) {
+  // What a missing or unnamed helper file does to the figures depends on whether a receipt was booked.
+  const missing = ohFields.missing_helper_ids ?? [];
+  const unreferenced = ohFields.unreferenced_helper_files ?? [];
+  const parts = [];
+  if (missing.length) parts.push(`helper(s) ${missing.join(", ")} named by an Agent/Task result have no transcript file`);
+  if (unreferenced.length) parts.push(`${unreferenced.length} helper file(s) named by no Agent/Task result (${unreferenced.join(", ")})`);
+  if (!parts.length) parts.push("a helper transcript and the Agent/Task results that name helpers do not match");
+  const consequence = !missing.length
+    ? "their tokens are counted, only the helper call they came from is unknown"
+    : receiptBooked
+      ? "the booked total is unaffected, but their tokens sit in billed but not logged instead of By model"
+      : "their tokens are in no figure above — copy the session's whole subagents/ directory and re-run the collector";
+  orchLines.push(`Attribution incomplete: ${[...parts, consequence].join("; ")}`);
+}
 
 if (asMarkdown) {
   console.log(`# ${header}\n`);
@@ -507,14 +645,19 @@ if (asMarkdown) {
   }
   if (hasOverhead) {
     console.log(`| ${totalLabel} — dispatched work only | ${fmtUSD(sessionCost)} |`);
-    console.log(`| Orchestrator overhead (transcript-measured) | ${fmtUSD(orchCost)} |`);
+    console.log(`| Orchestrator overhead (${overheadHow}) | ${fmtUSD(orchCost)} |`);
     if (inSessionSubtracted != null && inSessionSubtracted > 0) {
       console.log(`| In-session dispatch, subtracted once | −${fmtUSD(inSessionSubtracted)} |`);
     }
     console.log(`| **${trueTotalLabel}** | **${fmtUSD(trueTotal)}** |\n`);
     if (verifiedLine) console.log(`_${verifiedLine}._\n`);
     if (windowLine) console.log(`_${windowLine}._\n`);
-    console.log(`_${totalNote}. The overhead line is the run's own loop, reconstructed from session transcripts by collect-orchestrator-usage.mjs; only the true total compares architectures fairly._\n`);
+    for (const l of orchLines) console.log(`_${l}._\n`);
+    // A booked receipt (v0.7.3) is the receipt's token counts, not a transcript reconstruction.
+    const overheadFootnote = receiptBooked
+      ? "The overhead line is the run's own loop: Claude Code's receipt token counts, checked against the session transcripts and priced at the price list by collect-orchestrator-usage.mjs; only the true total compares architectures fairly."
+      : "The overhead line is the run's own loop, reconstructed from session transcripts by collect-orchestrator-usage.mjs; only the true total compares architectures fairly.";
+    console.log(`_${totalNote}. ${overheadFootnote}_\n`);
     if (inSessionSubtracted == null && (runMode === "estimated" || runMode === "mixed")) {
       console.log(`_Estimator overlap: this run's estimated direct-tier events describe in-session work the transcript-measured overhead also contains, so the true total is conservative (double-counts up to ${fmtUSD(estimatedCost)})._\n`);
     }
@@ -534,7 +677,7 @@ if (asMarkdown) {
   console.log(`  ${"─".repeat(24 + 6 + 7 + 22 + 11)}`);
   if (hasOverhead) {
     console.log(`  ${`${totalLabel} — dispatched work only`.padEnd(59)}${fmtUSD(sessionCost).padStart(11)}`);
-    console.log(`  ${"Orchestrator overhead (transcript-measured)".padEnd(59)}${fmtUSD(orchCost).padStart(11)}`);
+    console.log(`  ${`Orchestrator overhead (${overheadHow})`.padEnd(59)}${fmtUSD(orchCost).padStart(11)}`);
     if (inSessionSubtracted != null && inSessionSubtracted > 0) {
       console.log(`  ${"In-session dispatch, subtracted once".padEnd(59)}${("−" + fmtUSD(inSessionSubtracted)).padStart(11)}`);
     }
@@ -542,10 +685,19 @@ if (asMarkdown) {
     console.log(`  ${trueTotalLabel.padEnd(59)}${fmtUSD(trueTotal).padStart(11)}`);
     if (verifiedLine) console.log(`    ${verifiedLine}.`);
     if (windowLine) console.log(`    ${windowLine}.`);
+    for (const l of orchLines) console.log(`    ${l}.`);
     console.log(`  ${modeHint === totalNote ? "" : "  " + totalNote}`);
-    console.log(`    The overhead line is the run's own loop, reconstructed from session`);
-    console.log(`    transcripts by collect-orchestrator-usage.mjs; only the true total`);
-    console.log(`    compares architectures fairly.`);
+    if (receiptBooked) {
+      // A booked receipt (v0.7.3) is the receipt's token counts, not a transcript reconstruction.
+      console.log(`    The overhead line is the run's own loop: Claude Code's receipt token`);
+      console.log(`    counts, checked against the session transcripts and priced at the price`);
+      console.log(`    list by collect-orchestrator-usage.mjs; only the true total compares`);
+      console.log(`    architectures fairly.`);
+    } else {
+      console.log(`    The overhead line is the run's own loop, reconstructed from session`);
+      console.log(`    transcripts by collect-orchestrator-usage.mjs; only the true total`);
+      console.log(`    compares architectures fairly.`);
+    }
     if (runMode === "estimated" || runMode === "mixed") {
       console.log(`    Estimator overlap: the estimated direct-tier events describe in-session`);
       console.log(`    work the transcript-measured overhead also contains, so the true total`);
@@ -649,7 +801,13 @@ const nextIterations = [
    "Why: doubling from too-low an initial burns extra output tokens on the retries before converging; a moderate raise of the initial catches large files first-shot.",
    "Pitfall: raising the initial across the board pays extra ceiling on every packet, most of which don't need it."],
   ["Cross-check the report's total against the vendor dashboard for the run's time window.",
-   "Why: the only end-to-end integrity check for vendor-authoritative mode; a material divergence means either a telemetry gap or a pricing-YAML drift.",
+   // From v0.7.3 a dispatch bills the dated price list (or a pricing_override
+   // card) and stamps price_basis, so a divergence can no longer be YAML drift.
+   // Runs without price_basis billed the policy YAML; they keep the sentence
+   // that was true for them, byte for byte (report-old-manifests.test.mjs).
+   events.some((e) => e.price_basis != null)
+     ? "Why: the only end-to-end integrity check for vendor-authoritative mode; a material divergence means a telemetry gap, a stale period on the dated price list (plugin/mcp/model-dispatch/src/prices.ts), or a policy's pricing_override card."
+     : "Why: the only end-to-end integrity check for vendor-authoritative mode; a material divergence means either a telemetry gap or a pricing-YAML drift.",
    "Pitfall: dashboards aggregate by API key, so mixing keys or running other work in the window contaminates the comparison."],
 ];
 if (asMarkdown) {
@@ -706,15 +864,25 @@ for (const dir of ["prisma", "test"]) {
 }
 
 // 4. Claude Code session/subagent transcripts under
-// ~/.claude/projects/<project-hash>/. Hash = absolute project path with
-// '/' AND whitespace replaced by '-' (both — missing whitespace loses
-// space-containing paths).
+// <claude root>/projects/<project-dir>/. The claude root is $CLAUDE_CONFIG_DIR
+// when it is set and non-empty, else ~/.claude: where Claude Code writes, and the
+// root transcriptsDirFor in plugin/scripts/collect-orchestrator-usage.mjs and the
+// claude-cli worker ledger (claudeProjectsDir) read. Looking only under
+// ~/.claude listed no transcript for a run launched with CLAUDE_CONFIG_DIR.
+// Claude Code names the project directory after the absolute project path with
+// EVERY character that is not a letter or digit replaced by '-'
+// (`/a/my_app.v0.6.0` -> `-a-my-app-v0-6-0`), as docs/methodology.md states.
+// This used to replace only '/' and whitespace, so for a project path holding a
+// dot or an underscore it looked in a directory that never exists
+// (tools/test/report-transcript-dir.test.mjs pins both rules).
 try {
   // Project root is four levels up from passDir
   // (examples/<study>/passes/<run-id>/ → repo root)
   const projectRoot = dirname(dirname(dirname(dirname(passDir))));
-  const projectHash = projectRoot.replace(/[\/\s]/g, "-");
-  const claudeProjectDir = join(homedir(), ".claude", "projects", projectHash);
+  const projectHash = resolve(projectRoot).replace(/[^A-Za-z0-9]/g, "-");
+  // `||`, not `??`: an empty CLAUDE_CONFIG_DIR counts as unset, as the collector and the ledger treat it.
+  const claudeRoot = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+  const claudeProjectDir = join(claudeRoot, "projects", projectHash);
   if (existsSync(claudeProjectDir)) {
     const startedAt = Date.parse(manifest.started_at ?? "") || 0;
     const endedAt   = Date.parse(manifest.ended_at   ?? "") || Date.now();

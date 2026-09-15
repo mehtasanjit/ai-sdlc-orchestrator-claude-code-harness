@@ -46,9 +46,11 @@ what Flash is good at (pattern-matching, in-context generation, filling schema-d
 templates). Judgment work (understanding the repo, decomposing into packets, reviewing the
 output) stays on premium because that's where quality matters most.
 
-Every dispatch's actual cost lands in `.sdlc/runs/<id>/telemetry.jsonl`. Numbers come from the
-`pricing` block in your active policy YAML — never hardcoded, never estimated except when the
-telemetry mode is explicitly `estimated`.
+Every dispatch's actual cost lands in `.sdlc/runs/<id>/telemetry.jsonl`. Rates come from the dated
+price list (`plugin/mcp/model-dispatch/src/prices.ts`), or from a model's `pricing` block only under
+`pricing_override: true`. The orchestrator's estimates read that same price from `load_policy`'s
+`effective_price` — never hardcoded, and tokens are never estimated except when the telemetry mode
+is explicitly `estimated`.
 
 ## Escalation
 

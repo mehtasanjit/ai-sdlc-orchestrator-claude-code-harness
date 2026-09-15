@@ -53,13 +53,16 @@ const RETIRED_PATTERNS = [
   { name: "plugin_sdlc_", pattern: /plugin_sdlc_/ },
   { name: "run-ai-sdlc", pattern: /run-ai-sdlc/ },
   {
-    // Bare gemini-flash-server used as a path or server id. The two MMO-D8
+    // Bare gemini-flash-server used as a path or server id. The MMO-D8
     // compat-shim call sites are the one legitimate exception.
     name: "gemini-flash-server",
     pattern: /gemini-flash-server/,
     exceptions: [
       "plugin/mcp/model-dispatch/src/adapters/index.ts",
       "plugin/mcp/model-dispatch/src/server.ts",
+      // v0.7.3 review fix: the what-if replay's endpoint rule must recognise the
+      // alias the adapter registry still accepts, as server.ts does.
+      "plugin/mcp/model-dispatch/src/adapters/geminiEndpoint.ts",
       "docs/architecture.md", // documents the MMO-D8 compat shim by name
       // Pins that the compat shim still validates; must name the alias to test it.
       "plugin/mcp/model-dispatch/test/policyResolution.test.mjs",
@@ -110,6 +113,22 @@ test("both manifests agree on the plugin name and version", () => {
   assert.ok(entry, `marketplace.json has no entry named '${plugin.name}'`);
   assert.equal(plugin.name, "mmo", "the plugin's canonical name is mmo (MMO-D1)");
   assert.equal(entry.version, plugin.version, "marketplace and plugin manifest disagree on the version");
+});
+
+// The README badge and the repo guide said 0.6.0 through the whole 0.7.x line
+// because nothing tied them to the manifest. A reader installing from the
+// README should see the version the marketplace serves, and methodology.md's
+// version notes should say what that version changed about the numbers.
+test("the README badge, the repo guide and the methodology version notes name the plugin's version", () => {
+  const { version } = JSON.parse(readFileSync(resolve(ROOT, "plugin/.claude-plugin/plugin.json"), "utf8"));
+  const readme = readFileSync(resolve(ROOT, "README.md"), "utf8");
+  const badge = readme.match(/img\.shields\.io\/badge\/version-([0-9.]+)-/);
+  assert.ok(badge, "README.md has no version badge");
+  assert.equal(badge[1], version, "README.md's version badge disagrees with plugin.json");
+  const guide = readFileSync(resolve(ROOT, "docs/repo-guide.md"), "utf8");
+  assert.match(guide, new RegExp(`\\bv${version.replace(/\./g, "\\.")}\\b`), "docs/repo-guide.md does not name the plugin's version");
+  const methodology = readFileSync(resolve(ROOT, "docs/methodology.md"), "utf8");
+  assert.match(methodology, new RegExp(`^### v${version.replace(/\./g, "\\.")}\\b`, "m"), "docs/methodology.md has no version notes for this version");
 });
 
 test("the three moved paths exist under their new names, and not the old ones", () => {

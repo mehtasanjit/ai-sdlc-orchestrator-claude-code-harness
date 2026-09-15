@@ -1,0 +1,11 @@
+{
+  "pass": "fable-greenfield",
+  "policy_name": "opus-plus-flash",
+  "started_at": "2026-09-08T11:47:37.842Z",
+  "ended_at": "2026-09-08T12:26:10.606Z",
+  "totals": {
+    "dispatched_cost_usd": 0,
+    "events": 0,
+    "models_used": []
+  }
+}

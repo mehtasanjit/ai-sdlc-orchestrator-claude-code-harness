@@ -11,89 +11,54 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 import { GoogleGenAI } from "@google/genai";
 import { log } from "../log.js";
+import {
+  defaultAdcPath,
+  resolveGcpLocation,
+  resolveGeminiBackend,
+  type BackendChoice,
+  type BackendSelectionInput,
+  type GeminiBackend,
+} from "./geminiEndpoint.js";
 
-// ─── backend selection (pure; unit-tested) ────────────────────────────
+// Changed (v0.7.3 review fix): the pure endpoint rules (door precedence, the
+// Vertex location, the regional surcharge) moved to geminiEndpoint.ts, which
+// loads no SDK, so the what-if replay in routing.ts bills by the same rules
+// without pulling @google/genai into the collector and the driver-model check.
+// Re-exported here so every existing import keeps working.
+export {
+  VERTEX_NONGLOBAL_EFFECTIVE,
+  VERTEX_NONGLOBAL_SURCHARGE,
+  applyVertexSurcharge,
+  defaultAdcPath,
+  geminiDispatchEndpoint,
+  isVertexNonGlobal,
+  resolveGcpLocation,
+  resolveGeminiBackend,
+  vertexSurchargeApplies,
+  vertexSurchargeFactor,
+  workerVertexLocation,
+} from "./geminiEndpoint.js";
+export type { BackendChoice, BackendSelectionInput, GeminiBackend } from "./geminiEndpoint.js";
 
-export type GeminiBackend = "api-key" | "vertex-adc";
-
-export interface BackendSelectionInput {
-  /** process.env (or a fixture in tests). */
-  env: Record<string, string | undefined>;
-  /** The env var the policy names for the API key (auth.env, default GEMINI_API_KEY). */
-  keyEnvName: string;
-  /** Whether a default gcloud ADC file exists on this machine. */
-  adcFileExists: boolean;
-}
-
-export interface BackendChoice {
-  backend: GeminiBackend;
-  /** Human-readable trail for logs and error messages. */
-  reason: string;
-}
+// ─── backend selection ────────────────────────────────────────────────
 
 /**
- * Precedence:
- *   1. GEMINI_BACKEND=vertex|api-key — explicit override.
- *   2. Policy's API-key env var set → api-key. A key is a deliberate local
- *      decision; ADC is often ambient machine state.
- *   3. Any Vertex signal (GOOGLE_APPLICATION_CREDENTIALS, ADC file, or
- *      GOOGLE_CLOUD_PROJECT) → vertex-adc.
- *   4. Nothing → throw, naming both doors.
+ * The door for a real Gemini dispatch: resolveGeminiBackend's precedence
+ * (geminiEndpoint.ts), logged on every call.
  */
 export function selectGeminiBackend(input: BackendSelectionInput): BackendChoice {
-  const { env, keyEnvName, adcFileExists } = input;
   const choice = resolveGeminiBackend(input);
   // Logged on every call; this is a pure function, so no run-scoped dedup state.
   log("info", "api.gemini.backend", {
     backend: choice.backend,
     reason: choice.reason,
-    project: env.GOOGLE_CLOUD_PROJECT,
-    adc_file_present: adcFileExists,
+    project: input.env.GOOGLE_CLOUD_PROJECT,
+    adc_file_present: input.adcFileExists,
   });
   return choice;
-
-  function resolveGeminiBackend(input: BackendSelectionInput): BackendChoice {
-    const override = env.GEMINI_BACKEND?.trim().toLowerCase();
-    if (override) {
-      if (override === "vertex") return { backend: "vertex-adc", reason: "GEMINI_BACKEND=vertex" };
-      if (override === "api-key") return { backend: "api-key", reason: "GEMINI_BACKEND=api-key" };
-      throw new Error(
-        `GEMINI_BACKEND='${env.GEMINI_BACKEND}' is not a recognized value. Use 'vertex' or 'api-key', ` +
-          `or unset it to let credentials decide.`,
-      );
-    }
-
-    if (env[keyEnvName]) return { backend: "api-key", reason: `${keyEnvName} is set` };
-
-    if (env.GOOGLE_APPLICATION_CREDENTIALS) {
-      return { backend: "vertex-adc", reason: "GOOGLE_APPLICATION_CREDENTIALS is set" };
-    }
-    if (adcFileExists) {
-      return { backend: "vertex-adc", reason: "gcloud ADC file present" };
-    }
-    if (env.GOOGLE_CLOUD_PROJECT) {
-      return { backend: "vertex-adc", reason: "GOOGLE_CLOUD_PROJECT is set" };
-    }
-
-    // Keep aligned with verify-setup.mjs's `gemini-credentials` warning
-    // (synced by hand — that script runs pre-build).
-    throw new Error(
-      `No Gemini credentials found. Either authenticate to Vertex AI with ` +
-        `\`gcloud auth application-default login\` (no key; the project is read from ` +
-        `GOOGLE_CLOUD_PROJECT, or from the ADC file's quota project), or export ` +
-        `${keyEnvName}=... for the AI Studio path (https://aistudio.google.com/app/apikey).`,
-    );
-  }
-}
-
-/** Default location of the ADC file `gcloud auth application-default login` writes. */
-export function defaultAdcPath(home: string = homedir()): string {
-  return join(home, ".config", "gcloud", "application_default_credentials.json");
 }
 
 /**
@@ -115,61 +80,6 @@ export function resolveGcpProject(
   } catch {
     return undefined;
   }
-}
-
-/**
- * Region for Vertex calls. Defaults to `global` — a pricing default, not
- * latency: Vertex bills regional endpoints +10% on every token class for
- * Gemini 3+ (effective 2026-07-01), and the policy YAMLs pin the flat global
- * rates. Overriding with GOOGLE_CLOUD_LOCATION applies the surcharge to the
- * reported cost — see applyVertexSurcharge.
- */
-export function resolveGcpLocation(env: Record<string, string | undefined>): string {
-  return env.GOOGLE_CLOUD_LOCATION ?? "global";
-}
-
-// Vertex regional surcharge — Gemini 3+ non-global endpoints, effective
-// 2026-07-01. https://cloud.google.com/vertex-ai/generative-ai/pricing
-export const VERTEX_NONGLOBAL_SURCHARGE = 1.1;
-export const VERTEX_NONGLOBAL_EFFECTIVE = "2026-07-01";
-
-/** A Vertex location bills the surcharge unless it is the flat "global" endpoint. */
-export function isVertexNonGlobal(location: string): boolean {
-  return Boolean(location) && location.trim().toLowerCase() !== "global";
-}
-
-/**
- * Gemini 3+ only (2.5 has no regional premium). Family digit rather than
- * allow-list, so a new 3.x/4.x id surcharges by default — over-reporting is
- * the safe direction, under-reporting is not.
- */
-export function vertexSurchargeApplies(modelName: string): boolean {
-  const m = modelName.trim().toLowerCase();
-  if (!m.startsWith("gemini-")) return false;
-  const major = Number(m.slice("gemini-".length).match(/^(\d+)/)?.[1]);
-  return Number.isFinite(major) && major >= 3;
-}
-
-/**
- * Pinned rates on AI Studio and Vertex's global endpoint (every default run);
- * x1.10 on a pinned regional endpoint.
- */
-export function applyVertexSurcharge<T extends { input: number; input_cached: number; output: number }>(
-  pricing: T,
-  opts: { backend: GeminiBackend; location: string; modelName: string },
-): T {
-  const surcharged =
-    opts.backend === "vertex-adc" &&
-    isVertexNonGlobal(opts.location) &&
-    vertexSurchargeApplies(opts.modelName);
-  if (!surcharged) return pricing;
-  const k = VERTEX_NONGLOBAL_SURCHARGE;
-  return {
-    ...pricing,
-    input: pricing.input * k,
-    input_cached: pricing.input_cached * k,
-    output: pricing.output * k,
-  };
 }
 
 /**

@@ -72,14 +72,29 @@ test("BuiltinAnthropicAdapter buckets cache_creation_input_tokens separately (no
   assert.doesNotMatch(src, /input_tokens[^\n]*\+[^\n]*cache_creation_input_tokens/);
 });
 
-test("ClaudeCliAdapter buckets cache_creation but keeps the CLI's billed cost verbatim", () => {
+// Changed pin (v0.7.3): this test used to require that ClaudeCliAdapter copy
+// `total_cost_usd` into cost verbatim. That figure is Claude Code's own price
+// table (stale on 2026-08-24: Opus at 0.6x), so the worker is now priced from
+// its token ledger (claudeCliLedger.ts) and the CLI figure is only a check.
+// Behaviour is pinned in claudeCliPricing.test.mjs; this pins the wiring.
+test("ClaudeCliAdapter prices from its ledger and keeps the CLI's figure only beside the cost", () => {
   const src = readFileSync(join(DIST, "adapters", "ClaudeCliAdapter.js"), "utf-8");
-  assert.match(src, /input_cache_write:\s*usage\.cache_creation_input_tokens \?\? 0/);
-  // Cost must remain the CLI's own figure — never recomputed from buckets.
-  assert.match(src, /response\.total_cost_usd \?\? 0/);
+  assert.match(src, /priceClaudeCliResult\(/);
+  assert.match(src, /cli_reported_cost_usd/);
+  assert.doesNotMatch(src, /response\.total_cost_usd \?\? 0/, "the CLI's dollars must never become the cost again");
+  const ledger = readFileSync(join(DIST, "adapters", "claudeCliLedger.js"), "utf-8");
+  assert.match(ledger, /cacheCreationInputTokens/, "cache writes are read per model from modelUsage");
 });
 
-test("the server maps the bucket into telemetry events", () => {
+test("the server maps the bucket into telemetry events: the total written, plus the 1-hour share", async () => {
   const src = readFileSync(join(DIST, "server.js"), "utf-8");
-  assert.match(src, /input_tokens_cache_write:\s*att\.tokens\.input_cache_write/);
+  assert.match(src, /\.\.\.cacheWriteBuckets\(att\.tokens\)/);
+  const { cacheWriteBuckets } = await import("../dist/telemetry.js");
+  assert.deepEqual(cacheWriteBuckets({}), {}, "Gemini attempts carry no cache-write field, so their events gain none");
+  assert.deepEqual(cacheWriteBuckets({ input_cache_write: 3000 }), { input_tokens_cache_write: 3000 }, "API attempts are unchanged");
+  assert.deepEqual(
+    cacheWriteBuckets({ input_cache_write: 12202, input_cache_write_1h: 8837 }),
+    { input_tokens_cache_write: 21039, input_tokens_cache_write_1h: 8837 },
+    "a claude-cli attempt's disjoint buckets become the total and its 1-hour share",
+  );
 });
