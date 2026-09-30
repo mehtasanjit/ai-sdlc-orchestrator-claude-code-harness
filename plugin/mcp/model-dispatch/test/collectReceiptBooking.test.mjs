@@ -836,8 +836,15 @@ test("Q2 runModelResolver: the price list first; then a pricing_override model's
  * Opus 4.8 (in 70 / 700,000 / 5m 70,000 / 7,000, $0.96285). The receipt bills
  * the last invocation: Opus 5 exactly, Opus 4.8 at 100 / 1,000,000 / 100,000 /
  * 10,000 ($1.3755 at the list), so $0.41265 of it is billed but not logged.
+ *
+ * `resumeGate`: the run log opens gate-1 before the resume turn and resolves it after, as it does
+ * when a runner answers the gate with `claude -p --resume <id> "approved"`.
+ * `typedAccept`: after run.end the log opens gate-4, the person types "accept" in the same
+ * invocation (one more Opus 5 message, in 5 / cached 50,000 / 1h writes 5,000 / out 500, which
+ * the receipt also bills) and the log resolves the gate.
+ * `earlierResume`: one more resume turn at 10:00:55, before e2, outside any gate.
  */
-function resumedRun({ receipt = {}, laterTurn = false, helperA3 = true } = {}) {
+function resumedRun({ receipt = {}, laterTurn = false, helperA3 = true, resumeGate = false, typedAccept = false, earlierResume = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "mmo-receipt-resumed-"));
   const passDir = join(root, "pass"); mkdirSync(passDir);
   const tDir = join(root, "transcripts");
@@ -847,21 +854,29 @@ function resumedRun({ receipt = {}, laterTurn = false, helperA3 = true } = {}) {
   writeFileSync(join(passDir, "manifest.json"), JSON.stringify({ pass: "r-r", policy_name: "h-policy", started_at: AT("10:00:20"), ended_at: AT("10:03:20"), totals: { dispatched_cost_usd: 0, models_used: [] } }));
   writeFileSync(join(passDir, "telemetry.jsonl"), "");
   mkdirSync(join(root, ".sdlc", "runs", "r-r"), { recursive: true });
-  writeFileSync(join(root, ".sdlc", "runs", "r-r", "orchestrator.log"), `MMO: ${AT("10:00:05")} INFO   run.start run_id=r-r mode=greenfield\nMMO: ${AT("10:04:00")} INFO   run.end run_id=r-r outcome=completed\n`);
+  writeFileSync(join(root, ".sdlc", "runs", "r-r", "orchestrator.log"), [
+    `MMO: ${AT("10:00:05")} INFO   run.start run_id=r-r mode=greenfield`,
+    ...(resumeGate ? [`MMO: ${AT("10:01:05")} INFO   gate.open run_id=r-r gate=gate-1 title="Requirements Approval"`, `MMO: ${AT("10:02:05")} INFO   gate.resolved run_id=r-r gate=gate-1 response=approved`] : []),
+    `MMO: ${AT("10:04:00")} INFO   run.end run_id=r-r outcome=completed`,
+    ...(typedAccept ? [`MMO: ${AT("10:04:01")} INFO   gate.open run_id=r-r gate=gate-4 title="Final Acceptance"`, `MMO: ${AT("10:04:20")} INFO   gate.resolved run_id=r-r gate=gate-4 response=approved`] : []),
+  ].join("\n") + "\n");
   const result = (ts, toolUseId, agentId) => JSON.stringify({ type: "user", timestamp: ts, sessionId: "sess-r", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId }] }, toolUseResult: { agentId } });
   writeFileSync(join(tDir, "sess-r.jsonl"), [
     human("sess-r", AT("10:00:00"), COMMAND.replace("--run-id=r-h", "--run-id=r-r")),
     asst("sess-r", "e1", "claude-opus-5", usage(10, 100_000, 0, 10_000, 1_000), AT("10:00:10"), [{ type: "tool_use", id: "toolu_e", name: "Agent" }]),
     result(AT("10:00:50"), "toolu_e", "a0000"),
+    ...(earlierResume ? [human("sess-r", AT("10:00:55"), "Continue the run from where it stopped.")] : []),
     asst("sess-r", "e2", "claude-opus-5", usage(0, 100_000, 0, 10_000, 1_000), AT("10:01:00")),
     human("sess-r", AT("10:02:00"), "Continue the run from where it stopped."),
     asst("sess-r", "s1", "claude-opus-5", usage(10, 200_000, 0, 20_000, 2_000), AT("10:02:10"), [{ type: "tool_use", id: "toolu_l", name: "Agent" }]),
     result(AT("10:03:00"), "toolu_l", "a3333"),
     asst("sess-r", "s2", "claude-opus-5", usage(0, 200_000, 0, 20_000, 2_000), AT("10:03:10")),
+    ...(typedAccept ? [human("sess-r", AT("10:04:10"), "accept"), asst("sess-r", "t1", "claude-opus-5", usage(5, 50_000, 0, 5_000, 500), AT("10:04:15"))] : []),
     ...(laterTurn ? [human("sess-r", AT("11:00:00"), "one more thing"), asst("sess-r", "x1", "claude-opus-5", usage(5, 50_000, 0, 5_000, 500), AT("11:00:10"))] : []),
   ].join("\n") + "\n");
   if (helperA3) writeFileSync(join(sub, "agent-a3333.jsonl"), asst("sess-r", "h3", "claude-opus-4-8", usage(70, 700_000, 70_000, 0, 7_000), AT("10:02:30")) + "\n");
-  const opus5 = { inputTokens: 10, cacheReadInputTokens: 400_000, cacheCreationInputTokens: 40_000, outputTokens: 4_000, costUSD: 0.70005, ...(receipt.opus5 ?? {}) };
+  const accepted = typedAccept ? { inputTokens: 15, cacheReadInputTokens: 450_000, cacheCreationInputTokens: 45_000, outputTokens: 4_500 } : {};
+  const opus5 = { inputTokens: 10, cacheReadInputTokens: 400_000, cacheCreationInputTokens: 40_000, outputTokens: 4_000, costUSD: 0.70005, ...accepted, ...(receipt.opus5 ?? {}) };
   const opus48 = { inputTokens: 100, cacheReadInputTokens: 1_000_000, cacheCreationInputTokens: 100_000, outputTokens: 10_000, costUSD: 1.3755, ...(receipt.opus48 ?? {}) };
   writeFileSync(join(passDir, "claude-session.json"), JSON.stringify({
     type: "result",
@@ -958,6 +973,73 @@ test("Q1 refusal: a last invocation ABOVE the receipt is exit 3 even when it is 
   } finally { fix.rm(); }
 });
 
+// A runner answers a gate with `claude -p --resume <id> "approved"`: the answer sits between the
+// gate's open and resolved lines like a typed one, but it starts a new invocation, and the receipt
+// bills only that leg.
+test("a gate answered by a --resume continuation starts a new invocation: the receipt for that leg is booked exactly as with no gate lines", () => {
+  const plain = resumedRun();
+  const gated = resumedRun({ resumeGate: true });
+  try {
+    const p = plain.run();
+    assert.equal(p.status, 0, p.stdout + p.stderr);
+    const r = gated.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /gates: 1 in the run log; 1 answered by a typed message \(gate-1 at 2026-09-10T10:02:00\.000Z\)/);
+    assert.match(r.stdout, /the gate answer at 2026-09-10T10:02:00\.000Z is read as a --resume continuation/);
+    assert.match(r.stdout, /last invocation \(from the human turn at 2026-09-10T10:02:00\.000Z, 1 earlier turn\(s\) in the window\):/);
+    const o = gated.manifest().orchestrator_overhead;
+    const q = plain.manifest().orchestrator_overhead;
+    assert.equal(o.cost_usd, 2.4256);
+    const money = (x) => [x.cost_usd, x.cost_source, x.transcript_cost_usd, x.unlogged_billed, x.booked_cost_usd, x.receipt_cli_usd, x.input_tokens, x.input_tokens_cached, x.input_tokens_cache_write, x.input_tokens_cache_write_1h, x.output_tokens, x.attribution_complete, x.missing_helper_ids];
+    assert.deepEqual(money(o), money(q), "the gate lines change nothing in the booking");
+  } finally { plain.rm(); gated.rm(); }
+});
+
+test("a --resume gate answer after another resume turn: the leg from the earlier turn is over the receipt, so the leg from the gate answer is checked and booked", () => {
+  const fix = resumedRun({ resumeGate: true, earlierResume: true });
+  try {
+    const r = fix.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /last invocation \(from the human turn at 2026-09-10T10:00:55\.000Z, 1 earlier turn\(s\) in the window\):/);
+    assert.match(r.stdout, /the gate answer at 2026-09-10T10:02:00\.000Z is read as a --resume continuation[^\n]*\n  last invocation \(from the human turn at 2026-09-10T10:02:00\.000Z, 2 earlier turn\(s\) in the window\):/);
+    const o = fix.manifest().orchestrator_overhead;
+    assert.equal(o.cost_usd, 2.4256, "the same booking as the plain resumed run");
+    assert.match(o.cost_source, /receipt for the last invocation .*; 2 earlier invocation\(s\) transcript-priced, unverified/);
+  } finally { fix.rm(); }
+});
+
+test("a --resume gate answer whose leg is ABOVE the receipt is still exit 3, and the refusal names the reading", () => {
+  const fix = resumedRun({ resumeGate: true, receipt: { opus5: { cacheReadInputTokens: 390_000 } } });
+  try {
+    const r = fix.run();
+    assert.equal(r.status, 3, r.stdout + r.stderr);
+    assert.match(r.stderr, /the receipt matches neither the whole window nor its last invocation/);
+    assert.match(r.stderr, /Last invocation \(from 2026-09-10T10:02:00\.000Z, the gate answer read as a --resume continuation\): [^\n]*claude-opus-5 input_cached: transcript 400000 > receipt 390000/);
+    assert.equal(fix.manifest().orchestrator_overhead, undefined, "nothing written");
+  } finally { fix.rm(); }
+});
+
+test("a gate answer typed in the same invocation stays part of the run when the receipt bills a resumed leg: that leg starts at the resume turn, not at the typed answer", () => {
+  const fix = resumedRun({ typedAccept: true });
+  try {
+    const r = fix.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /gates: 1 in the run log; 1 answered by a typed message \(gate-4 at 2026-09-10T10:04:10\.000Z\)/);
+    assert.match(r.stdout, /closes at the end of the session file/);
+    assert.match(r.stdout, /last invocation \(from the human turn at 2026-09-10T10:02:00\.000Z, 1 earlier turn\(s\) in the window\):/);
+    assert.doesNotMatch(r.stdout, /read as a --resume continuation/);
+    const o = fix.manifest().orchestrator_overhead;
+    // Logged: $2.01295 as in the plain resumed run plus the typed answer's Opus 5 message
+    // ($0.000025 + $0.025 + $0.05 + $0.0125 = $0.087525), $2.100475; the Opus 4.8 helper's $0.41265
+    // is the only part billed but not logged. Read from the typed answer, the leg would book the
+    // whole receipt again on top of the resumed leg's logged messages.
+    assert.equal(o.transcript_cost_usd, 2.100475);
+    assert.equal(o.unlogged_billed.cost_usd, 0.41265);
+    assert.deepEqual(o.unlogged_billed.per_model.map((g) => g.model), ["claude-opus-4-8"]);
+    assert.equal(o.cost_usd, 2.513125);
+  } finally { fix.rm(); }
+});
+
 test("Q1 provableInvocation: a window opened at the last invocation's own human turn counts as opened at the invocation", async () => {
   const { provableInvocation, LAST_INVOCATION_ANCHOR } = await helpers();
   assert.equal(typeof LAST_INVOCATION_ANCHOR, "string");
@@ -1047,4 +1129,175 @@ test("a resumed window whose receipt has no modelUsage is refused the same way",
     assert.doesNotMatch(r.stderr, /matches neither the whole window nor its last invocation/);
     assert.equal(fix.manifest().orchestrator_overhead, undefined, "nothing written");
   } finally { fix.rm(); }
+});
+
+// ── Typed gate answers are part of the run, not new invocations ────────────
+/**
+ * The same short run, but the person typed the gate answers as messages (the desktop app), and the
+ * run log carries the gates: gate-1 opened at 10:00:40 and resolved at 10:01:00 around the typed
+ * "approved" at 10:00:50; gate-4 opened after run.end and resolved around the typed "accept". A typed
+ * answer inside its gate neither closes the window nor counts as a second invocation.
+ */
+const GATED_LOG = `MMO: ${AT("10:00:05")} INFO   run.start run_id=r-h mode=greenfield
+MMO: ${AT("10:00:40")} INFO   gate.open run_id=r-h gate=gate-1 title="Requirements Approval"
+MMO: ${AT("10:01:00")} INFO   gate.resolved run_id=r-h gate=gate-1 response=approved
+MMO: ${AT("10:01:30")} INFO   run.end run_id=r-h outcome=completed
+MMO: ${AT("10:01:31")} INFO   gate.open run_id=r-h gate=gate-4 title="Final Acceptance"
+MMO: ${AT("10:01:45")} INFO   gate.resolved run_id=r-h gate=gate-4 response=approved
+`;
+
+test("a run whose gate answers were typed is booked — each typed answer sits inside its gate's open/resolved lines and counts as part of the run", () => {
+  const fix = headlessRun({ extraLines: [human("sess-h", AT("10:00:50"), "approved"), human("sess-h", AT("10:01:40"), "accept")] });
+  try {
+    writeFileSync(join(fix.root, ".sdlc", "runs", "r-h", "orchestrator.log"), GATED_LOG);
+    const r = fix.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /gates: 2 in the run log; 2 answered by a typed message \(gate-1 at 2026-09-10T10:00:50\.000Z, gate-4 at 2026-09-10T10:01:40\.000Z\) — each counted as part of the run/);
+    assert.match(r.stdout, /closes at the end of the session file: run\.end .* and no later human turn \(exact\)/, "the typed accept after run.end does not close the window");
+    assert.match(r.stdout, /one human turn, no later human turn, exact\): the difference is billed but not logged/);
+    assert.equal(fix.manifest().orchestrator_overhead.cost_usd, 1.72555, "booked at the receipt, as the question-box run is");
+  } finally { fix.rm(); }
+});
+
+test("a second typed message inside one gate is not its answer — neither turn is counted as one, and the receipt is refused", () => {
+  const fix = headlessRun({ extraLines: [human("sess-h", AT("10:00:45"), "what is the status?"), human("sess-h", AT("10:00:50"), "approved"), human("sess-h", AT("10:01:40"), "accept")] });
+  try {
+    writeFileSync(join(fix.root, ".sdlc", "runs", "r-h", "orchestrator.log"), GATED_LOG);
+    const r = fix.run();
+    assert.equal(r.status, 3, r.stdout + r.stderr);
+    assert.match(r.stdout, /gate-1 holds 2 typed messages, so none of them is read as its answer/);
+    assert.match(r.stderr, /human turns fall inside the window/);
+  } finally { fix.rm(); }
+});
+
+test("gateAnswerTurns: gates are read from run.start to the next run.start; command turns are never answers", async () => {
+  const { gateAnswerTurns } = await helpers();
+  const root = mkdtempSync(join(tmpdir(), "mmo-gates-"));
+  try {
+    const log = join(root, "orchestrator.log");
+    writeFileSync(log, GATED_LOG + `MMO: ${AT("10:05:00")} INFO   run.start run_id=r-h mode=greenfield\nMMO: ${AT("10:05:10")} INFO   gate.open run_id=r-h gate=gate-1 title="again"\n`);
+    const turns = [
+      { ms: Date.parse(AT("10:00:00")), iso: AT("10:00:00"), command: true },
+      { ms: Date.parse(AT("10:00:50")), iso: AT("10:00:50"), command: false },
+      { ms: Date.parse(AT("10:01:40")), iso: AT("10:01:40"), command: false },
+      { ms: Date.parse(AT("10:05:20")), iso: AT("10:05:20"), command: false },
+    ];
+    const g = gateAnswerTurns(log, Date.parse(AT("10:00:05")), turns);
+    assert.deepEqual([...g.answers].sort(), [Date.parse(AT("10:00:50")), Date.parse(AT("10:01:40"))]);
+    assert.deepEqual(g.gates.map((x) => [x.gate, x.turns_inside, x.answer]), [["gate-1", 1, AT("10:00:50")], ["gate-4", 1, AT("10:01:40")]], "the later run's gate is not this run's");
+    assert.deepEqual(gateAnswerTurns(join(root, "missing.log"), 0, turns), { answers: new Set(), gates: [] });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// ── A gate the log never resolves ──────────────────────────────────────────
+/**
+ * Run r-h on Opus 4.8: the command turn at 10:00:00 and two run messages (m1 $0.13755, m2 $0.07505,
+ * $0.2126 together). With `runEnd`, the log has run.end at 10:01:30 and then opens gate-4 (the
+ * playbook's order) with no gate.resolved line; without it, the log opens gate-2 at 10:01:00 and
+ * stops there. Either way nobody answers the gate: the person types a new job at 10:05:00, which
+ * runs two large messages (m3 $2.75005 at 10:05:10, m4 $1.50005 at 10:09:00). `receipt`: one
+ * receipt billing all four messages.
+ */
+function gateLeftOpenRun({ runEnd = true, receipt = false } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "mmo-gate-open-"));
+  const passDir = join(root, "pass"); mkdirSync(passDir);
+  const tDir = join(root, "transcripts"); mkdirSync(tDir);
+  writeFileSync(join(root, "policy.yaml"), "version: 1\nname: h-policy\nmodels:\n  - id: driver\n    adapter: builtin-anthropic\n    model_name: claude-opus-4-8\nrules:\n  - default: driver\n");
+  writeFileSync(join(passDir, "manifest.json"), JSON.stringify({ pass: "r-h", policy_name: "h-policy", started_at: AT("10:00:20"), ended_at: AT("10:01:20"), totals: { dispatched_cost_usd: 0, models_used: [] } }));
+  writeFileSync(join(passDir, "telemetry.jsonl"), "");
+  mkdirSync(join(root, ".sdlc", "runs", "r-h"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "runs", "r-h", "orchestrator.log"), [
+    `MMO: ${AT("10:00:05")} INFO   run.start run_id=r-h mode=greenfield`,
+    ...(runEnd
+      ? [`MMO: ${AT("10:01:30")} INFO   run.end run_id=r-h outcome=completed`, `MMO: ${AT("10:01:31")} INFO   gate.open run_id=r-h gate=gate-4 title="Final Acceptance"`]
+      : [`MMO: ${AT("10:01:00")} INFO   gate.open run_id=r-h gate=gate-2 title="Design Approval"`]),
+  ].join("\n") + "\n");
+  writeFileSync(join(tDir, "sess-h.jsonl"), [
+    human("sess-h", AT("10:00:00"), COMMAND),
+    asst("sess-h", "m1", "claude-opus-4-8", usage(10, 100_000, 10_000, 0, 1_000), AT("10:00:10")),
+    asst("sess-h", "m2", "claude-opus-4-8", usage(10, 100_000, 0, 0, 1_000), AT("10:01:35")),
+    human("sess-h", AT("10:05:00"), "now add a dark mode toggle to the settings page"),
+    asst("sess-h", "m3", "claude-opus-4-8", usage(10, 2_000_000, 200_000, 0, 20_000), AT("10:05:10")),
+    asst("sess-h", "m4", "claude-opus-4-8", usage(10, 2_000_000, 0, 0, 20_000), AT("10:09:00")),
+  ].join("\n") + "\n");
+  if (receipt) {
+    writeFileSync(join(passDir, "claude-session.json"), JSON.stringify({
+      type: "result",
+      session_id: "sess-h",
+      total_cost_usd: 4.4627,
+      usage: { input_tokens: 40, cache_read_input_tokens: 4_200_000, cache_creation_input_tokens: 210_000, output_tokens: 42_000, cache_creation: { ephemeral_5m_input_tokens: 210_000, ephemeral_1h_input_tokens: 0 } },
+      modelUsage: { "claude-opus-4-8": { inputTokens: 40, cacheReadInputTokens: 4_200_000, cacheCreationInputTokens: 210_000, outputTokens: 42_000, costUSD: 4.4627 } },
+    }));
+  }
+  const run = () => exec([passDir, "--project-root", root, "--policy-path", join(root, "policy.yaml"), "--transcripts-dir", tDir]);
+  return { run, manifest: () => readJson(join(passDir, "manifest.json")), rm: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+test("a gate the log never resolves does not take the next typed request as its answer: the request after run.end closes the window as the next invocation", () => {
+  const fix = gateLeftOpenRun();
+  try {
+    const r = fix.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /gates: 1 in the run log; 0 answered by a typed message; gate-4 has no gate\.resolved line, so only a typed message before the run's end can be its answer/);
+    assert.match(r.stdout, /closes at the next human turn 2026-09-10T10:05:00\.000Z after run\.end/);
+    const o = fix.manifest().orchestrator_overhead;
+    assert.deepEqual([o.window.end, o.window.end_anchor, o.window.exact], [AT("10:05:00"), "next human turn after run.end", true]);
+    assert.equal(o.cost_usd, 0.2126, "the run's own two messages; the new job's $4.2501 is outside the window");
+  } finally { fix.rm(); }
+});
+
+test("a gate the log never resolves does not stretch the window to a whole-session receipt: the receipt is refused, nothing written", () => {
+  const fix = gateLeftOpenRun({ receipt: true });
+  try {
+    const r = fix.run();
+    assert.equal(r.status, 3, r.stdout + r.stderr);
+    assert.match(r.stderr, /the transcript is BELOW the CLI's own receipt/);
+    assert.match(r.stderr, /1 human turn\(s\) follow the window \(from 2026-09-10T10:05:00\.000Z\)/);
+    assert.equal(fix.manifest().orchestrator_overhead, undefined, "nothing written");
+  } finally { fix.rm(); }
+});
+
+test("a gate the log never resolves, in a run with no run.end, does not turn a later request into its answer: the window closes at the last dispatch plus the slack, approximate", () => {
+  const fix = gateLeftOpenRun({ runEnd: false });
+  try {
+    const r = fix.run();
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /gates: 1 in the run log; 0 answered by a typed message/);
+    const o = fix.manifest().orchestrator_overhead;
+    assert.deepEqual([o.window.end, o.window.end_anchor, o.window.exact], [AT("10:06:20"), "manifest ended_at + 5m", false]);
+    // m1 + m2 + m3 ($0.2126 + $2.75005); m4 at 10:09:00 is past the close.
+    assert.equal(o.cost_usd, 2.96265);
+  } finally { fix.rm(); }
+});
+
+test("gateAnswerTurns: a gate with no gate.resolved line claims a typed message only up to the run's end; a resolved gate claims its own wherever it falls", async () => {
+  const { gateAnswerTurns } = await helpers();
+  const root = mkdtempSync(join(tmpdir(), "mmo-gates-open-"));
+  try {
+    const log = join(root, "orchestrator.log");
+    const lines = [
+      `MMO: ${AT("10:00:05")} INFO   run.start run_id=r-h mode=greenfield`,
+      `MMO: ${AT("10:00:40")} INFO   gate.open run_id=r-h gate=gate-1 title="Requirements Approval"`,
+      `MMO: ${AT("10:01:30")} INFO   run.end run_id=r-h outcome=completed`,
+      `MMO: ${AT("10:01:31")} INFO   gate.open run_id=r-h gate=gate-4 title="Final Acceptance"`,
+    ];
+    writeFileSync(log, lines.join("\n") + "\n");
+    const turn = (hms, command = false) => ({ ms: Date.parse(AT(hms)), iso: AT(hms), command });
+    const turns = [turn("10:00:00", true), turn("10:00:50"), turn("10:05:00")];
+    const startMs = Date.parse(AT("10:00:05"));
+    const endMs = Date.parse(AT("10:01:30"));
+    // gate-1's typed message comes before run.end, so the run went on past it: it is the answer.
+    // gate-4 opens after run.end, so the request at 10:05:00 is not its answer.
+    const g = gateAnswerTurns(log, startMs, turns, endMs);
+    assert.deepEqual([...g.answers], [Date.parse(AT("10:00:50"))]);
+    assert.deepEqual(g.gates.map((x) => [x.gate, x.resolved, x.turns_inside, x.answer]), [["gate-1", null, 1, AT("10:00:50")], ["gate-4", null, 0, null]]);
+    // With no run's end given, a gate the log never resolves answers nothing.
+    assert.deepEqual([...gateAnswerTurns(log, startMs, turns).answers], []);
+    // A later run under the same id that resolves its own gate-4 does not resolve this run's.
+    writeFileSync(log, [...lines, `MMO: ${AT("10:04:00")} INFO   run.start run_id=r-h mode=greenfield`, `MMO: ${AT("10:04:10")} INFO   gate.open run_id=r-h gate=gate-4 title="Final Acceptance"`, `MMO: ${AT("10:05:30")} INFO   gate.resolved run_id=r-h gate=gate-4 response=approved`].join("\n") + "\n");
+    assert.deepEqual([...gateAnswerTurns(log, startMs, turns, endMs).answers], [Date.parse(AT("10:00:50"))]);
+    // Resolved after the request, gate-4 claims it: the log says the gate took it as its answer.
+    writeFileSync(log, [...lines, `MMO: ${AT("10:05:30")} INFO   gate.resolved run_id=r-h gate=gate-4 response=approved`].join("\n") + "\n");
+    assert.deepEqual([...gateAnswerTurns(log, startMs, turns, endMs).answers].sort(), [Date.parse(AT("10:00:50")), Date.parse(AT("10:05:00"))]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

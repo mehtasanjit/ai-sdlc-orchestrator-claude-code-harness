@@ -158,30 +158,24 @@ surprise override is visible before anything is billed. To tell the two apart, c
 `<project root>/routing-policy.yaml` exists: if it does, the loader used it.
 
 Report, in a short list:
-- which model handles the judgment phases — requirements, design, task planning, senior review,
-  security review
-- which model handles the mechanical phases — codegen, tests, docs, debug
+- which model handles the judgment phases — requirements, design, senior review, security review
+- which model types the files — code, tests, docs and fixes (the typing stages)
 - the per-million input and output rates the policy declares for each, so the user can see where the
   cost difference comes from
 
-**Say which door the mechanical tier goes through, and only if it is the unusual one.** That tier
-can be reached two ways: as a model call, which is the default, or as an Antigravity agent that
-works in the folder directly. If `MMO_SELECT` names `flash-agsdk-worker`, this install has chosen
-the agent — say so in one sentence, and say that it costs several times more per task than the same
-model called directly, because an agent re-sends the conversation on every tool call. The rates
-above are unchanged and still true; what changes is the token count. Add one more sentence, because
-it is the thing that makes the extra spend inspectable rather than merely claimed: the run will
-leave a `delegation/` directory beside the telemetry, holding the brief each worker was given and a
-receipt for what it did, and the end-of-run report will carry a **Delegated to an agent worker**
-section naming every delegated packet. Do not raise any of this when
-`MMO_SELECT` is unset, which is the normal case — an unexplained aside about a path they are not
-on is noise, not transparency.
+**Say which door the typing goes through, and only if it is the unusual one.** The cheaper model
+can be reached two ways: as a model call, which is the default, or as an Antigravity agent. If
+`MMO_SELECT` names `flash-agsdk-worker`, this install has chosen the agent — say so in one
+sentence: each file is typed by one short agent session, billed from Google's own token counts for
+that session, and every session appears in the run's telemetry and in the stage receipts. The
+rates above are unchanged. Do not raise any of this when `MMO_SELECT` is unset, which is the normal
+case — an unexplained aside about a path they are not on is noise, not transparency.
 
 **Offer the two-cent probe, on that path only, and only if they have not run it.** Pre-flight
 constructs the agent's adapter but never calls it, so three things stay unknown until the first
 delegated packet: whether the project carries the Antigravity entitlement, whether the region
-serves the model, and whether the credentials are still valid. All three fail *after* requirements,
-design and task planning are billed to the premium tier. Say that in one sentence and offer to run
+serves the model, and whether the credentials are still valid. All three fail *after* requirements
+and design are billed to the premium tier. Say that in one sentence and offer to run
 `${CLAUDE_PLUGIN_ROOT}/scripts/probe-agent-worker.mjs` first — one trivial delegation, about two
 cents, and it exits 0 or names the cause in words. If they decline, continue; the run is not
 blocked on it.
@@ -192,7 +186,7 @@ browser-based policy console and writes the new choice to `.sdlc/project.json`. 
 the console from this flow; setup owns it.
 
 If step 1 reported missing Gemini credentials, say so here and explain the consequence in one
-sentence: the mechanical phases cannot dispatch, so the run would fail at the first codegen packet.
+sentence: the typing stages cannot dispatch, so the run would fail at the first file.
 Offer to continue on `opus-only` instead, which routes every phase to Claude and needs no Gemini
 credentials — and say plainly that it costs more, because the cost saving comes precisely from the
 phases that would have gone to the cheaper model.
@@ -228,10 +222,19 @@ Invoke the `orchestrator` subagent with the resolved settings from the steps abo
 - `policy` — the resolved policy name from step 4 (`project.default_policy` or `opus-plus-flash`)
 - `code_dir` — `./src`
 - `output_dir` — `./.sdlc`
+- `executor` — on: run the pipeline skill's **Executor mode** — the architect hands over a typed
+  spec and `execute_stage` types, checks and writes every file and fix with the typist the policy
+  names — the same flow `/mmo:pass` runs. Without it this
+  command would take the packet flow, in which the orchestrator writes every packet and receives
+  every file, and the executor's saving would not apply.
 
 The orchestrator pauses at four approval gates: after requirements, after design, after the security
 review, and before final acceptance. Relay each gate to the user as it arrives; do not answer them
 on the user's behalf.
+
+Until the run ends, show the user no cost total, at a gate or between gates, even when the
+orchestrator's message carries one: those figures leave out what this session and its helpers cost,
+and the run's full cost is only known at the end (step 7).
 
 # 7. Report
 

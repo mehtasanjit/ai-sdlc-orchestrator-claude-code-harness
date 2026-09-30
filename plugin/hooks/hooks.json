@@ -7,7 +7,27 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/write-contract-check.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/write-contract-check.mjs\""
+          }
+        ]
+      },
+      {
+        "_comment": "Keeps the pipeline's own helpers (mmo:orchestrator, architect, reviewers, discovery) in the foreground: a background launch of one of them, named mmo:<name> or by its bare name inside the plugin's own orchestrator, is refused with a reason and re-launched in the foreground. A user's own agent with the same bare name, and every other agent launch, is allowed untouched.",
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/foreground-helpers.mjs\""
+          }
+        ]
+      },
+      {
+        "_comment": "Executor guard: an orchestrator that has called execute_stage (a greenfield executor run) may hire only the pipeline's own helpers and may write only inside its run's record folder; it reads a failing check's output itself, and every change to the project's files goes through the typist (execute_stage repair). Every other orchestrator (every brownfield run), helper and the main chat are untouched; fails open.",
+        "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/executor-guard.mjs\" pre"
           }
         ]
       }
@@ -19,7 +39,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/telemetry.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/telemetry.sh\""
+          }
+        ]
+      },
+      {
+        "_comment": "Executor guard: records which orchestrator called execute_stage (its agent_id), so the pre hook above applies to that orchestrator only. Regex for both tool namespaces, as for execute_with_model.",
+        "matcher": "mcp__(plugin_mmo_)?model-dispatch__execute_stage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/executor-guard.mjs\" post"
           }
         ]
       }

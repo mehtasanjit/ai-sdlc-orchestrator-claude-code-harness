@@ -51,6 +51,13 @@ npm run verify --prefix /path/to/ai-sdlc-orchestrator-claude-code-harness
 | Prints a `warnings` entry but the run starts | The failed adapter belongs to a model this run's auth mode never dispatches to (typically `builtin-anthropic` under `--auth=estimated`). | Expected. Only a model this run actually dispatches to halts. |
 | Lists a model under `not_selected` | The policy offers more than one way to reach a tier (a `select:` slot), and this run picked the other option. Prerequisites for the losing option are not checked. | Expected. Switch `MMO_SELECT` if you meant the other one. |
 
+## Greenfield executor (`execute_stage`)
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| The `preflight_dispatch` reply, and the first `execute_stage` receipt of a run, carry `policy_notes` | The executor read the policy with a default: a narrower rule (one that also names a `task_type` or `module`) set aside because its stage has a rule of its own; a stage routed only by narrower rules, read by stage alone (the first listed types its files and the ones after it are named as shadowed); a rule with a `task_type` or `module` and no stage, set aside; a default rule added for a stage no rule routes; or the policy has no Claude model (no Claude last attempt). The run continues. | Nothing, unless a note is not what you meant: route the stage by `phase` alone. |
+| A verify receipt says `blocked: could not be run on this machine: …` with `command not found (exit code 127 from the shell)` or `stopped at the plan's time limit` | The machine, not the project: the shell found no such program, or the command ran past the `timeout_s` the plan states for it. Nothing is diagnosed or changed. | Install the tool, or have the architect state a longer `timeout_s`, and call the stage again. |
+
 ## Cost collector (`collect-orchestrator-usage.mjs`)
 
 | Symptom | Cause | Fix |

@@ -7,7 +7,7 @@ After a pass finishes, three things live under the run's output directory — `e
 - `telemetry.jsonl` — one JSON object per line, one line per LLM call. The raw data.
 - `manifest.json` — a rollup of the telemetry into totals, per-phase breakdown, and metadata.
 - `orchestrator.log` — the `MMO:`-prefixed event trace: phase and gate boundaries, subagent hand-offs, routing decisions, dispatch summaries. Not cost data — see [logging.md](logging.md) and [methodology.md](methodology.md#the-mmo-log-stream-is-not-telemetry) for how it differs from `telemetry.jsonl`.
-- Generated source under `app/` (greenfield) or the files named at Gate 0 (brownfield) — the actual code the run produced.
+- Generated source under `./src/` (`/mmo:greenfield`) or `<run folder>/src/` (`/mmo:pass`), or the files named at Gate 0 (brownfield) — the actual code the run produced.
 
 A fourth appears only on runs that delegated to the agent worker — installs that chose the agent path, via `--enable-agent` on the verify script or the wizard's question ([setup.md](setup.md#gemini-as-an-agent--antigravity-sdk)):
 
@@ -70,7 +70,7 @@ That gives you what changed *while the worker held the directory*. It is not pro
 
 - **Wall-clock** — end-to-end duration of the pass.
 - **Model calls** — total count of LLM calls, all phases and overhead included.
-- **Code files produced** — count of files under the pass's generated source tree.
+- **Code files produced** — count of files under the pass's generated source tree; in brownfield, the files the run's record lists (`provenance.json`), shown as — when no record says.
 
 ### Costs
 

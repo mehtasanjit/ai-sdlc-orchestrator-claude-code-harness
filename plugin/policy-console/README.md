@@ -60,16 +60,16 @@ adapter will eventually need to read.
 
 The console writes the chosen tier into the saved policy as `rules[].reasoning.tier` or
 `rules[].reasoning.effort`, per the table above. Today that value has **no effect on a real run**
-for two of the three routing options:
+for one of the three routing options:
 
 | Routing option | Adapter | Reads `reasoning`? |
 |---|---|---|
 | `opus` | `BuiltinAnthropicAdapter` | No — never read, never sent to the Anthropic API. The pinned `@anthropic-ai/sdk` (`0.32.1`) also predates `output_config.effort` entirely, so it couldn't send it even if wired |
-| `flash-completion` | `GeminiFlashAdapter` | No — not read anywhere in that adapter or `geminiTransports.ts`, despite the vendor SDK supporting `thinkingLevel` |
-| `flash-agsdk-worker` | `AntigravityWorkerAdapter` | Yes — the only adapter that reads `reasoning.tier` and passes it through |
+| `flash-completion` | `GeminiFlashAdapter` | Yes — `reasoning.tier` is sent as `thinkingConfig.thinkingLevel` |
+| `flash-agsdk-worker` | `AntigravityWorkerAdapter` | Yes — `reasoning.tier` is passed to the worker as its thinking level |
 
-So the tiers shown are honest about what each vendor's API allows, but only `flash-agsdk-worker`
-actually acts on the choice today. Wiring `flash-completion` to send `thinkingLevel`, and bumping
-`@anthropic-ai/sdk` to send `output_config.effort` for `opus`, are backend work, not console
+So the tiers shown are honest about what each vendor's API allows; both Gemini options act on the
+choice, `opus` does not yet. Bumping `@anthropic-ai/sdk` to send `output_config.effort` for `opus`
+is backend work, not console
 changes — tracked as an open item, not fixed here since no policy from this console is driving a
 real run yet.

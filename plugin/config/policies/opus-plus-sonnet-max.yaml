@@ -66,25 +66,10 @@ rules:
 
   # Mechanical tier — Sonnet 5 through the local `claude` binary, so this
   # tier spends Max quota rather than ANTHROPIC_API_KEY credit.
-  - when:
-      phase: codegen
-      task_type:
-        - controller_handler
-        - service_method
-        - dto
-        - module_wiring
-        - migration
-        - seed_data
-        - entity
-        - guard
-        - interceptor
-        - filter
-        - react_component
-        - react_page
-        - api_client
-        - frontend_util
-        - frontend_config
-        - frontend_html
+  # Every code file, whatever its language, name or kind: who types a file depends on the stage
+  # alone. A task_type list sends every file outside it, and the catch-all "other", to the default
+  # rule (plugin/mcp/model-dispatch/test/stageRouting.test.mjs).
+  - when: { phase: codegen }
     use: sonnet
     reason: "Schema-driven boilerplate — Sonnet 5 via Max subscription"
   - when: { phase: tests }
@@ -104,7 +89,3 @@ rules:
 
   - default: opus
     reason: "Unrecognized task — fail safe to premium"
-
-# Hard per-run cost cap. When accumulated cost_usd exceeds this, the
-# orchestrator aborts. Prevents runaway spend on an unexpectedly large repo.
-hard_cost_cap_usd: 50

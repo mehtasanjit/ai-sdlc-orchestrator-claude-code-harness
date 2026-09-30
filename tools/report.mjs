@@ -156,12 +156,24 @@ const sessionCost = manifest.total_cost_usd ?? totalCost;
 // transcripts. The manifest block is authoritative (the collector writes
 // event + manifest together); summing the telemetry events is the fallback
 // for a manifest that predates the collector run. `hasOverhead` false means
-// the collector has not run and every dollar below is dispatched-work only.
-const orchCost =
-  manifest.orchestrator_overhead?.cost_usd ??
-  (orchEvents.length > 0
-    ? orchEvents.reduce((s, e) => s + (e.cost_usd ?? 0), 0)
-    : null);
+// the collector has not run, or its figures are out of date (below), and every
+// dollar below is dispatched-work only.
+//
+// write-manifest.mjs rebuilds the manifest from telemetry.jsonl, which carries the collector's block
+// whenever the collector's event is there, and leaves the block out only when the dispatched total it
+// was computed from changed (or cannot be checked). So a manifest it wrote with no block while the event
+// is still there holds figures that are out of date: adding that overhead to the new dispatched total
+// would count the in-session dispatch twice, so the report asks for the collector again instead.
+const collectorStale =
+  manifest.orchestrator_overhead == null &&
+  orchEvents.length > 0 &&
+  /(^|\/)write-manifest\.mjs$/.test(String(manifest.written_by ?? ""));
+const orchCost = collectorStale
+  ? null
+  : manifest.orchestrator_overhead?.cost_usd ??
+    (orchEvents.length > 0
+      ? orchEvents.reduce((s, e) => s + (e.cost_usd ?? 0), 0)
+      : null);
 const hasOverhead = orchCost != null;
 // Written by the collector since the receipt/in-session fix: the dispatched
 // dollars that ran inside the session and were subtracted once. Absent on
@@ -295,10 +307,14 @@ const modeHint =
 // Scope sits right beside Mode: which spends this report's dollars cover.
 const scopeLabel = hasOverhead
   ? "dispatched work + orchestrator overhead"
-  : "dispatched work only — excludes orchestrator overhead";
+  : collectorStale
+    ? "dispatched work only — the collector's figures are out of date"
+    : "dispatched work only — excludes orchestrator overhead";
 const scopeHint = hasOverhead
   ? `the run's own loop (${fmtUSD(orchCost)}, ${overheadHow}) is a separate line in Costs, never blended into dispatched totals`
-  : "the orchestrator's own loop never passes through the MCP server; measure and add it with the collector (see Costs)";
+  : collectorStale
+    ? "the dispatched total changed after the collector measured the orchestrator's own loop; run the collector again to measure and add it (see Costs)"
+    : "the orchestrator's own loop never passes through the MCP server; measure and add it with the collector (see Costs)";
 
 // The v0.7.3 orchestrator lines, printed under the true total beside the
 // verification and window lines (without their trailing period). Each is keyed
@@ -664,7 +680,11 @@ if (asMarkdown) {
   } else {
     console.log(`| **${totalLabel}** — dispatched work only | **${fmtUSD(sessionCost)}** |\n`);
     console.log(`_${totalNote}_\n`);
-    console.log(`_**Excludes orchestrator overhead.** The orchestrator's own loop (reasoning, file reads, growing-conversation re-sends) never passes through the MCP server and is in no number above — on measured runs it exceeded the dispatched total ~100×. Measure and add it: \`${collectorCmd}\`_\n`);
+    if (collectorStale) {
+      console.log(`_**Collector figures out of date.** The manifest was rewritten after the collector ran and left its orchestrator overhead and true total out, because they were computed from a different dispatched total; its event in telemetry.jsonl is not added to this one. Run it again to measure and add the orchestrator's own loop: \`${collectorCmd}\`_\n`);
+    } else {
+      console.log(`_**Excludes orchestrator overhead.** The orchestrator's own loop (reasoning, file reads, growing-conversation re-sends) never passes through the MCP server and is in no number above — on measured runs it exceeded the dispatched total ~100×. Measure and add it: \`${collectorCmd}\`_\n`);
+    }
   }
 } else {
   console.log(`Costs\n`);
@@ -704,6 +724,15 @@ if (asMarkdown) {
       console.log(`    is conservative (double-counts up to ${fmtUSD(estimatedCost)}).`);
     }
     console.log("");
+  } else if (collectorStale) {
+    console.log(`  ${`${totalLabel} — dispatched work only`.padEnd(59)}${fmtUSD(sessionCost).padStart(11)}`);
+    console.log(`  ${modeHint === totalNote ? "" : "  " + totalNote}`);
+    console.log(`    COLLECTOR FIGURES OUT OF DATE: the manifest was rewritten after the`);
+    console.log(`    collector ran and left its orchestrator overhead and true total out,`);
+    console.log(`    because they were computed from a different dispatched total; its event`);
+    console.log(`    in telemetry.jsonl is not added to this one. Run it again to measure and`);
+    console.log(`    add the orchestrator's own loop:`);
+    console.log(`      ${collectorCmd}\n`);
   } else {
     console.log(`  ${`${totalLabel} — dispatched work only`.padEnd(59)}${fmtUSD(sessionCost).padStart(11)}`);
     console.log(`  ${modeHint === totalNote ? "" : "  " + totalNote}`);

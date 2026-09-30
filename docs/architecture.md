@@ -30,7 +30,7 @@ Additional plugin content:
 | [plugin/config/intents.json](../plugin/config/intents.json) | The seven-intent registry — id, title, example, argument hint, summary, interview questions. Single source for the job commands, the interview, and this table's own accuracy. |
 | [plugin/skills/pipeline/](../plugin/skills/pipeline/) | Skill body loaded by the orchestrator. |
 | [plugin/skills/brownfield-guide/](../plugin/skills/brownfield-guide/) | The shared seven-step brownfield manual. Every brownfield entry point (`brownfield.md` and the seven job commands) points here; step 4 branches on the `intent` / `seed_description` handover. |
-| [plugin/hooks/hooks.json](../plugin/hooks/hooks.json) | `PostToolUse` hook matching the MCP tool name under both install routes. |
+| [plugin/hooks/hooks.json](../plugin/hooks/hooks.json) | `PreToolUse`: the write-contract check, the foreground rule for the pipeline's own helpers, and the executor guard. `PostToolUse`: the telemetry heartbeat on `execute_with_model` and the executor guard's record of `execute_stage` callers, each matching the MCP tool name under both install routes. |
 | [plugin/config/policies/](../plugin/config/policies/) | Shipped policy YAMLs. The directory listing is the authoritative preset set (`opus-plus-flash` is the default; the loader's not-found error prints the live list). |
 | [plugin/policy-console/](../plugin/policy-console/) | Single-page HTML console + tiny http server, used at setup to pick or author the per-project policy. |
 | `.sdlc/project.json` | Per-project state file. Fields: `default_policy` (name of the policy every run in this folder uses when `--policy` is not passed), `off_limits_default` (constant paths never touched by brownfield writes — merged with Gate 0 additions), `last_updated_at`, `schema_version: 2`. Written by `setup-policy.mjs` and consumed by every task command. |
@@ -39,14 +39,14 @@ The hook matcher is a regex because the plugin route namespaces MCP tools with t
 
 ## 2. MCP server
 
-The bundled server exposes five tools over stdio.
+The bundled server exposes eight tools over stdio: the five below, and the three of the typed-spec executor (§2a).
 
 | Tool | Purpose |
 |---|---|
 | `execute_with_model` | Dispatch a TaskPacket to the model the policy names; return result + tokens + cost. |
 | `simulate_policy` | Recompute cost from an existing telemetry stream against a different policy. No LLM call. |
 | `log_telemetry` | Append a TelemetryEvent the orchestrator emitted itself (direct-tier). Server stamps `ts` and nulls `latency_ms`. |
-| `preflight_dispatch` | Construct every adapter this run's auth mode will use, and price every model it can reach for today. Halts on an adapter that fails or a model with no price. No API call. |
+| `preflight_dispatch` | Construct every adapter this run's auth mode will use, and price every model it can reach for today. Halts on an adapter that fails or a model with no price. No API call. Records the run's auth mode and policy for `execute_stage`; a new pre-flight opens a new run and is never refused for asking for other values. Takes `executor` (optional): `true` on a new-app run, whose Claude typing (the lean Opus last attempt included) runs through this machine's `claude` CLI, halts when that CLI is missing or its `--help` does not list `--tools`, `--append-system-prompt-file` and `--effort`; `false` (brownfield) skips the check; absent, the problem is a warning. The reply adds `executor` (`claude_typists`: the Claude models the executor would type with; `claude_cli`: `ok`, `not checked`, or what is wrong and how to fix it), `policy_notes` (how the executor reads the policy, below) and `run_card` (below; `settings_problems` lists a settings file that cannot be read or is not JSON, which never halts). |
 | `load_policy` | Return the policy that would be active, each model with its `effective_price` for today: the list's rates, or the model's `pricing:` block only under `pricing_override: true`. The orchestrator prices its estimated events from it. No API call. |
 
 Two files run before anything else:
@@ -58,6 +58,46 @@ Two files run before anything else:
 | [preflight.ts](../plugin/mcp/model-dispatch/src/preflight.ts) | Auth-mode-aware reachability check. Under `vendor` every model is required; under `estimated` the in-session adapter (`builtin-anthropic`) is skipped. Its price gate (`checkModelPrice` in [effectivePrice.ts](../plugin/mcp/model-dispatch/src/effectivePrice.ts)) halts on any reachable model with no price, whatever the mode, and returns policy blocks that differ from the list as `price_warnings`. |
 
 `preflight_dispatch` reports `not_selected` for policy leaves that lost a `select:` slot decision — their prerequisites (a Python venv, a worker script) are not this run's problem, and halting on them would be a false positive.
+
+### 2a. The typed-spec executor (greenfield: `/mmo:greenfield` and `/mmo:pass`)
+
+The architect hands the build over as a typed spec, and code types, checks and writes every file. The same flow runs for every policy; a solo policy and a multi-model policy differ only in which typist types each file.
+
+| Tool | Purpose |
+|---|---|
+| `submit_spec_section` | Takes one section of the typed spec: the header (stack, commands, decisions, shared data model and API), then units in batches. Each section is a JSON file the architect writes with the Write tool under the output directory (`spec.sections/header.json`, then `units-001.json`, ...), never inline in the tool call, where a large JSON argument can reach the tool unparseable and be discarded whole. A file that is not valid JSON is refused with the parser's line, column and text (and the line before), so the architect fixes that spot with Edit. Each section is checked on arrival (strict schema; unique ids and paths; `depends_on` / `style_from` point to earlier units); a refused section stores nothing and lists every problem by path. The tool's description carries the exact shape of both files, rendered from the schemas by code (`shapeOf` in `src/spec/schema.ts`), so what the architect reads is what the check enforces. A header sent after `finalize_spec`, or from a new run (a new `preflight_dispatch`), starts a new spec: the earlier spec's records (`spec.parts/`, `spec.json`, `design.md`, `acceptance*`, `verify/`, `written-files.json`, `shared-brief.txt`) move to `<spec_dir>/previous/<time>/` (the reply's `previous` names the folder), nothing is deleted, and the whole spec is sent again. |
+| `finalize_spec` | Assembles `spec.json`, checks every FR- and AC- requirement is covered by a unit, and renders `design.md` from the spec by code. Refuses a spec whose acceptance list leaves an AC criterion without a command or a reason, or names no dependency audit (or a reason for none). |
+| `execute_stage` | Runs one stage and returns one compact receipt (≤ 2 kB as sent), with MCP progress messages while it runs. `codegen`, `tests` and `docs` type every unit of that stage. `repair` types every fix of a repair round: the files named in a failing test run, and every finding of the senior reviewer's review.json that names a file. `acceptance` runs the acceptance list (below). |
+
+**The spec.** Every unit states its `import_line`: the exact line another file writes to import it, in the project's own language, empty when nothing imports it. Code carries it into the file's own brief, every dependent's brief, the shared file index and design.md, so files typed apart agree on how they connect; code never parses it. A unit carries no file-type label (an optional free-text `kind` goes to the design table only). No size is bounded in code: `approx_lines` is an estimate, and a call carries as many units as the architect writes in one reply (the architect keeps a one-hour prompt cache, like the orchestrator). The architect's shell is for looking things up, such as a package registry: it never installs anything and never writes into the code directory. The architect takes the fixed stack from the brief and chooses the rest; the acceptance stage checks the result, and an install or audit failure comes back to it.
+
+**Typing and fixes.**
+
+| Rule | What happens |
+|---|---|
+| Who types a file | The typist the policy routes the job's stage to, at `retry_count` 0 and 1, then one lean Opus attempt when the policy has a Claude model. Routing is by stage and retry count alone, so who types a file never depends on its language, name or kind. A stage with a rule of its own (the stage, and no `task_type`, `module` or `intent`) is routed by it, and narrower rules for that stage are set aside. A stage routed only by narrower rules is routed by them read by stage alone, the first one listed first. A rule that names a `task_type` or `module` and no stage is set aside. A policy with no default rule gets one for any stage no rule routes: its first Claude model, else its first model, through the `select` slot that offers it. `policy_notes` names each rule read this way by its place in the file, counted from 1, in the `preflight_dispatch` reply and the run's first `execute_stage` receipt. The lean Opus last attempt follows the run's `select` choice: a Claude model the run did not select is never used. |
+| The typists | `lean-opus`: a `claude -p` call with no tools, low effort, and the shared spec as its cached system-prompt tail. `flash-completion`: Gemini through the completion door. `agy`: Gemini through the Antigravity SDK, configured as a typist (`worker/typist_worker.py`). A cold lean Opus typist sends one job alone before fanning out. |
+| Fixes | Routed as phase `debug` and answered with exact edits to the file's current text: each search must match exactly once, overlapping matches counted, or nothing changes. A fix's file is placed only on a real file under the code directory or a file of the spec. A reviewer's project-root path such as `src/x.py` is placed by dropping the code directory's own folder; anything else is reported as `not_routed`, never guessed. |
+| New files | A test-run failure that needs a file that does not exist yet carries `new_file: true` and a path relative to the code directory; the file is typed whole and held to the same checks as every file. A review finding that needs one comes back in `not_routed` saying so. The receipt lists `created`. |
+| Checks on an answer | An answer is refused only when it is wrong in any language: it names another path, the path is unsafe (not a relative path inside the code directory), or it is empty. No file is parsed, so no language gets a stronger or weaker check and no parser needs installing. Whether a file is right, its syntax as much as its behavior, is judged by the project's own build and tests and the repair rounds. Writes are checked on real paths, so a symlinked folder cannot carry a file out of the code directory. |
+| Vendor and network failures | Read from the vendor's structured fields. They wait with jittered backoff capped at one 60 s rate-limit window; a longer requested pause is an attempt, taken after one full window; anything else is an attempt. A door that refuses the login or permission (HTTP 401/403) stops the stage (`stopped` in the receipt, returned as an error) instead of handing its files to another typist. |
+| Output limit | An answer that stopped at a typist's output limit (the vendor's own stop reason: Gemini `MAX_TOKENS`, Anthropic `max_tokens`) is never retried by the same typist: the file goes to the next typist in its plan, and fails with that reason when none is left. |
+| Time limit | Every typist call has the same stated limit, 540 s. The agent door hands the executor's retry count and first wait to the Antigravity SDK's own API retry (6 retries, 2 s doubling to 64 s, without jitter: the SDK does not document its jitter setting's units). |
+| Run state | The auth mode and policy come from the run state `preflight_dispatch` recorded, never from the call. The first stage of a spec binds them; a later stage of the same spec whose latest pre-flight asked for different ones stops (`stopped` in the receipt) and types nothing. Another spec binds its own, so two separate `/mmo:` runs in one chat may use different policies. |
+| Billing | Typing is billed to `telemetry_path`, else the pass folder's `telemetry.jsonl`: one telemetry event per typist call. |
+
+**Tests and fixes.** After the tests stage the orchestrator runs the spec's install and check commands itself, reads what fails, and sends each file to change to `execute_stage` `repair` (`failures`: the file, the failing test and its error, the files to show beside it); the typist the policy's `debug` rule names makes the fix as exact edits. It repeats while the number of failing tests goes down, at most three repair rounds, and runs the checks once more after the senior review's repair round. The executor guard keeps it from starting other helpers to diagnose and from writing a project file itself; what still fails is reported at the next gate.
+
+**The acceptance stage** (`stage: "acceptance"`) types nothing and needs no pre-flight:
+
+- Code runs every command of the spec's acceptance list (`commands`: the install, the dependency audit, the checks) in order, each in its folder under the code directory, with the model vendors' credentials removed from its environment, its whole output written to a log file, and the time limit the plan states for it (`timeout_s`; no limit lives in code).
+- It judges each command by its pass rule (an exit code, and output lines the brief forbids, matched by prefix without regard to case), marks every acceptance criterion pass, fail or not checked, and writes `acceptance.json` and `acceptance.md` beside spec.json.
+- A command the machine cannot run (its program not found, exit 127; stopped at its time limit; or no limit stated) is `not_run`: its criteria are not checked, with that reason, and it is routed nowhere. An install that does not finish stops the commands after it; when the install itself could not run, those are not checked too.
+- Each failure names its route: `architect` for an install or audit (a version choice), `repair` for a failing check.
+- The stage runs at most once plus three re-checks per spec; a further call runs nothing.
+- The collector copies `acceptance.md` into SUMMARY.md between `<!-- acceptance:start -->` and `<!-- acceptance:end -->` on every run, so the report's acceptance table is code's.
+
+Code: [src/spec/](../plugin/mcp/model-dispatch/src/spec/) (schema, hand-over, rendering) and [src/executor/](../plugin/mcp/model-dispatch/src/executor/) (briefs, typists, checks, the stage runner, the acceptance stage, the tool handlers).
 
 ## 3. Routing
 
@@ -73,9 +113,10 @@ Policies live under [plugin/config/policies/](../plugin/config/policies/) as YAM
 | `models[].max_output_tokens_absolute` | number | Doubling-loop clamp for completion adapters. Absent on `antigravity-worker`. |
 | `select.<slot>.default` | model id | Used when no `MMO_SELECT` names this slot. |
 | `select.<slot>.options` | model id[] | The vetted set the run may pick from. |
-| `rules[].when` | `{phase, task_type?, module?, retry_count?}` | Ordered matcher. First match wins. |
+| `rules[].when` | `{phase, task_type?, module?, retry_count?}` | Ordered matcher. First match wins. The shipped policies match on phase and retry count only, so who types a file never depends on its language or type; the executor reads a rule for one of its stages by `phase` and `retry_count` alone (see *Who types a file*). |
 | `rules[].use` | model id **or** slot name | A slot resolves through `select` at routing time, not policy-load time. |
 | `rules[].default` | model id or slot | Fell-through terminal rule. |
+| `hard_cost_cap_usd` | not used | Set aside at load with a `policy.setting_ignored` warning, so no tool reply shows it: no cost cap exists, and a chat that read one took it for a real limit. |
 
 `MMO_SELECT` is spelled `slot=option[,slot=option...]`. Parsing lives in [routing.ts](../plugin/mcp/model-dispatch/src/routing.ts) (`parseSelectOverrides`) and is duplicated in [verify-setup.mjs](../plugin/scripts/verify-setup.mjs) (`parseSelectSpec`), which cannot import TypeScript. Both refuse malformed specs. `unreachableModelIds` excludes losing options from pre-flight without dropping ones a rule names directly.
 
@@ -92,7 +133,7 @@ One interface, four implementations, plus a factory.
 | [ModelAdapter.ts](../plugin/mcp/model-dispatch/src/adapters/ModelAdapter.ts) | interface | — |
 | [BuiltinAnthropicAdapter.ts](../plugin/mcp/model-dispatch/src/adapters/BuiltinAnthropicAdapter.ts) | `BuiltinAnthropicAdapter` | Anthropic direct SDK. Under `vendor`, dispatched here; under `estimated`, never constructed. |
 | [ClaudeCliAdapter.ts](../plugin/mcp/model-dispatch/src/adapters/ClaudeCliAdapter.ts) | `ClaudeCliAdapter` | Claude through a local `claude -p` subprocess on the subscription's OAuth session. Priced per model from its result's token ledger ([claudeCliLedger.ts](../plugin/mcp/model-dispatch/src/adapters/claudeCliLedger.ts)); the CLI's own `total_cost_usd` is kept only as a check. |
-| [GeminiFlashAdapter.ts](../plugin/mcp/model-dispatch/src/adapters/GeminiFlashAdapter.ts) | `GeminiFlashAdapter` | Gemini as a model, via `@google/genai`. Delegates transport to §5. |
+| [GeminiFlashAdapter.ts](../plugin/mcp/model-dispatch/src/adapters/GeminiFlashAdapter.ts) | `GeminiFlashAdapter` | Gemini as a model, via `@google/genai`. Delegates transport to §5. Sends the leaf's `reasoning.tier` as `thinkingConfig.thinkingLevel` (none when the leaf sets no tier). |
 | [AntigravityWorkerAdapter.ts](../plugin/mcp/model-dispatch/src/adapters/AntigravityWorkerAdapter.ts) | `AntigravityWorkerAdapter` | Gemini as an agent. Launches the Python worker. See §6. |
 | [index.ts](../plugin/mcp/model-dispatch/src/adapters/index.ts) | `createAdapter(model)` | Factory keyed on `model.adapter`. |
 | [pricing.ts](../plugin/mcp/model-dispatch/src/pricing.ts) | — | `computeCostUsd(tokens, pricing)` on disjoint cached/fresh counts. |

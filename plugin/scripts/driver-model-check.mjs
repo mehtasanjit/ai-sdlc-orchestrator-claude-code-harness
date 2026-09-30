@@ -54,7 +54,7 @@
  * MMO_SELECT slot overrides are honored the same way the server honors them.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -318,8 +318,9 @@ export async function main(argv = process.argv.slice(2)) {
   return 1;
 }
 
-const invokedDirectly =
-  process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+// import.meta.url is the module's real path; argv[1] keeps the caller's spelling (a symlinked plugin
+// folder, /var against /private/var), so the entry is compared by its real path too.
+const invokedDirectly = (() => { try { return pathToFileURL(realpathSync(process.argv[1] ?? "")).href === import.meta.url; } catch { return false; } })();
 if (invokedDirectly) {
   main().then(
     (code) => process.exit(code),

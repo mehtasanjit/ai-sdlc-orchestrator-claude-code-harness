@@ -658,6 +658,17 @@ test("inSessionDispatched: consistent telemetry subtracts exactly the in-session
   assert.deepEqual([r.cost, r.count, r.consistent, r.notes], [1, 1, true, []]);
 });
 
+test("inSessionDispatched: an executor typist on a claude-cli model stays in the total — it runs with no session transcript, so no scan counted it", async () => {
+  const { inSessionDispatched } = await helpers();
+  const policy = { models: [{ id: "opus", model_name: "claude-opus-5", adapter: "builtin-anthropic" }, { id: "sonnet", model_name: "claude-sonnet-5", adapter: "claude-cli" }] };
+  const events = [
+    { model: "claude-sonnet-5", model_id: "sonnet", provenance: "vendor", cost_usd: 2, door: "lean-opus" },
+    { model: "claude-sonnet-5", model_id: "sonnet", provenance: "vendor", cost_usd: 1 },
+  ];
+  const r = inSessionDispatched(events, policy, { totals: { models_used: ["claude-sonnet-5"] } }, 3);
+  assert.equal(r.cost, 1, "only the claude-cli worker whose own session the scan read is inside");
+});
+
 test("inSessionDispatched: rewritten telemetry is bounded by dispatched minus the out-of-session events, and says so", async () => {
   const { inSessionDispatched } = await helpers();
   const policy = { models: [{ id: "d", model_name: "claude-opus-5", adapter: "builtin-anthropic" }, { id: "g", model_name: "gemini-3.7-flash", adapter: "mcp:model-dispatch" }] };
@@ -1765,5 +1776,43 @@ test("a window opened at the first dispatch is reported as a lower bound, not an
     assert.equal(m.orchestrator_overhead.window.start_anchor, "telemetry rebuild started_at - 5m");
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ─── the acceptance table in SUMMARY.md ────────────────────────────────────
+
+test("the collector copies the acceptance table code wrote into SUMMARY.md, between markers, replacing it on every re-run", () => {
+  const fix = makeFixture();
+  try {
+    const table = "## Acceptance criteria (checked by code)\n\n| Criterion | Verdict | Checked by | Evidence |\n|---|---|---|---|\n| AC-1 | fail | install | 11 output lines start with \"npm warn\" |\n";
+    writeFileSync(join(fix.passDir, "acceptance.md"), table);
+    writeFileSync(join(fix.passDir, "SUMMARY.md"), "# Run summary\n\nTotal cost: see manifest.\n");
+    run(fix);
+    const once = readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8");
+    assert.match(once, /<!-- acceptance:start -->\n## Acceptance criteria \(checked by code\)[\s\S]*\| AC-1 \| fail \|[\s\S]*<!-- acceptance:end -->/);
+    assert.match(once, /^# Run summary/, "the rest of the summary is kept");
+    writeFileSync(join(fix.passDir, "acceptance.md"), table.replace("| fail | install | 11 output lines", "| pass | install | exit code 0; 0 output lines"));
+    run(fix);
+    const twice = readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8");
+    assert.equal(twice.split("<!-- acceptance:start -->").length, 2, "one block, replaced, never appended again");
+    assert.match(twice, /\| AC-1 \| pass \| install \|/);
+    assert.doesNotMatch(twice, /\| AC-1 \| fail \|/);
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true });
+  }
+});
+
+test("the collector leaves SUMMARY.md alone on a dry run, and when the run wrote no acceptance table", () => {
+  const fix = makeFixture();
+  try {
+    const summary = "# Run summary\n\nNo acceptance stage in this flow.\n";
+    writeFileSync(join(fix.passDir, "SUMMARY.md"), summary);
+    run(fix);
+    assert.equal(readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8"), summary, "no acceptance.md: untouched");
+    writeFileSync(join(fix.passDir, "acceptance.md"), "## Acceptance criteria (checked by code)\n");
+    run(fix, ["--dry-run"]);
+    assert.equal(readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8"), summary, "--dry-run writes nothing");
+  } finally {
+    rmSync(fix.root, { recursive: true, force: true });
   }
 });

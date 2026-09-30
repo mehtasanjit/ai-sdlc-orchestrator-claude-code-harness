@@ -303,7 +303,7 @@ export interface Manifest {
   }>;
   module_breakdown: Record<string, { calls: number; cost_usd: number }>;
   task_type_breakdown: Record<string, { calls: number; cost_usd: number }>;
-  artifacts?: { files: number; loc: number; tests: number; test_pass_rate: number };
+  artifacts?: { files: number; loc: number; tests?: number; test_pass_rate?: number };
   quality_scores?: Record<string, number>;
 }
 

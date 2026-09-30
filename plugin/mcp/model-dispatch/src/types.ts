@@ -81,6 +81,13 @@ export interface TelemetryEvent {
   model_id?: string;
   routed_by: "orchestrator" | "fallback" | "manual";
   /**
+   * Executor events only (execute_stage): which typist typed the unit —
+   * `lean-opus` (a `claude -p` with no tools), `flash-completion` (Gemini
+   * through the completion door) or `agy` (Gemini through the Antigravity
+   * SDK). Absent on every other event.
+   */
+  door?: "lean-opus" | "flash-completion" | "agy";
+  /**
    * Where this event's numbers came from. `"vendor"` = measured by the
    * dispatch server from the vendor's own usage report (every
    * `execute_with_model` event, in both auth modes); `"estimated"` =
@@ -200,6 +207,16 @@ export interface AttemptRecord {
   latency_ms: number;
   success: boolean;
   error?: string;
+  /**
+   * A failed call's HTTP status, as the vendor's error object states it
+   * (Google's ApiError.status). Callers classify failures from this field,
+   * never from `error`'s wording.
+   */
+  error_status?: number;
+  /** A call that failed in transit: its Node/undici error code (ECONNRESET, ETIMEDOUT, ...). */
+  error_code?: string;
+  /** The pause the vendor asked for (google.rpc.RetryInfo.retryDelay), in ms. */
+  retry_after_ms?: number;
   /**
    * Where `cost_usd`'s rates came from: `list` (src/prices.ts) or `custom`
    * (the policy block under `pricing_override: true`; on a claude-cli attempt,

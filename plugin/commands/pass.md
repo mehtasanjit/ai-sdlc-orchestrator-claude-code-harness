@@ -12,16 +12,19 @@ Invoke the `orchestrator` subagent to execute one full SDLC run.
 - `--policy=<name>` — routing policy name. When absent, resolves to the current project's `default_policy` field from `.sdlc/project.json` (written by the setup-time policy console — see [SETUP.md](../../SETUP.md) §5b), or `opus-plus-flash` if no project default is set.
 - `--study=<study-id>` — case-study identifier. Defaults to `workforce-ops`. Set this to a project-specific id when running against a brief other than the shipped `examples/workforce-ops/brief.md`, so telemetry and packets stay grouped by project.
 - `--run-id=<run-id>` — run identifier within the study. Defaults to `pass1`.
+- Executor mode — always on for a greenfield brief: the typed-spec executor flow (the pipeline skill's **Executor mode**; `/mmo:greenfield` always runs it). The architect hands over a typed spec, and the `execute_stage` tool types, checks and writes every file by code, each with the typist the policy routes it to, and types review and test fixes the same way (the policy's `debug` rule, exact edits); the orchestrator never re-types a file. The same flow for every policy, so a solo policy and a multi-model policy differ only in who types. Ignored in brownfield.
+- `--executor` — accepted and changes nothing: executor mode is already on for a greenfield brief.
 - The remaining positional argument is the path to the brief file. Any markdown brief on disk works — see `docs/brief-template.md` for the section layout the requirements phase expects.
 
 **Output paths:**
 - `pass_id`: `<run-id>`
 - `output_dir`: `examples/<study-id>/passes/<run-id>/`
+- `code_dir`: `examples/<study-id>/passes/<run-id>/src/` (the generated application: every file `execute_stage` writes, and the product Phase 9 counts; no run record file goes in it)
 - `telemetry_path`: `examples/<study-id>/passes/<run-id>/telemetry.jsonl`
 - `manifest_path`: `examples/<study-id>/passes/<run-id>/manifest.json`
 - `cache_context`: `<run-id>:<study-id>` (used to key the mechanical-tier prompt cache)
 
-If `examples/<study-id>/passes/<run-id>/` already exists, its contents will be overwritten. Use a new `--run-id` to preserve prior data.
+If `examples/<study-id>/passes/<run-id>/` already exists, the earlier run's executor records (`spec.parts/`, `spec.json`, `design.md`, `acceptance/`, `acceptance.json`, `acceptance.md`, `written-files.json`, `shared-brief.txt`) are moved under `<output_dir>/previous/<time>/` when the new run's architect sends its header, and other files are overwritten. Use a new `--run-id` to preserve prior data.
 
 **Single-model runs** — to author every phase with one model (e.g. an "Opus only" baseline), pass a policy whose `rules:` list has only a default rule routing to that model. The same command flow runs; the routing table just does not fork.
 
@@ -51,6 +54,8 @@ under a different policy than the run used is worse than no what-if.
 - The MCP server `model-dispatch` must be registered (it is, via the plugin manifest).
 
 **HITL gates active:** Gate 1 (requirements), Gate 2 (design), Gate 3 (security review), Gate 4 (final acceptance).
+
+Until the run ends, show the user no cost total, at a gate or between gates, even when the orchestrator's message carries one: those figures leave out what this session and its helpers cost, and the run's full cost is only known when the run ends.
 
 When invoked headlessly (e.g. via `claude --print "/mmo:pass ..." --output-format stream-json --verbose`), all four HITL gates auto-approve so the session can complete end-to-end without prompts.
 

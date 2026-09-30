@@ -16,7 +16,9 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { loadPolicy, loadPolicyFromPath, getModel } from "./policy.js";
 import {
@@ -26,7 +28,7 @@ import {
   validateSelectOverrides,
   unreachableModelIds,
 } from "./routing.js";
-import { assessModels, parseAuthMode, type AuthMode } from "./preflight.js";
+import { assessModels, claudeKeyProblem, executorCliCheck, parseAuthMode, type AuthMode } from "./preflight.js";
 import { checkModelPrice, withEffectivePrices } from "./effectivePrice.js";
 import { appendEvent, cacheWriteBuckets, normalizeDirectTierEvent } from "./telemetry.js";
 import { createAdapter } from "./adapters/index.js";
@@ -39,6 +41,10 @@ import {
 import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides } from "./types.js";
 import { resolveProjectRoot } from "./project-root.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
+// Typed-spec executor tools (greenfield runs): listed below, handled in executor/tools.ts.
+import { EXECUTOR_TOOLS, EXECUTOR_TOOL_NAMES, executorClaudeLeaves, executorPolicyNotes, handleExecutorTool, type RunState } from "./executor/tools.js";
+import { leanOpusCliProblem } from "./executor/typists.js";
+import { runCard } from "./runCard.js";
 
 /**
  * Cheap up-front schema validation for TaskPacket inputs to execute_with_model.
@@ -89,6 +95,13 @@ const SERVER_VERSION = "0.1.0";
 // Runtime state: loaded policies cached by name, adapters cached by model id.
 const adapterCache = new Map<string, ReturnType<typeof createAdapter>>();
 let activePolicy: Policy | null = null;
+/**
+ * The run as pre-flight saw it: the auth mode and the policy arguments.
+ * execute_stage reads these instead of taking them per call, so the model
+ * states the run's auth mode once (Phase -1) and every stage uses that same
+ * value.
+ */
+let runState: RunState | undefined;
 let activePolicyKey = "";
 
 /** Slot choices, spelled `slot=option[,slot=option...]`. Property of the install. */
@@ -152,6 +165,12 @@ function adapterFor(policy: Policy, modelId: string) {
   return adapter;
 }
 
+/** The plugin's directory (dist/ → model-dispatch/ → mcp/ → plugin/) and its version, for the run card. */
+const PLUGIN_DIR = fileURLToPath(new URL("../../../", import.meta.url));
+function pluginVersion(): string {
+  try { return JSON.parse(readFileSync(join(PLUGIN_DIR, ".claude-plugin", "plugin.json"), "utf8")).version ?? "unknown"; } catch { return "unknown"; }
+}
+
 /**
  * Construct every adapter the loaded policy names, before the run spends
  * anything. Adapters are otherwise built lazily on first dispatch, where a
@@ -164,23 +183,44 @@ function adapterFor(policy: Policy, modelId: string) {
  * constructs `builtin-anthropic`, so an unset ANTHROPIC_API_KEY is inert.
  * Classification lives in preflight.ts.
  */
-function preflightDispatch(policy: Policy, authMode: AuthMode) {
+function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: string, executor?: boolean) {
+  const overrides = selectOverrides();
   // Losing options of `select:` slots are excluded: their prerequisites
   // (Python venv, worker script) are not this run's problem.
-  const notSelected = unreachableModelIds(policy, selectOverrides());
+  const notSelected = unreachableModelIds(policy, overrides);
   // Every reachable model is also priced for today: a model with no price
   // halts the run here, before anything is spent, and a policy pricing block
-  // that differs from the price list is reported under price_warnings.
+  // that differs from the price list is reported under price_warnings. A
+  // Claude model whose vendor-mode key is unset fails here too, as a model
+  // that cannot be dispatched.
   const today = new Date();
   const assessment = assessModels(
     policy.models.filter((m) => !notSelected.has(m.id)),
     authMode,
-    (modelId) => adapterFor(policy, modelId),
+    (modelId) => {
+      const keyProblem = claudeKeyProblem(getModel(policy, modelId), authMode, process.env);
+      if (keyProblem) throw new Error(keyProblem);
+      return adapterFor(policy, modelId);
+    },
     (m) => checkModelPrice(getModel(policy, m.id), today, authMode),
   );
   for (const message of assessment.price_warnings) {
     log("warn", "pricing.policy_mismatch", { message });
   }
+
+  // The executor's own checks (a new-app build): every Claude model it types
+  // with, the lean Opus last attempt included, runs through this machine's
+  // claude CLI, so the CLI must offer the flags that route needs; and how the
+  // executor reads this policy is shown now, before any paid phase.
+  const cli = executorCliCheck({
+    executor,
+    claudeTypists: executor === false ? [] : executorClaudeLeaves(policy, overrides).map((m) => m.id),
+    cliProblem: () => leanOpusCliProblem(),
+  });
+  if (cli.halt || cli.warning) log("warn", "preflight.claude_cli", { problem: cli.check.claude_cli, halts: !!cli.halt });
+  const policyNotes = executor === false ? [] : executorPolicyNotes(policy, overrides);
+  const haltReason = [assessment.halt_reason, cli.halt].filter((r): r is string => !!r).join(" ") || null;
+  const warnings = cli.warning ? [...assessment.warnings, cli.warning] : assessment.warnings;
 
   // Resolved Gemini configuration — the project and region the run will bill.
   const adcPath = defaultAdcPath();
@@ -221,17 +261,32 @@ function preflightDispatch(policy: Policy, authMode: AuthMode) {
   for (const id of notSelected) {
     log("info", "preflight.model", { model_id: id, ok: true, classification: "not_selected" });
   }
+  // The run card: the code and cache rules this run used, so compared runs can
+  // be shown to have run the same way. A cache override is a warning, never a
+  // halt: a user may set one on purpose; a tool comparing runs can refuse it.
+  // Nothing about the card stops pre-flight.
+  let card: ReturnType<typeof runCard> | { error: string };
+  try {
+    card = runCard({ pluginDir: PLUGIN_DIR, pluginVersion: pluginVersion(), env: process.env, projectRoot });
+    for (const o of card.cache_overrides) {
+      log("warn", "run.cache_override", { setting: o, note: "overrides the plugin's pinned prompt-cache lifetimes; this run's cache costs are not comparable with a run without it" });
+    }
+    for (const p of card.settings_problems) log("warn", "run.settings_unread", { problem: p });
+  } catch (err: any) {
+    card = { error: `the run card could not be made: ${err?.message ?? String(err)}` };
+  }
+  log("info", "run.card", card as unknown as Record<string, unknown>);
   log("info", "preflight.result", {
-    ok: assessment.ok,
-    halt_reason: assessment.halt_reason,
-    warnings_n: assessment.warnings.length,
+    ok: haltReason === null,
+    halt_reason: haltReason,
+    warnings_n: warnings.length,
     backend: (gemini as any).backend,
     project: (gemini as any).project,
     location: (gemini as any).location,
   });
 
   return {
-    ok: assessment.ok,
+    ok: haltReason === null,
     auth_mode: authMode,
     policy: { name: policy.name, version: policy.version },
     models: assessment.models,
@@ -239,13 +294,19 @@ function preflightDispatch(policy: Policy, authMode: AuthMode) {
     // "pre-flight forgot about it".
     not_selected: [...notSelected],
     gemini,
-    halt_reason: assessment.halt_reason,
-    // Failures on models this run will not dispatch to — informational,
-    // never blocking.
-    warnings: assessment.warnings,
+    halt_reason: haltReason,
+    // Failures on models this run will not dispatch to, and a claude CLI
+    // problem when pre-flight was not told whether execute_stage types this
+    // run — informational, never blocking.
+    warnings,
     // Price notes that do not stop the run (a policy block that differs from
     // the price list; the list is billed).
     price_warnings: assessment.price_warnings,
+    // How execute_stage reads this policy (none of these stops a run), and
+    // whether this machine's claude CLI can run its Claude typists.
+    policy_notes: policyNotes,
+    executor: cli.check,
+    run_card: card,
   };
 }
 
@@ -343,7 +404,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "phases are billed. Requires auth_mode: under 'vendor' every model is dispatched through " +
         "this server and so every adapter must work, while under 'estimated' the orchestrator's " +
         "own tier runs in-session and its adapter is never constructed — failures there are " +
-        "reported in `warnings` and do not halt.",
+        "reported in `warnings` and do not halt. Pass executor: true for a run whose files " +
+        "execute_stage types (every new-app build: /mmo:greenfield, /mmo:pass on a brief): " +
+        "pre-flight then also halts when this machine's claude CLI cannot run the executor's " +
+        "Claude typists. The result's policy_notes say how execute_stage reads the policy.",
       inputSchema: {
         type: "object",
         properties: {
@@ -355,6 +419,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           policy_name: { type: "string" },
           project_root: { type: "string" },
           policy_path: { type: "string" },
+          executor: {
+            type: "boolean",
+            description:
+              "true when execute_stage types this run's files (every new-app build); false for a brownfield run. " +
+              "Omitted, a claude CLI that cannot run the executor's Claude typists is reported under warnings instead of halting.",
+          },
           log_level: {
             type: "string",
             enum: ["error", "warn", "info", "debug", "trace"],
@@ -382,10 +452,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    ...EXECUTOR_TOOLS,
   ],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
+server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const { name, arguments: args } = req.params;
   const a0 = args as any;
 
@@ -402,6 +473,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   log("debug", "tool.call.start", { tool: name, arg_keys: Object.keys(a0 ?? {}).join(",") });
 
   try {
+    // The executor's tools get the run state pre-flight recorded (the auth mode,
+    // and the policy loaded from pre-flight's own arguments), the run's slot
+    // choices — the same ones execute_with_model honours, so the Gemini door is
+    // the run's choice — and the request's progress channel (MCP progress
+    // messages keep a long stage call alive).
+    if (EXECUTOR_TOOL_NAMES.has(name as any)) {
+      const token = (req.params as any)._meta?.progressToken;
+      return await handleExecutorTool(name, a0, {
+        run: () => runState,
+        policy: (run) => ensurePolicy(run.policyName, run.projectRoot, run.policyPath),
+        overrides: selectOverrides(),
+        progress: { token, send: (params) => extra.sendNotification({ method: "notifications/progress", params } as any) },
+      });
+    }
     switch (name) {
       case "execute_with_model": {
         const a = args as any;
@@ -602,8 +687,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const a = args as any;
         // Parse before the policy loads so a missing mode fails on the mode.
         const authMode = parseAuthMode(a.auth_mode);
+        // Pre-flight opens a run: it records the auth mode and policy the run's
+        // executor stages will use. It never refuses a new one: the lock that
+        // keeps one run on one policy is the executor's, per run
+        // (executor/tools.ts, RUN_BINDINGS), so a second, separate /mmo: run in
+        // the same chat may use another policy or auth mode.
+        const next = { authMode, policyName: a.policy_name, projectRoot: a.project_root, policyPath: a.policy_path };
         const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
-        const out = preflightDispatch(policy, authMode);
+        const executor = typeof a.executor === "boolean" ? a.executor : undefined;
+        const out = preflightDispatch(policy, authMode, a.project_root, executor);
+        runState = next;
         return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
       }
       case "load_policy": {

@@ -1,0 +1,64 @@
+version: 1
+name: flash-agsdk-only
+models:
+  - id: flash
+    adapter: antigravity-worker
+    model_name: gemini-3.7-flash
+    display_name: gemini-3.7-flash (Antigravity agent)
+    pricing:
+      input: 0.75
+      input_cached: 0.075
+      output: 3.75
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing (AI Studio +
+      Vertex global); https://cloud.google.com/vertex-ai/generative-ai/pricing
+      (regional +10%)
+    pricing_last_verified: 2026-09-14
+    worker_timeout_sec: 540
+rules:
+  - when:
+      phase: requirements_analysis
+    use: flash
+    reason: "Floor tier: judgment routed to Flash agent"
+  - when:
+      phase: architecture_design
+    use: flash
+    reason: "Floor tier: judgment routed to Flash agent"
+  - when:
+      phase: plan_task_packets
+    use: flash
+    reason: "Floor tier: judgment routed to Flash agent"
+  - when:
+      phase: senior_code_review
+    use: flash
+    reason: "Floor tier: judgment routed to Flash agent"
+  - when:
+      phase: security_review
+    use: flash
+    reason: "Floor tier: judgment routed to Flash agent"
+  - when:
+      phase: discovery
+    use: flash
+    reason: "Floor tier: brownfield discovery routed to Flash agent"
+  - when:
+      phase: change_plan
+    use: flash
+    reason: "Floor tier: brownfield change plan routed to Flash agent"
+  - when:
+      phase: codegen
+    use: flash
+    reason: Mechanical tier — all codegen task types
+  - when:
+      phase: tests
+    use: flash
+    reason: Mechanical tier
+  - when:
+      phase: docs
+    use: flash
+    reason: Mechanical tier
+  - when:
+      phase: debug
+    use: flash
+    reason: Mechanical tier — no escalation; this policy is the floor
+  - default: flash
+    reason: Single-model floor policy
+hard_cost_cap_usd: 50

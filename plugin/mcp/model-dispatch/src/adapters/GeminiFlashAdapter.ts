@@ -27,6 +27,12 @@ import { DispatchPricer, geminiRates, unpricedRefusal, type BilledPrice, type Cl
 export interface GeminiFlashOptions {
   /** Clock for the dispatch date the price is looked up on; tests pin it. */
   now?: Clock;
+  /**
+   * A time limit on each request, sent as the SDK's own httpOptions.timeout.
+   * Unset sends none. The executor's typist sets one so a hung call cannot
+   * stall a stage (tools.ts).
+   */
+  requestTimeoutMs?: number;
 }
 
 // Fallback when the policy YAML omits max_output_tokens_absolute. 8192 is
@@ -57,7 +63,9 @@ export class GeminiFlashAdapter implements ModelAdapter {
     this.transport = transport;
     this.backendChoice = choice;
     this.pricer = new DispatchPricer(config, options.now);
+    this.requestTimeoutMs = options.requestTimeoutMs;
   }
+  private readonly requestTimeoutMs?: number;
 
   /**
    * The price of a dispatch on `date`: the effective rates (the dated list,
@@ -82,6 +90,16 @@ export class GeminiFlashAdapter implements ModelAdapter {
   get billedPricing(): ModelPricing | undefined {
     const price = this.pricingOn();
     return price.unpriced ? undefined : price.billed;
+  }
+
+  /**
+   * Place `header` first in every prompt this adapter sends, inline, without
+   * creating an explicit context cache. The executor uses it for the run's
+   * shared specification: text identical across calls and placed first is
+   * what Gemini's implicit caching can reuse, with no storage charge.
+   */
+  inlineHeader(header: string): void {
+    this.cacheHeader = header;
   }
 
   /**
@@ -147,10 +165,22 @@ export class GeminiFlashAdapter implements ModelAdapter {
 
     for (let attemptNumber = 1; attemptNumber <= MAX_DOUBLINGS + 1; attemptNumber++) {
       const attemptStart = Date.now();
+      // The leaf's reasoning tier, when set, becomes Gemini's thinkingLevel;
+      // with no tier the request carries none and Google's default applies.
+      // Reasoning tokens are billed at the output rate and count against
+      // maxOutputTokens, which is why the executor's typists run at "low" (one
+      // rule for every typist). Each tier is sent as written: "minimal",
+      // "low", "medium" and "high" are all members of the vendor's
+      // ThinkingLevel enum (@google/genai), and the agent door sends the same
+      // value, so one policy tier means one thing on both doors.
+      const tier = this.modelConfig.reasoning?.tier;
+      const thinkingLevel = tier === "minimal" || tier === "low" || tier === "medium" || tier === "high" ? tier : undefined;
       const generationConfig: any = {
         temperature: 0.2,
         maxOutputTokens: ceiling,
         ...(wantsJson ? { responseMimeType: "application/json" } : {}),
+        ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
+        ...(this.requestTimeoutMs ? { httpOptions: { timeout: this.requestTimeoutMs } } : {}),
       };
       if (wantsJson) generationConfig.responseSchema = packet.outputSchema;
 
@@ -163,7 +193,21 @@ export class GeminiFlashAdapter implements ModelAdapter {
           cachedContentName: cacheName,
         });
       } catch (err: any) {
-        const failTokens = { input: estimateTokens(userPrompt), input_cached: 0, output: 0 };
+        const failure = describeVendorFailure(err);
+        // A call Google answered with an error status bills nothing. Vertex AI:
+        // "You're charged only for requests that return a 200 response code.
+        // Requests returning any other response codes, such as 4xx and 5xx
+        // codes, aren't charged for the input or output." (VERTEX_PRICING_URL);
+        // the Gemini API: "If your request fails with a 400 or 500 error, you
+        // won't be charged for the tokens used." (its billing page). A
+        // connection that failed with no response keeps the stated bound — the
+        // prompt billed as input — since the request may have been answered.
+        const answeredWithError = failure.error_status !== undefined && failure.error_status !== 200;
+        // No connection was made (no address, refused, no route): the request never reached Google.
+        const neverSent = failure.error_code !== undefined && NEVER_SENT_CODES.has(failure.error_code);
+        const failTokens = answeredWithError || neverSent
+          ? { input: 0, input_cached: 0, output: 0 }
+          : { input: estimateTokens(userPrompt), input_cached: 0, output: 0 };
         attempts.push({
           attempt_number: attemptNumber,
           ceiling_used: ceiling,
@@ -173,6 +217,7 @@ export class GeminiFlashAdapter implements ModelAdapter {
           latency_ms: Date.now() - attemptStart,
           success: false,
           error: err?.message ?? String(err),
+          ...failure,
           price_basis: price.basis,
         });
         return this.finalizeResult(attempts, null, cacheHit, "vendor_error");
@@ -280,14 +325,41 @@ export class GeminiFlashAdapter implements ModelAdapter {
   }
 }
 
-function buildUserPrompt(packet: TaskPacket, headerInline: string): string {
+/** Node/undici codes of a request that never left this machine, so nothing reached Google to bill. */
+const NEVER_SENT_CODES = new Set(["ENOTFOUND", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EAI_AGAIN"]);
+
+/**
+ * A failed Gemini call, described by the vendor's own fields: the HTTP status
+ * on @google/genai's ApiError, the Node/undici code of a connection that failed
+ * in transit (on the error or its `cause`), and the delay a
+ * `google.rpc.RetryInfo` entry in the JSON error body asks for. Nothing is read
+ * from the error's wording.
+ */
+export function describeVendorFailure(err: any): { error_status?: number; error_code?: string; retry_after_ms?: number } {
+  const out: { error_status?: number; error_code?: string; retry_after_ms?: number } = {};
+  if (typeof err?.status === "number") out.error_status = err.status;
+  const code = err?.cause?.code ?? err?.code;
+  if (typeof code === "string") out.error_code = code;
+  let body: any;
+  try { body = JSON.parse(err?.message ?? ""); } catch { body = undefined; }
+  const info = (body?.error?.details ?? []).find((d: any) => typeof d?.["@type"] === "string" && d["@type"].endsWith("google.rpc.RetryInfo"));
+  // RetryInfo.retryDelay is a protobuf Duration, serialised in JSON as seconds with an "s" suffix ("7s", "0.5s").
+  const m = typeof info?.retryDelay === "string" ? /^(\d+(?:\.\d+)?)s$/.exec(info.retryDelay) : null;
+  if (m) out.retry_after_ms = Math.round(Number(m[1]) * 1000);
+  return out;
+}
+
+// Exported so the executor's other typists (lean Opus, the Antigravity typist)
+// frame a unit's brief with exactly this text: parity means every typist reads
+// byte-identical words, and this function is the one place the frame is defined.
+export function buildUserPrompt(packet: TaskPacket, headerInline: string): string {
   const inputsBlock = packet.inputs
     .map((s) => `### ${s.path}  — ${s.reason}\n\`\`\`\n${s.content}\n\`\`\``)
     .join("\n\n");
 
   return [
     headerInline ? `## Project header (inlined; cache miss)\n${headerInline}\n` : "",
-    `## Task — ${packet.id} (${packet.phase} / ${packet.task_type})`,
+    `## Task — ${packet.id} (${packet.phase}${packet.task_type ? ` / ${packet.task_type}` : ""})`, // an executor packet carries no task type
     `Module: ${packet.module}`,
     ``,
     `### Instruction`,

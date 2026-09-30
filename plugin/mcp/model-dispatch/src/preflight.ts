@@ -186,3 +186,44 @@ export function assessModels(
 
   return { models: results, ok: reasons.length === 0, halt_reason, warnings, price_warnings: priceWarnings };
 }
+
+/**
+ * Why a Claude model cannot be billed as the policy says under `vendor`, or
+ * null. A vendor run bills the Anthropic API key the model's `auth.env`
+ * names (ANTHROPIC_API_KEY for the in-session adapter when it names none);
+ * with that variable unset its calls would go out on whatever login the
+ * machine has, under a run labelled vendor. A claude-cli model that names no
+ * key runs on the CLI's own login, as it always has.
+ */
+export function claudeKeyProblem(model: { id: string; adapter: string; auth?: { env: string } }, authMode: AuthMode, env: Record<string, string | undefined>): string | null {
+  if (authMode !== "vendor" || (model.adapter !== IN_SESSION_ADAPTER && model.adapter !== "claude-cli")) return null;
+  const name = model.auth?.env ?? (model.adapter === IN_SESSION_ADAPTER ? "ANTHROPIC_API_KEY" : undefined);
+  if (!name || env[name]) return null;
+  return `${name} not set for ${model.id}: under auth_mode=vendor this model is billed to the Anthropic API key in ${name}${model.auth?.env ? " (the policy's auth.env)" : ""}. Export it, or run with auth_mode=estimated`;
+}
+
+/** What pre-flight reports about the claude CLI the executor's Claude typists need. */
+export interface ExecutorCliReport {
+  /** Models the executor types with `claude -p` for this policy and slot choice, the lean Opus last attempt included. */
+  claude_typists: string[];
+  /** "ok", "not checked" (no Claude typist, or not an executor run), or what is wrong and how to fix it. */
+  claude_cli: string;
+}
+
+/**
+ * The claude CLI check. `executor` says whether execute_stage types this
+ * run's files (every new-app build): true halts on a problem, before any paid
+ * phase; false skips the check (the packet flow never starts a typist);
+ * omitted reports a problem as a warning, since pre-flight cannot tell the
+ * flows apart and a brownfield run, which never needs the CLI, must not stop.
+ */
+export function executorCliCheck(o: { executor?: boolean; claudeTypists: string[]; cliProblem: () => string | null }): { check: ExecutorCliReport; halt: string | null; warning: string | null } {
+  const check: ExecutorCliReport = { claude_typists: o.claudeTypists, claude_cli: "not checked" };
+  if (o.executor === false || o.claudeTypists.length === 0) return { check, halt: null, warning: null };
+  const problem = o.cliProblem();
+  check.claude_cli = problem ?? "ok";
+  if (!problem) return { check, halt: null, warning: null };
+  const what = `execute_stage types ${o.claudeTypists.join(", ")} with this machine's claude CLI (the lean Opus last attempt included), but ${problem}.`;
+  if (o.executor === true) return { check, halt: `${what} Nothing was spent; fix it and run pre-flight again.`, warning: null };
+  return { check, halt: null, warning: `${what} A new-app build (execute_stage) cannot type with Claude until this is fixed; pass executor: true to pre-flight to stop such a run here. A brownfield run does not use the claude CLI.` };
+}

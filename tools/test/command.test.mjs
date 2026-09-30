@@ -359,3 +359,15 @@ test("every policy the wizard names exists on disk", () => {
     );
   }
 });
+
+test("both commands tell the chat to show no cost total before the run ends", () => {
+  // Seen on screen in interactive runs: between gates the chat kept a "Running total" of its own, summed from stage
+  // receipts and its estimates, and gate messages carried a "Cost so far". Both leave out what the session and its
+  // helpers cost, so the figure read several times lower than the run's real cost. The run's cost is reported once,
+  // when the run ends.
+  for (const file of [WIZARD, FULL]) {
+    const { body } = frontmatter(read(file));
+    assert.match(body, /Until the run ends, show the user no cost total, at a gate or between gates/, `${file} says it`);
+    assert.match(body, /leave out what this session and its helpers cost/, `${file} says why`);
+  }
+});

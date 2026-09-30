@@ -245,3 +245,79 @@ test("env.mjs resolves the log level in the documented precedence order", async 
   assert.equal(resolveLogLevel({ MMO_LOG_LEVEL: "error", MMO_VERBOSE: "1" }).level, "error");
   assert.equal(resolveLogLevel({ MMO_VERBOSE: "1", MMO_DEBUG: "1" }).level, "debug");
 });
+
+// ─── where mmo-log.mjs writes when no --project-root is given ──────────
+
+test("mmo-log.mjs called from inside the product folder of a git project with no --project-root writes to the project's .sdlc, never a new one in the product", () => {
+  const dir = tmpDir();
+  try {
+    spawnSync("mkdir", ["-p", join(dir, ".sdlc"), join(dir, "src", "api")]);
+    assert.equal(spawnSync("git", ["init", "-q", dir]).status, 0);
+    const r = spawnSync("node", [join(ROOT, "plugin", "scripts", "mmo-log.mjs"), "--event=phase.start", "--level=info", "--run-id=r1"], { encoding: "utf8", cwd: join(dir, "src", "api") });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(existsSync(join(dir, ".sdlc", "runs", "r1", "orchestrator.log")), "the project's own log");
+    assert.equal(existsSync(join(dir, "src", "api", ".sdlc")), false, "no .sdlc written inside the product");
+    assert.equal(existsSync(join(dir, "src", ".sdlc")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("env.mjs finds the nearest folder holding .sdlc, never above the git root; an explicit root still wins", async () => {
+  const { resolveProjectRoot } = await import(join(ROOT, "plugin", "scripts", "lib", "env.mjs"));
+  const { realpathSync } = await import("node:fs");
+  const outer = realpathSync(tmpDir());
+  try {
+    const repo = join(outer, "repo");
+    spawnSync("mkdir", ["-p", join(outer, ".sdlc"), join(repo, "pkg", ".sdlc"), join(repo, "pkg", "src"), join(repo, "other", "src")]);
+    assert.equal(spawnSync("git", ["init", "-q", repo]).status, 0);
+    assert.equal(resolveProjectRoot("/explicit/root", join(repo, "pkg", "src")), "/explicit/root", "an explicit root wins");
+    assert.equal(resolveProjectRoot(undefined, join(repo, "pkg", "src")), join(repo, "pkg"), "the nearest .sdlc, inside the repository");
+    assert.equal(resolveProjectRoot(undefined, join(repo, "other", "src")), repo, "no .sdlc inside the repository: its root, never the .sdlc above it");
+    const loose = join(outer, "loose", "src");
+    spawnSync("mkdir", ["-p", loose]);
+    assert.equal(resolveProjectRoot(undefined, loose), loose, "outside any repository: the folder itself, never the .sdlc above it");
+  } finally {
+    rmSync(outer, { recursive: true, force: true });
+  }
+});
+
+test("mmo-log.mjs takes --project-root in both forms, and the explicit root wins over the folder it runs in", () => {
+  const project = tmpDir();
+  const elsewhere = tmpDir();
+  try {
+    spawnSync("mkdir", ["-p", join(elsewhere, ".sdlc")]);
+    const script = join(ROOT, "plugin", "scripts", "mmo-log.mjs");
+    for (const [runId, args] of [["r-space", ["--project-root", project]], ["r-equals", [`--project-root=${project}`]]]) {
+      const r = spawnSync("node", [script, "--event=run.start", "--level=info", `--run-id=${runId}`, ...args, "--mode=greenfield"], { encoding: "utf8", cwd: elsewhere });
+      assert.equal(r.status, 0, r.stderr);
+      const log = join(project, ".sdlc", "runs", runId, "orchestrator.log");
+      assert.ok(existsSync(log), `${args.join(" ")}: the log is under the named root`);
+      assert.match(readFileSync(log, "utf8"), /mode=greenfield/, "the field after the root is still a field");
+      assert.doesNotMatch(readFileSync(log, "utf8"), /project_root|mmo-logging-test/, "the root is control, never a field");
+      assert.equal(existsSync(join(elsewhere, ".sdlc", "runs", runId)), false, "nothing under the folder it ran in");
+    }
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test("mmo-log.mjs run from a folder outside any git repository logs there, never to a .sdlc above it such as the home folder's", () => {
+  const home = tmpDir();
+  try {
+    const project = join(home, "Desktop", "newproj");
+    const nested = join(home, "Desktop", "workspace", "run-1");
+    spawnSync("mkdir", ["-p", join(home, ".sdlc", "local"), project, join(home, "Desktop", "workspace", ".sdlc"), nested]);
+    const script = join(ROOT, "plugin", "scripts", "mmo-log.mjs");
+    for (const cwd of [project, nested]) {
+      const r = spawnSync("node", [script, "--event=run.start", "--level=info", "--run-id=r1", "--mode=greenfield"], { encoding: "utf8", cwd, env: { ...process.env, HOME: home } });
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(existsSync(join(cwd, ".sdlc", "runs", "r1", "orchestrator.log")), `the run's own folder: ${cwd}`);
+    }
+    assert.equal(existsSync(join(home, ".sdlc", "runs")), false, "nothing under the home folder's .sdlc");
+    assert.equal(existsSync(join(home, "Desktop", "workspace", ".sdlc", "runs")), false, "nothing under a parent folder's .sdlc");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

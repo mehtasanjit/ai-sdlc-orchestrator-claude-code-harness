@@ -7,8 +7,10 @@ This file is written for Claude Code to follow. A user who says
 expects the setup to happen for them. Work through the steps below in order and report the
 result. The user should not have to type any command.
 
-Requirements: Node 20 or newer, and the Claude Code CLI. Step 4 checks both and says what to do
-if either is missing.
+Requirements: Node 20 or newer, and the Claude Code CLI. A new-app run types with Claude through
+that CLI, so its `claude --help` must list `--tools`, `--append-system-prompt-file` and `--effort`
+(`claude update` brings an older one up to date). Step 4 checks both and says what to do if either
+is missing, and the run's pre-flight checks the CLI again before anything is spent.
 
 ---
 

@@ -39,7 +39,7 @@ The table's "handled by" column names the script or subagent that owns each issu
 | # | Issue | Handled by | Behavior |
 |---|---|---|---|
 | 15 | Provider outage mid-dispatch | MCP server adapters | 3 retries with exponential backoff. Full outage → packet marked `failed: network`. Orchestrator prompts for the next step (retry / skip / abort). |
-| 16 | Cost runaway on unexpectedly large repo | MCP server + policy | Hard `hard_cost_cap_usd` cap in policy (default $50). When accumulated cost across the run exceeds it, the orchestrator aborts with a clear message showing per-phase spend. |
+| 16 | Cost runaway on unexpectedly large repo | Bounded by rounds, not dollars | No policy sets a cost cap. A greenfield run makes at most three repair rounds after a failing check run, and its acceptance stage at most three re-checks; a policy that still declares `hard_cost_cap_usd` has the figure set aside at load. |
 | 17 | Model deprecation mid-project | Adapter provider-error handling | Detect via provider error. Fail cleanly: *"model `<X>` is deprecated by provider — update your policy YAML to use `<Y>` (see release notes)."* No auto-fallback — you decide. |
 
 ## Out of scope

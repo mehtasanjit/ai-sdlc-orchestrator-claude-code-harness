@@ -10,8 +10,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadPolicy, getModel } from "../dist/policy.js";
 import { pickModel } from "../dist/routing.js";
+
+const POLICIES = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "config", "policies");
 
 const ctx = (phase, task_type = "misc", module = "cross", retry_count = 0) => ({
   phase,
@@ -58,13 +63,11 @@ test("both new phases carry a routing trace naming the matched rule (not default
   }
 });
 
-test("both policies declare a hard_cost_cap_usd (ticket §7.13)", () => {
-  for (const name of ["opus-plus-flash", "opus-only"]) {
-    const policy = loadPolicy({ policyName: name });
-    assert.equal(
-      typeof policy.hard_cost_cap_usd, "number",
-      `${name} must declare hard_cost_cap_usd (v1 default: 50)`,
-    );
-    assert.ok(policy.hard_cost_cap_usd > 0, `${name} cap must be positive`);
+// No shipped policy declares a per-run cost cap. Nothing ever enforced one, and a chat that read the figure
+// treated it as a real limit and paused a run to ask about it, which a run with no cap never does.
+test("no shipped policy declares a cost cap", () => {
+  for (const file of readdirSync(POLICIES).filter((f) => f.endsWith(".yaml"))) {
+    assert.doesNotMatch(readFileSync(join(POLICIES, file), "utf8"), /hard_cost_cap_usd|cost cap/i, `${file} declares no cost cap`);
+    assert.equal(loadPolicy({ policyName: file.replace(/\.yaml$/, "") }).hard_cost_cap_usd, undefined, `${file} loads with no cost cap`);
   }
 });

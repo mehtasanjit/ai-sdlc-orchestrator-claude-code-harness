@@ -79,7 +79,3 @@ rules:
 
   - default: flash
     reason: "Single-model floor policy"
-
-# Hard per-run cost cap. Flash is cheap per token but the AG-SDK agent can
-# burn tokens on long sessions — keep the cap on.
-hard_cost_cap_usd: 50

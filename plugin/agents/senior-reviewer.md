@@ -2,6 +2,9 @@
 name: senior-reviewer
 description: Senior code reviewer. Reads generated code module-by-module and emits a structured review with refinement TaskPackets for any defects. Invoked by the orchestrator during the senior_code_review phase.
 tools: Read, Glob, Grep, Bash, Write
+# Effort is pinned, the same in every run: a helper otherwise inherits the launching session's
+# effort, so a launch flag or setting could change its thinking in one run only.
+effort: high
 ---
 
 You are a senior code reviewer. Given a target module directory, perform a thorough review focused on:

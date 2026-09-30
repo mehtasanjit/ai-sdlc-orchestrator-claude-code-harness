@@ -6,13 +6,20 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
+import * as preflightModule from "../dist/preflight.js";
 import {
   IN_SESSION_ADAPTER,
   assessModels,
   parseAuthMode,
   requiresServerDispatch,
 } from "../dist/preflight.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** The two models of the shipped opus-plus-flash policy, in policy-file order. */
 const MODELS = [
@@ -181,4 +188,158 @@ test("a missing claude binary halts an estimated run that names the claude-cli a
   const sonnet = out.models.find((m) => m.id === "sonnet-cli");
   assert.equal(sonnet.required, true);
   assert.equal(sonnet.severity, "blocking");
+});
+
+// ─── The executor's checks: the claude CLI its Claude typists need, the key a vendor run bills ───
+
+test("the claude CLI check halts a new-app build, only warns when pre-flight is not told the flow, and is skipped for the packet flow", () => {
+  const { executorCliCheck } = preflightModule;
+  const problem = "this machine's claude CLI lists no --tools, --effort flags: update Claude Code";
+  let asked = 0;
+  const cliProblem = () => { asked++; return problem; };
+  const halt = executorCliCheck({ executor: true, claudeTypists: ["opus"], cliProblem });
+  assert.match(halt.halt, /opus/);
+  assert.ok(halt.halt.includes(problem));
+  assert.equal(halt.warning, null);
+  const unknown = executorCliCheck({ executor: undefined, claudeTypists: ["opus"], cliProblem });
+  assert.equal(unknown.halt, null, "a run that may be brownfield never needs the claude CLI, so it is not stopped");
+  assert.ok(unknown.warning.includes(problem));
+  asked = 0;
+  const packet = executorCliCheck({ executor: false, claudeTypists: ["opus"], cliProblem });
+  assert.deepEqual([packet.halt, packet.warning, packet.check.claude_cli, asked], [null, null, "not checked", 0]);
+  const noClaude = executorCliCheck({ executor: true, claudeTypists: [], cliProblem });
+  assert.deepEqual([noClaude.halt, noClaude.check.claude_cli], [null, "not checked"], "a policy with no Claude typist needs no claude CLI");
+  assert.equal(executorCliCheck({ executor: true, claudeTypists: ["opus"], cliProblem: () => null }).check.claude_cli, "ok");
+});
+
+test("under vendor auth a Claude model whose key variable is unset cannot be billed as the policy says", () => {
+  const { claudeKeyProblem } = preflightModule;
+  const named = { id: "sonnet", adapter: "claude-cli", auth: { env: "WORK_ANTHROPIC_KEY" } };
+  assert.match(claudeKeyProblem(named, "vendor", {}), /WORK_ANTHROPIC_KEY not set/);
+  assert.equal(claudeKeyProblem(named, "vendor", { WORK_ANTHROPIC_KEY: "k" }), null);
+  assert.equal(claudeKeyProblem(named, "estimated", {}), null, "an estimated run is on the subscription");
+  assert.match(claudeKeyProblem({ id: "opus", adapter: "builtin-anthropic" }, "vendor", {}), /ANTHROPIC_API_KEY not set/);
+  assert.equal(claudeKeyProblem({ id: "sonnet", adapter: "claude-cli" }, "vendor", {}), null, "a claude-cli model that names no key runs on the CLI's own login, as it always has");
+  assert.equal(claudeKeyProblem({ id: "flash", adapter: "mcp:model-dispatch", auth: { env: "GEMINI_API_KEY" } }, "vendor", {}), null, "not a Claude model");
+});
+
+// The real server over stdio. Only a stand-in claude's folder and the system folders are on its PATH.
+
+const FULL_HELP = ["-p, --print", "--output-format <format>", "--model <model>", "--tools <tools...>", "--append-system-prompt-file <file>", "--effort <level>", "--strict-mcp-config", "--safe-mode"].map((l) => `  ${l}  x`).join("\n");
+const OLD_HELP = ["-p, --print", "--output-format <format>", "--model <model>", "--append-system-prompt <prompt>"].map((l) => `  ${l}  x`).join("\n");
+
+function standInClaude(version, help) {
+  const bin = mkdtempSync(join(tmpdir(), "standin-claude-"));
+  writeFileSync(join(bin, "help.txt"), help + "\n");
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\ncase "$1" in\n  --version) echo "${version} (Claude Code)"; exit 0;;\n  --help) cat "${bin}/help.txt"; exit 0;;\nesac\nexit 1\n`);
+  chmodSync(join(bin, "claude"), 0o755);
+  return bin;
+}
+
+function policyFile(text) {
+  const dir = mkdtempSync(join(tmpdir(), "policy-"));
+  writeFileSync(join(dir, "p.yaml"), text);
+  return join(dir, "p.yaml");
+}
+
+async function preflightWith(bin, args, extraEnv = {}) {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const home = mkdtempSync(join(tmpdir(), "preflight-home-"));
+  const transport = new StdioClientTransport({ command: process.execPath, args: [join(HERE, "..", "dist", "server.js")], env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, MMO_LOG_LEVEL: "error", ...extraEnv }, stderr: "ignore" });
+  const client = new Client({ name: "preflight-test", version: "0" });
+  await client.connect(transport);
+  try {
+    const r = await client.callTool({ name: "preflight_dispatch", arguments: { project_root: home, ...args } });
+    assert.notEqual(r.isError, true, r.content[0].text);
+    return JSON.parse(r.content[0].text);
+  } finally {
+    await client.close();
+  }
+}
+
+test("a new-app build whose claude CLI cannot run the lean Opus typist halts at pre-flight, naming the missing flags and how to update", async () => {
+  const old = standInClaude("1.0.99", OLD_HELP);
+  const out = await preflightWith(old, { auth_mode: "estimated", policy_name: "opus-only-v5", executor: true });
+  assert.equal(out.ok, false);
+  for (const f of ["--tools", "--append-system-prompt-file", "--effort"]) assert.ok(out.halt_reason.includes(f), `${f}: ${out.halt_reason}`);
+  assert.match(out.halt_reason, /update Claude Code/);
+  assert.deepEqual(out.executor.claude_typists, ["opus"]);
+  // Not told the flow (a brownfield run never uses the lean typist): reported, not a halt.
+  const unknown = await preflightWith(old, { auth_mode: "estimated", policy_name: "opus-only-v5" });
+  assert.equal(unknown.ok, true, unknown.halt_reason);
+  assert.ok(unknown.warnings.some((w) => w.includes("--tools")), JSON.stringify(unknown.warnings));
+  const packetFlow = await preflightWith(old, { auth_mode: "estimated", policy_name: "opus-only-v5", executor: false });
+  assert.equal(packetFlow.ok, true);
+  assert.ok(!packetFlow.warnings.some((w) => w.includes("--tools")));
+  // No claude on the server's PATH at all.
+  const none = await preflightWith(mkdtempSync(join(tmpdir(), "no-claude-")), { auth_mode: "estimated", policy_name: "opus-only-v5", executor: true });
+  assert.equal(none.ok, false);
+  assert.match(none.halt_reason, /no `claude` command on this server's PATH/);
+  // A current CLI passes.
+  const current = await preflightWith(standInClaude("2.1.283", FULL_HELP), { auth_mode: "estimated", policy_name: "opus-only-v5", executor: true });
+  assert.equal(current.ok, true, current.halt_reason);
+  assert.equal(current.executor.claude_cli, "ok");
+});
+
+test("pre-flight checks the Claude model the run's last attempt really uses: the default slot as the run chose it", async () => {
+  const bin = standInClaude("2.1.283", FULL_HELP);
+  const policy_path = policyFile(`version: 1
+name: slots-default
+models:
+  - id: opus
+    adapter: builtin-anthropic
+    model_name: claude-opus-5
+  - id: sonnet
+    adapter: builtin-anthropic
+    model_name: claude-sonnet-5
+  - id: flash
+    adapter: mcp:model-dispatch
+    model_name: gemini-3.8-flash
+select:
+  premium: { default: sonnet, options: [opus, sonnet] }
+rules:
+  - when: { phase: [codegen, tests, docs, debug] }
+    use: flash
+  - default: premium
+`);
+  const out = await preflightWith(bin, { auth_mode: "estimated", policy_path, executor: true }, { GEMINI_API_KEY: "fake-not-real", GEMINI_BACKEND: "api-key", MMO_SELECT: "premium=sonnet" });
+  assert.deepEqual(out.not_selected, ["opus"]);
+  assert.ok(out.models.some((m) => m.id === "sonnet"), "the last attempt's model is checked and priced");
+  assert.deepEqual(out.executor.claude_typists, ["sonnet"], "never the de-selected opus");
+});
+
+test("a vendor run whose Claude model's key variable is unset halts at pre-flight", async () => {
+  const bin = standInClaude("2.1.283", FULL_HELP);
+  const policy_path = policyFile(`version: 1
+name: cli-key
+models:
+  - id: sonnet
+    adapter: claude-cli
+    model_name: claude-sonnet-5
+    auth: { env: WORK_ANTHROPIC_KEY }
+rules:
+  - default: sonnet
+`);
+  const unset = await preflightWith(bin, { auth_mode: "vendor", policy_path });
+  assert.equal(unset.ok, false);
+  assert.match(unset.halt_reason, /WORK_ANTHROPIC_KEY not set/);
+  const set = await preflightWith(bin, { auth_mode: "vendor", policy_path }, { WORK_ANTHROPIC_KEY: "k" });
+  assert.equal(set.ok, true, set.halt_reason);
+});
+
+test("pre-flight shows how the executor reads the policy before anything is spent", async () => {
+  const bin = standInClaude("2.1.283", FULL_HELP);
+  const out = await preflightWith(bin, { auth_mode: "estimated", policy_path: join(HERE, "fixtures", "earlier-policies", "opus-plus-flash-v38.yaml") }, { GEMINI_API_KEY: "fake-not-real", GEMINI_BACKEND: "api-key" });
+  assert.equal(out.ok, true, out.halt_reason);
+  assert.ok(out.policy_notes.some((n) => /read by its stage alone/.test(n)), JSON.stringify(out.policy_notes));
+});
+
+test("an unreadable or odd settings file never stops pre-flight: the run card reports it", async () => {
+  const bin = standInClaude("2.1.283", FULL_HELP);
+  const project = mkdtempSync(join(tmpdir(), "odd-settings-"));
+  mkdirSync(join(project, ".claude", "settings.local.json"), { recursive: true });
+  const out = await preflightWith(bin, { auth_mode: "estimated", policy_name: "opus-only-v5", project_root: project });
+  assert.equal(out.ok, true, out.halt_reason);
+  assert.deepEqual(out.run_card.settings_problems.map((p) => p.split(":")[0]), [join(project, ".claude", "settings.local.json")]);
 });

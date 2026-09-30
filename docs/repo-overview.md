@@ -26,8 +26,8 @@ You type `/mmo:greenfield` (new app) or `/mmo:brownfield` (existing repo). An **
 | [plugin/agents/](../plugin/agents/) | Subagent definitions — orchestrator, architect, discovery, senior-reviewer, security-reviewer. |
 | [plugin/skills/pipeline/](../plugin/skills/pipeline/) | The pipeline state machine itself: phases, TaskPacket schema, HITL gates, telemetry contract. The orchestrator reads this to know what to do at each step. |
 | [plugin/skills/brownfield-guide/](../plugin/skills/brownfield-guide/) | Guidance specific to running against an existing repo. |
-| [plugin/mcp/model-dispatch/](../plugin/mcp/model-dispatch/) | The MCP server: routes a phase to a model per the active policy, calls the Gemini adapter (API key or ADC), logs telemetry, enforces the cost cap. |
-| [plugin/config/policies/](../plugin/config/policies/) | YAML policy files — which model runs which phase, retry/escalation rules, the cost cap. `opus-plus-flash.yaml` is the shipped default. |
+| [plugin/mcp/model-dispatch/](../plugin/mcp/model-dispatch/) | The MCP server: routes a phase to a model per the active policy, calls the Gemini adapter (API key or ADC), logs telemetry. |
+| [plugin/config/policies/](../plugin/config/policies/) | YAML policy files — which model runs which phase, retry/escalation rules and fix rounds. `opus-plus-flash.yaml` is the shipped default. |
 | [plugin/policy-console/](../plugin/policy-console/) | The small local Next.js app `/mmo:policy change` opens in your browser to author or edit a policy. |
 | [plugin/scripts/](../plugin/scripts/) | Node scripts run outside the model loop: setup verification, credential discovery, the brownfield write-contract check, provenance writer, session hydration. |
 | [plugin/hooks/](../plugin/hooks/) | Claude Code hooks — currently a telemetry heartbeat written alongside every `execute_with_model` call. |

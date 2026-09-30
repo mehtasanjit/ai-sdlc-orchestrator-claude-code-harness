@@ -8,22 +8,40 @@
  * precedence independently.
  */
 import { spawnSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 const LEVELS = new Set(["error", "warn", "info", "debug", "trace"]);
 
 /**
  * The command layer resolves the project root once and passes it down
- * (--project-root=<abs-path>); scripts invoked without it fall back to
- * `git rev-parse --show-toplevel`, then cwd. Mirrors write-provenance.mjs's
- * resolveProjectRoot — the SiteNotes bug (a stale cwd silently writing into
- * the wrong git worktree) is exactly why --project-root should always be
- * passed rather than relying on this fallback.
+ * (--project-root <abs-path>), and should always pass it. Without it, inside
+ * a git repository: the nearest folder holding `.sdlc/` (never above the git
+ * root), then the git root, so a call from inside a project that sits in a
+ * subfolder of a larger repository finds that project's `.sdlc/`. Outside
+ * any git repository: cwd. Nothing there marks where a project ends, so an
+ * ancestor's `.sdlc/` (the home folder's, or a parent folder's own project)
+ * cannot be told apart from this project's.
  */
-export function resolveProjectRoot(explicit) {
+export function resolveProjectRoot(explicit, cwd = process.cwd()) {
   if (explicit) return explicit;
-  const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
-  if (r.status === 0) return r.stdout.trim();
-  return process.cwd();
+  const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd });
+  const top = r.status === 0 ? r.stdout.trim() : null;
+  if (!top) return cwd;
+  return nearestSdlc(cwd, top) ?? top;
+}
+
+function nearestSdlc(from, stopAt) {
+  const real = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };
+  const stop = real(stopAt);
+  let d = real(from);
+  for (;;) {
+    if (existsSync(join(d, ".sdlc"))) return d;
+    if (d === stop) return null;
+    const up = dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
 }
 
 /**

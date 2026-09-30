@@ -11,6 +11,9 @@
  * --event, --level, --project-root are reserved (control, never become log
  * fields). Everything else, including --run-id, becomes a field in argv
  * order — --run-id is additionally used to resolve where the run log lives.
+ * Every argument is --key=value, except --project-root, which also takes its
+ * value as the next argument (--project-root "$(pwd)", as the orchestrator
+ * prompt writes it).
  *
  * Fail-open, like write-provenance.mjs: any error warns to stderr and exits
  * 0, because a logging failure must never stop a run.
@@ -23,10 +26,16 @@ const RESERVED = new Set(["event", "level", "project-root"]);
 
 function parseArgs(argv) {
   const out = { event: null, level: "info", projectRoot: null, fields: [] };
-  for (const arg of argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
     if (!arg.startsWith("--")) continue;
+    if (arg === "--project-root") {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("--")) { out.projectRoot = next; i++; }
+      continue;
+    }
     const eq = arg.indexOf("=");
-    if (eq === -1) continue; // this wrapper only accepts --key=value, unlike the scripts it logs
+    if (eq === -1) continue; // a bare flag carries no value to log
     const key = arg.slice(2, eq);
     const value = arg.slice(eq + 1);
     if (key === "event") out.event = value;

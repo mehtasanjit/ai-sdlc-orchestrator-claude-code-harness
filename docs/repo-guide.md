@@ -1,6 +1,6 @@
 # Repo guide
 
-This repository holds `mmo` (Multi-Model Orchestrator) v0.7.4 — a Claude Code plugin that runs a
+This repository holds `mmo` (Multi-Model Orchestrator) v0.7.12 — a Claude Code plugin that runs a
 full software-delivery pipeline against a brief (requirements → design → code → senior review →
 tests → security review), routes each phase to the model that fits it, and records what each phase
 cost — plus the harness, tests and documentation that ship it.
@@ -61,6 +61,10 @@ path, one API call per unit of work, nothing here is installed and nothing here 
 | `plugin/mcp/model-dispatch/src/server.ts` | Reading or changing the MCP server. Claude Code launches the compiled `dist/server.js`; the source is here. One adapter per model surface sits in `src/adapters/`. |
 | `plugin/policy-console/policy-server.mjs` | Serving the policy console on `127.0.0.1`. Normally started for you by `plugin/scripts/setup-policy.mjs`. |
 | `plugin/mcp/model-dispatch/worker/gemini_worker.py` | Debugging the agent path. The MCP server spawns it; you do not start it by hand. |
+| `plugin/mcp/model-dispatch/src/executor/` | Reading or changing the typed-spec executor (greenfield: `/mmo:greenfield` and `/mmo:pass`). `brief.ts` renders briefs and fix briefs; `typists.ts` holds the three typists (their environments, request shapes and failure classification); `checks.ts` the checks on every answer; `run.ts` the stage runner (the ladder, repairs, warm-up); `acceptance.ts` the acceptance stage (runs the spec's acceptance commands and marks every criterion); `tools.ts` the MCP tools. The typed spec itself is in `src/spec/`, and `worker/typist_worker.py` is the agent-door typist. |
+| `plugin/scripts/write-manifest.mjs` | Rebuilding a run's `manifest.json` from its records. Phase 9 runs it; the manifest is never typed by hand. The collector copies the acceptance table into SUMMARY.md with `plugin/scripts/lib/acceptance-summary.mjs`. |
+| `plugin/scripts/executor-guard.mjs` | Debugging a refused helper launch or write in an executor run. It keeps that run's orchestrator to the pipeline's own helpers and to writes inside its own run's record folder. |
+| `plugin/mcp/model-dispatch/src/runCard.ts` | Reading the run card pre-flight records: the plugin version and commit, Claude Code's version, and the prompt-cache overrides it found. |
 
 ## Inside `plugin/`
 
@@ -69,12 +73,12 @@ path, one API call per unit of work, nothing here is installed and nothing here 
 | `commands/` | 13 slash commands, one Markdown file each, all namespaced `/mmo:` — `greenfield.md`, `brownfield.md`, `pass.md`, seven per-job aliases, plus `setup.md`, `policy.md` and `revert.md`. |
 | `agents/` | 5 subagent definitions: `orchestrator`, `architect`, `discovery`, `senior-reviewer`, `security-reviewer`. |
 | `skills/` | Playbooks a subagent reads at run time. `pipeline/SKILL.md` carries the state machine, the task-packet schema (one packet per unit of work, the unit that gets routed to a model) and the approval gates; `brownfield-guide/SKILL.md` covers work on an existing repo. Per-stack guidance lives in `skills/pipeline/stacks/`. |
-| `config/policies/` | Routing policies as YAML — the directory listing is the authoritative preset set (`opus-plus-flash.yaml` is the default). A policy maps each phase to a model, prices each model, and sets the run's cost cap. |
+| `config/policies/` | Routing policies as YAML — the directory listing is the authoritative preset set (`opus-plus-flash.yaml` is the default). A policy maps each phase to a model and prices each model; it sets no cost cap. |
 | `config/intents.json` | The seven brownfield job types. |
 | `mcp/model-dispatch/` | The MCP server package (see the table above). |
 | `policy-console/` | The policy console package. |
 | `scripts/` | Node scripts the commands shell out to — setup checks, credential discovery, the write-contract hook, provenance recording, run logging. |
-| `hooks/` | `hooks.json` registers two: a `PreToolUse` write-contract check that refuses edits outside an approved file list, and a `PostToolUse` telemetry heartbeat. |
+| `hooks/` | `hooks.json` registers: a `PreToolUse` write-contract check that refuses edits outside an approved file list, a `PreToolUse` rule that keeps the pipeline's own helpers in the foreground, the executor guard (`PreToolUse` and `PostToolUse`) that keeps a greenfield executor run's orchestrator to its own record folder, and a `PostToolUse` telemetry heartbeat. |
 | `templates/` | Fragments copied into a target project, such as the `.gitignore` entry for run artifacts. |
 | `examples/` | Sandbox projects you point the plugin at by hand — six tiny apps, one per brownfield job type — plus copies of the four example briefs, which live here because only `plugin/` is copied on install. |
 

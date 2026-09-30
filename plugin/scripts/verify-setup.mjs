@@ -16,11 +16,11 @@
  *   ...--user                              machine-wide instead of this folder
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ─── pure helpers ─────────────────────────────────────────────────────
 
@@ -302,6 +302,30 @@ export function hasVertexCredentials(vertex = null) {
   return vertex?.state === "credential";
 }
 
+// ─── the claude CLI's flags ───────────────────────────────────────────
+
+/**
+ * The flags the greenfield executor's lean Opus typist passes to `claude -p`, at the effort typing always
+ * sets. The server's executor/typists.ts (LEAN_OPUS_NEEDS, leanOpusCliProblem) holds the rule; this
+ * script runs before the server is built and cannot import it.
+ */
+export const LEAN_OPUS_FLAGS = ["--tools", "--append-system-prompt-file", "--effort"];
+
+/**
+ * Whether `claude --help` offers `flag`, read as the server's cliLists() reads it: as its own option, or
+ * folded into a sibling's description as `--name[-file]`, the only way some releases list
+ * --append-system-prompt-file.
+ */
+export function cliLists(helpText, flag) {
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`);
+  if (new RegExp(`(^|\\s)${esc(flag)}(\\s|,|$)`, "m").test(helpText)) return true;
+  const m = flag.match(/^(--.+)-file$/);
+  return !!m && helpText.includes(`${m[1]}[-file]`);
+}
+
+/** The lean Opus typist's flags that `claude --help` does not list. */
+export const missingLeanOpusFlags = (helpText) => LEAN_OPUS_FLAGS.filter((f) => !cliLists(String(helpText ?? ""), f));
+
 /**
  * Facts → ordered problem list. Pure. `blocking` fails the exit code;
  * `warning` limits which policies run.
@@ -319,6 +343,8 @@ export function evaluate({
   hasGcloud = true,
   /** {hasVenv, sdkImportable, detail} or null when this install didn't ask for the agent. */
   agentWorker = null,
+  /** `claude --help` as read: {text}, {error} when it failed, or null when it was not read. */
+  claudeHelp = null,
 }) {
   const problems = [];
 
@@ -338,6 +364,24 @@ export function evaluate({
       message: "Claude Code CLI not found on PATH.",
       fix: "npm install -g @anthropic-ai/claude-code",
     });
+  }
+
+  // A warning, not a block: a brownfield run never starts the typist and runs with any CLI.
+  if (hasClaudeCli && claudeHelp) {
+    const missing = claudeHelp.error != null ? null : missingLeanOpusFlags(claudeHelp.text);
+    if (missing === null || missing.length > 0) {
+      problems.push({
+        id: "claude-cli-flags",
+        severity: "warning",
+        message:
+          (missing === null
+            ? `\`claude --help\` failed (${String(claudeHelp.error).slice(0, 200)}), so this check cannot tell whether the claude CLI lists ${LEAN_OPUS_FLAGS.join(", ")}. `
+            : `This machine's claude CLI lists no ${missing.join(", ")} flag${missing.length > 1 ? "s" : ""}. `) +
+          "A new-app build (execute_stage) types files with Claude through it — the lean Opus typist, also every job's last attempt " +
+          "when the policy has a Claude model — and cannot type with Claude until the CLI lists them. A brownfield run does not use the claude CLI.",
+        fix: `Update Claude Code (\`claude update\`) until \`claude --help\` lists ${LEAN_OPUS_FLAGS.join(", ")}.`,
+      });
+    }
   }
 
   // The two artifacts a fresh install never carries. --fix repairs both.
@@ -536,6 +580,14 @@ function onPath(cmd) {
   return spawnSync("which", [cmd], { encoding: "utf8" }).status === 0;
 }
 
+/** `claude --help`, read as the server reads it (its standard output, a zero exit), for evaluate's claudeHelp. */
+function readClaudeHelp() {
+  const r = spawnSync("claude", ["--help"], { encoding: "utf8", timeout: 30_000 });
+  if (r.error) return { error: r.error.message };
+  if (r.status !== 0) return { error: `exit ${r.status ?? r.signal}${r.stderr?.trim() ? `: ${r.stderr.trim().split("\n").pop()}` : ""}` };
+  return { text: r.stdout ?? "" };
+}
+
 /**
  * Import attempted, not inferred from directory presence — a venv built
  * against an upgraded/uninstalled interpreter looks healthy on disk and
@@ -565,9 +617,11 @@ function observe(pluginRoot, env = process.env) {
   // key or a path to a deleted file passes existsSync and fails a real call.
   const realEnv = usableEnv(env);
   const adcFile = adcPath();
+  const hasClaudeCli = onPath("claude");
   return {
     nodeMajor: nodeMajorFrom(process.versions.node),
-    hasClaudeCli: onPath("claude"),
+    hasClaudeCli,
+    claudeHelp: hasClaudeCli ? readClaudeHelp() : null,
     hasGcloud: onPath("gcloud"),
     hasNodeModules: existsSync(nodeModules),
     hasDist: existsSync(distEntry),
@@ -924,8 +978,11 @@ export function runBrownfieldChecks(pluginRoot, { spawn = spawnSync } = {}) {
   };
 }
 
-// Direct-execution gate so the test suite can import the pure helpers.
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// Direct-execution gate so the test suite can import the pure helpers. import.meta.url is the module's
+// real path; argv[1] keeps the caller's spelling (a symlinked plugin folder, /var against /private/var),
+// so it is compared by its real path too. A skipped check exits 0, which would read as a pass.
+const invokedDirectly = (() => { try { return pathToFileURL(realpathSync(process.argv[1] ?? "")).href === import.meta.url; } catch { return false; } })();
+if (invokedDirectly) {
   const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const log = (m) => console.log(m);
   const shouldFix = process.argv.includes("--fix");

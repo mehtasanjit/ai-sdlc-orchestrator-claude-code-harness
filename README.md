@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.7.4-blue)](.claude-plugin/marketplace.json)
+[![Version](https://img.shields.io/badge/version-0.7.12-blue)](.claude-plugin/marketplace.json)
 
 ![How the plugin works — you paste two prompts, an orchestrator routes premium work to Claude Opus and mechanical work to Gemini Flash, and your project gets both generated code and a full audit trail](docs/assets/hero.svg)
 
@@ -45,7 +45,29 @@ The highlighted path is where cost drops — mechanical work routed off Opus int
 
 ### Phase timeline
 
-A greenfield run walks 11 states in order. Brownfield inserts two more (`discovery`, `change_plan`) around the same core. Each state is color-coded by which tier does the work.
+A greenfield run — `/mmo:greenfield` or `/mmo:pass` — runs the typed-spec executor: the architect hands over a typed spec, and `execute_stage` types, checks and writes every file and every fix with the typist the policy names, so no file passes through the orchestrator's conversation. The orchestrator runs the spec's install and check commands itself, reads what fails, and sends each file to change back to `execute_stage` (stage `repair`), for at most three repair rounds. At the end, code runs every acceptance check the spec lists, each within the time limit the spec states, and writes the pass/fail table the report carries; `scripts/write-manifest.mjs` writes the manifest from the run's records. Each state is color-coded by which tier does the work.
+
+```mermaid
+flowchart LR
+    E0([preflight_dispatch]):::local
+    E1[requirements_analysis]:::opus
+    E2[architecture_design<br/><i>typed spec</i>]:::opus
+    E3[execute_stage<br/>codegen · tests]:::gem
+    E4[test_run<br/>+ repair]:::local
+    E5[execute_stage<br/>docs]:::gem
+    E6[senior_code_review<br/>+ repair]:::opus
+    E7[security_review]:::opus
+    E8[execute_stage<br/>acceptance]:::local
+    E9[generate_final_report]:::opus
+
+    E0 --> E1 --> E2 --> E3 --> E4 --> E5 --> E6 --> E7 --> E8 --> E9
+
+    classDef opus  fill:#FEF3C7,stroke:#B45309,color:#78350F
+    classDef gem   fill:#E0F2FE,stroke:#0369A1,color:#0C4A6E
+    classDef local fill:#F3F4F6,stroke:#6B7280,color:#1F2937
+```
+
+The packet flow, which every brownfield run uses, walks the 11 states below plus two brownfield ones (`discovery`, `change_plan`) around the same core.
 
 ```mermaid
 flowchart LR
@@ -103,19 +125,19 @@ Same rule applies to greenfield and brownfield. The default `opus-plus-flash` po
 
 | Phase | Tier | Model in the default policy |
 |---|---|---|
-| `requirements_analysis` · `architecture_design` · `plan_task_packets` | premium | Claude Opus |
+| `requirements_analysis` · `architecture_design` · `plan_task_packets` (not in the executor flow) | premium | Claude Opus |
 | `senior_code_review` · `security_review` | premium | Claude Opus |
 | `discovery` · `change_plan` (brownfield only) | premium | Claude Opus |
-| `execute_packets` (codegen) · `tests` · `docs` | mechanical | Gemini Flash |
+| codegen · `tests` · `docs` (`execute_stage` in the executor flow, `execute_packets` otherwise) | mechanical | Gemini Flash |
 | `debug` (retry_count ≥ 2) | premium | Claude Opus (auto-escalation) |
-| `test_run` | local | Bash on your machine, no model call |
+| `test_run` | local | Bash on your machine, no model call (executor flow: `execute_stage` verify runs the checks by code; failures go to the `debug` route) |
 
 Source: [plugin/config/policies/opus-plus-flash.yaml:64](plugin/config/policies/opus-plus-flash.yaml). Every rule is data — change routing by editing the YAML, or author a new policy in the browser console via `/mmo:policy change`.
 
 Two guardrails ship on:
 
 - **Escalation** — a mechanical-tier packet that fails validation twice auto-routes to Opus on the third attempt. Prevents infinite retries when Flash can't solve a particular puzzle.
-- **Hard cost cap** — `$50` per run ([opus-plus-flash.yaml:135](plugin/config/policies/opus-plus-flash.yaml)). The orchestrator aborts cleanly if accumulated cost crosses it. Raise or remove in your own policy.
+- **No cost cap** — no policy sets a dollar limit and nothing stops a run for its cost. The orchestrator makes at most three repair rounds after a failing check run, and the acceptance stage runs at most three re-checks. A policy that still declares `hard_cost_cap_usd` loads, with the figure set aside and a warning.
 
 Two policies ship:
 
@@ -235,7 +257,7 @@ Full flag surface for `/mmo:pass` is in [docs/running.md](docs/running.md).
 
 ## What a run produces
 
-Every artifact lands under `./.sdlc/` (for `/mmo:greenfield`) or `examples/<study-id>/passes/<run-id>/` (for `/mmo:pass`). Generated source lands under `./src/`.
+Every artifact lands under `./.sdlc/` (for `/mmo:greenfield`) or `examples/<study-id>/passes/<run-id>/` (for `/mmo:pass`). Generated source lands under `./src/` (`examples/<study-id>/passes/<run-id>/src/` for `/mmo:pass`).
 
 | File | Contents |
 |---|---|

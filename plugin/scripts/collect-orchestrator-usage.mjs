@@ -62,7 +62,12 @@
  *      first human turn after the driver's `run.end` line (that turn starts
  *      the next invocation and is excluded), or at the end of the session
  *      file when no human turn follows — both exact, because assistant
- *      messages only ever follow a human turn. Lines with `isMeta: true`,
+ *      messages only ever follow a human turn. A typed gate answer, the one
+ *      human turn between a gate's `gate.open` and `gate.resolved` lines, is
+ *      part of the run and closes nothing; a gate with no `gate.resolved` line
+ *      claims a turn only up to `run.end` (else the last dispatched event), so
+ *      a request typed after an unanswered gate still closes the window
+ *      (gateAnswerTurns). Lines with `isMeta: true`,
  *      `toolUseResult`, or a `tool_result` content block are the CLI's own
  *      bookkeeping, not human turns; nor are compaction summaries
  *      (`isCompactSummary`, `isVisibleInTranscriptOnly`) or harness-injected
@@ -166,11 +171,10 @@
  *         invocations transcript-priced: "receipt for the last invocation
  *         (Anthropic token counts priced at the price list); N% of it billed
  *         but not logged; K earlier invocation(s) transcript-priced,
- *         unverified". Anything else is exit 3. (Before v0.7.3 Q1 the last
- *         invocation had to equal the receipt on every bucket, and the whole
- *         window was written transcript-priced as "transcript (receipt covers
- *         only the last invocation, verified; N earlier invocation(s)
- *         unverified)".)
+ *         unverified". Typed gate answers (5) start no invocation on the first
+ *         try; when that last invocation does not fit, every human turn starts
+ *         one (a runner answers a gate with `--resume`), and the last is checked
+ *         the same way. Anything else is exit 3.
  *      d. AT OR BELOW on every bucket — the receipt is BOOKED as its token
  *         counts priced from the list (bookReceiptTokens), never as Claude
  *         Code's own dollars (its price table priced Opus 5 at Sonnet rates
@@ -286,7 +290,8 @@
  * than the command turn's — nothing is written.
  */
 
-import { readdirSync, readFileSync, renameSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { writeAcceptanceSummary } from "./lib/acceptance-summary.mjs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -374,6 +379,59 @@ export function runEndFromLog(logPath, runStartMs) {
     }
   }
   return first && first.event === "run.end" ? { ms: first.ms, iso: first.iso } : null;
+}
+
+/** One gate line, as mmo-log.mjs renders it: `MMO: <ts> INFO   gate.open run_id=... gate=gate-1 title="..."` / `gate.resolved ... gate=gate-1 response=...`. */
+const GATE_LINE = /^(?:\S+\s+)?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\s+[A-Z]+\s+gate\.(open|resolved)\s.*\bgate=(\S+)/;
+
+/**
+ * The typed gate answers of a run. A run pauses at its gates for a person; in the desktop app the
+ * person often types the answer ("approved", "accept") as a message, which Claude Code records as a
+ * human turn exactly like a new request. Read as the start of another invocation, that turn makes
+ * the receipt rule refuse the run. (An answer given through a question box leaves no turn.)
+ *
+ * The run's own log says which turns are answers: the orchestrator logs `gate.open` before it hands
+ * a gate back and `gate.resolved` once the chat resumes it with the answer, so the answer is the one
+ * human turn between the two. Exactly one: a gate with two or more turns inside it holds a message
+ * that is not its answer, and none of those turns is counted as one, so the receipt rule refuses.
+ * A resolved gate claims its turn wherever it falls, after run.end too (the typed accept at Gate 4).
+ * A gate with no `gate.resolved` line may have been left unanswered, and the next message is then a
+ * new request, not an answer: such a gate claims a turn only up to `runEndMs` (run.end, else the last
+ * dispatched event), where the run going on past the turn shows the gate was answered. Without
+ * `runEndMs` it claims none. Gates are read from `runStartMs` to the next `run.start` in the same log
+ * (a reused run id); gate lines after that belong to the later run. Returns the answer turns'
+ * timestamps (ms) and, per gate, what was found.
+ */
+export function gateAnswerTurns(logPath, runStartMs, turns, runEndMs = Number.NEGATIVE_INFINITY) {
+  const gateLines = [];
+  let nextStartMs = Number.POSITIVE_INFINITY;
+  if (logPath && existsSync(logPath)) {
+    for (const line of readFileSync(logPath, "utf-8").split("\n")) {
+      const rs = RUN_START_LINE.exec(line);
+      if (rs) { const ms = Date.parse(rs[1]); if (Number.isFinite(ms) && ms > runStartMs && ms < nextStartMs) nextStartMs = ms; continue; }
+      const m = GATE_LINE.exec(line);
+      if (!m) continue;
+      const ms = Date.parse(m[1]);
+      if (Number.isFinite(ms) && ms >= runStartMs) gateLines.push({ ms, kind: m[2], gate: m[3] });
+    }
+  }
+  const gates = new Map();
+  for (const l of gateLines.filter((x) => x.ms < nextStartMs)) {
+    const g = gates.get(l.gate) ?? { gate: l.gate, open_ms: null, resolved_ms: null };
+    if (l.kind === "open" && g.open_ms == null) g.open_ms = l.ms;
+    if (l.kind === "resolved" && g.open_ms != null && g.resolved_ms == null) g.resolved_ms = l.ms;
+    gates.set(l.gate, g);
+  }
+  const answers = new Set();
+  const found = [];
+  for (const g of gates.values()) {
+    if (g.open_ms == null) continue;
+    const end = g.resolved_ms ?? Math.min(runEndMs, nextStartMs);
+    const inside = turns.filter((t) => t.ms >= g.open_ms && t.ms <= end && !t.command);
+    if (inside.length === 1) answers.add(inside[0].ms);
+    found.push({ gate: g.gate, open: new Date(g.open_ms).toISOString(), resolved: g.resolved_ms ? new Date(g.resolved_ms).toISOString() : null, turns_inside: inside.length, answer: inside.length === 1 ? inside[0].iso : null });
+  }
+  return { answers, gates: found.sort((a, b) => a.open.localeCompare(b.open)) };
 }
 
 /**
@@ -1590,6 +1648,9 @@ export function inSessionDispatched(events, policy, manifest, dispatched, { clau
   // model that is ALSO listed as a claude-cli seat must stay in the total).
   const viaClaudeCli = (ev) => {
     if (!claudeCliScanned) return false;
+    // An executor typist (its event names the door it typed through) runs `claude -p` with no
+    // session file, so no scan counted it: its dollars stay in the total.
+    if (ev.door !== undefined) return false;
     if (ev.model_id != null && adapterById.has(ev.model_id)) return adapterById.get(ev.model_id) === "claude-cli";
     const adapters = adaptersByName.get(ev.model) ?? [];
     return adapters.length > 0 && adapters.every((a) => a === "claude-cli");
@@ -1676,6 +1737,8 @@ export async function main(argv = process.argv.slice(2)) {
   if (!existsSync(manifestPath)) {
     throw new Error(`no manifest.json in ${passDir} — is this a run's pass directory?`);
   }
+  // First, and independent of the cost figures below: SUMMARY.md gets the acceptance stage's own table.
+  if (!args.dryRun && writeAcceptanceSummary(passDir)) console.log("acceptance: SUMMARY.md carries the table the acceptance stage wrote (acceptance.md)");
   const modelWritten = JSON.parse(readFileSync(manifestPath, "utf-8"));
   // The call log: machine-written, one line per dispatched call.
   const logEvents = readTelemetry(telemetryPath);
@@ -1905,6 +1968,24 @@ export async function main(argv = process.argv.slice(2)) {
     mainFile = pinned ? (topLevel.find((f) => basename(f).startsWith(receipt.session_id)) ?? null) : null;
   }
   const mainTurns = mainFile ? (turnsByFile.get(mainFile) ?? humanTurns(mainFile)) : [];
+  // Typed gate answers are part of the run, not new invocations: the run's own log names them.
+  // A gate the log never resolves answers only a turn before the run's end (run.end, else the last
+  // dispatch); a later message is a new request and closes the window, as it always did.
+  const gateAnswers = runStart
+    ? gateAnswerTurns(runStart.path, runStart.ms, mainTurns, runEnd ? runEnd.ms : lastDispatchMs)
+    : { answers: new Set(), gates: [] };
+  const invocationTurns = mainTurns.filter((t) => !gateAnswers.answers.has(t.ms));
+  if (gateAnswers.gates.length) {
+    const answered = gateAnswers.gates.filter((g) => g.answer);
+    const noisy = gateAnswers.gates.filter((g) => g.turns_inside > 1);
+    const unresolved = gateAnswers.gates.filter((g) => !g.resolved);
+    console.log(
+      `gates: ${gateAnswers.gates.length} in the run log; ${answered.length} answered by a typed message` +
+        (answered.length ? ` (${answered.map((g) => `${g.gate} at ${g.answer}`).join(", ")}) — each counted as part of the run, not as a new invocation` : "") +
+        (noisy.length ? `; ${noisy.map((g) => `${g.gate} holds ${g.turns_inside} typed messages, so none of them is read as its answer`).join("; ")}` : "") +
+        (unresolved.length ? `; ${unresolved.map((g) => g.gate).join(", ")} ${unresolved.length === 1 ? "has" : "have"} no gate.resolved line, so only a typed message before the run's end can be ${unresolved.length === 1 ? "its" : "their"} answer` : "")
+    );
+  }
 
   // ── Opening anchor ──────────────────────────────────────────────────────
   let windowStartMs;
@@ -1953,7 +2034,7 @@ export async function main(argv = process.argv.slice(2)) {
   let endExact;
   let endLine;
   if (runEnd && mainFile) {
-    const next = mainTurns.find((t) => t.ms > runEnd.ms);
+    const next = invocationTurns.find((t) => t.ms > runEnd.ms);
     if (next) {
       windowEndMs = next.ms;
       endAnchor = "next human turn after run.end";
@@ -1970,7 +2051,7 @@ export async function main(argv = process.argv.slice(2)) {
     endAnchor = "run.end + 5m";
     endExact = false;
     endLine = `closes at run.end ${runEnd.iso} in ${runEnd.path} plus 5 minutes (approximate: the scan is not pinned to a session file, so no human turn can bound it)`;
-  } else if (mainFile && !mainTurns.some((t) => t.ms > windowStartMs)) {
+  } else if (mainFile && !invocationTurns.some((t) => t.ms > windowStartMs)) {
     windowEndMs = Number.POSITIVE_INFINITY;
     endAnchor = "end of session";
     endExact = true;
@@ -2370,10 +2451,28 @@ export async function main(argv = process.argv.slice(2)) {
       // window — a runner's `--resume` continuation, whose receipt covers
       // only the last leg. That leaves a human turn behind, so check the
       // last invocation alone with the same exact rule.
-      const turnsInWindow = mainTurns.filter((t) => t.ms >= windowStartMs && t.ms < windowEndMs);
-      if (turnsInWindow.length >= 2) {
-        const last = turnsInWindow[turnsInWindow.length - 1];
-        const earlierCount = turnsInWindow.length - 1;
+      //
+      // A gate answer is either typed inside the invocation (part of the run) or
+      // sent by a runner's `--resume` (the start of the invocation the receipt
+      // bills). The typed reading goes first: starting a leg at a typed answer
+      // would book the receipt again over that leg's messages before it. Every
+      // human turn as a start (the resume reading) is tried when it does not fit.
+      const turnsIn = (list) => list.filter((t) => t.ms >= windowStartMs && t.ms < windowEndMs);
+      const typedTurns = turnsIn(invocationTurns);
+      const allTurns = turnsIn(mainTurns);
+      const readings = [];
+      if (typedTurns.length >= 2) readings.push({ turns: invocationTurns, inWindow: typedTurns, resumed: false });
+      if (allTurns.length >= 2 && !(typedTurns.length >= 2 && allTurns[allTurns.length - 1].ms === typedTurns[typedTurns.length - 1].ms)) {
+        readings.push({ turns: mainTurns, inWindow: allTurns, resumed: true });
+      }
+      const refusals = [];
+      let chosen = null;
+      for (const reading of readings) {
+        const last = reading.inWindow[reading.inWindow.length - 1];
+        const earlierCount = reading.inWindow.length - 1;
+        const asResume = reading.resumed && gateAnswers.answers.has(last.ms);
+        const from = asResume ? `${last.iso}, the gate answer read as a --resume continuation` : last.iso;
+        if (asResume) console.log(`  the gate answer at ${last.iso} is read as a --resume continuation, the start of a new invocation:`);
         const lastInv = sumTranscriptUsage(files, last.ms, effectiveEndMs, { roleOf });
         // The last leg is compared per price-list model too (header, fact 8).
         const lastNames = resolveBucketNames(lastInv.perModel, receipt.models, resolveName);
@@ -2398,23 +2497,21 @@ export async function main(argv = process.argv.slice(2)) {
         //     equality being its own proof, as on the main path.
         // Booking prices the receipt's tokens at the list for that invocation
         // only; the earlier invocations stay transcript-priced and unverified.
+        // A reading that fails either check moves on to the next one; exit 3
+        // comes only when none fits, and names why each did not.
         if (cmpLast.above.length > 0) {
-          console.error(
-            `collect-orchestrator-usage FAILED: the receipt matches neither the whole window nor its last invocation. ` +
-              `Whole window: ${cmp.above.join("; ")}. Last invocation (from ${last.iso}): ` +
-              `${[...cmpLast.above, ...cmpLast.short].join("; ")}. Nothing was written; no number is guessed.`
-          );
-          return 3;
+          refusals.push(`Last invocation (from ${from}): ${[...cmpLast.above, ...cmpLast.short].join("; ")}.`);
+          continue;
         }
         if (cmpLast.short.length > 0) {
           // Human turns at or after the window's close, exactly as the main path counts them.
-          const laterTurns = mainTurns.filter((t) => t.ms >= windowEndMs);
+          const laterTurns = reading.turns.filter((t) => t.ms >= windowEndMs);
           const proof = provableInvocation({
             receiptSessionId: receipt.session_id,
             pinnedId,
             startAnchor: LAST_INVOCATION_ANCHOR,
             // 1 by construction (last is the window's last human turn); counted, not assumed.
-            humanTurnsInWindow: mainTurns.filter((t) => t.ms >= last.ms && t.ms < windowEndMs).length,
+            humanTurnsInWindow: reading.turns.filter((t) => t.ms >= last.ms && t.ms < windowEndMs).length,
             laterHumanTurns: laterTurns.length,
             laterHumanTurnFrom: laterTurns[0]?.iso ?? null,
             // The last invocation opens at a human turn, which is exact whatever
@@ -2423,21 +2520,31 @@ export async function main(argv = process.argv.slice(2)) {
             lowerBound: false,
           });
           if (!proof.provable) {
-            console.error(
-              `collect-orchestrator-usage FAILED: the receipt matches neither the whole window nor its last invocation. ` +
-                `Whole window: ${cmp.above.join("; ")}. The last invocation (from ${last.iso}) is BELOW the receipt ` +
-                `(${cmpLast.short.join("; ")}) and cannot be proven to be the receipt's invocation: ${proof.reasons.join("; ")}. ` +
-                `A last invocation below the receipt is booked only when it provably is that invocation (pinned to the receipt's ` +
-                `session, opened at its own human turn, no later human turn, an exact close), because the gap is then calls ` +
-                `Claude Code bills but never logs. Nothing was written; no number is guessed.`
+            refusals.push(
+              `The last invocation (from ${from}) is BELOW the receipt (${cmpLast.short.join("; ")}) and cannot be proven to be ` +
+                `the receipt's invocation: ${proof.reasons.join("; ")}. A last invocation below the receipt is booked only when it ` +
+                `provably is that invocation (pinned to the receipt's session, opened at its own human turn, no later human turn, ` +
+                `an exact close), because the gap is then calls Claude Code bills but never logs.`
             );
-            return 3;
+            continue;
           }
           console.log(
             `    below the receipt, and the last invocation is provably its invocation (session ${pinnedId}, opened at its human ` +
               `turn ${last.iso}, no later human turn, exact close): the difference is billed but not logged`
           );
         }
+        chosen = { last, earlierCount, lastInv, lastNames, pricedLast };
+        break;
+      }
+      if (!chosen && readings.length > 0) {
+        console.error(
+          `collect-orchestrator-usage FAILED: the receipt matches neither the whole window nor its last invocation. ` +
+            `Whole window: ${cmp.above.join("; ")}. ${refusals.join(" ")} Nothing was written; no number is guessed.`
+        );
+        return 3;
+      }
+      if (chosen) {
+        const { last, earlierCount, lastInv, lastNames, pricedLast } = chosen;
         // Attribution over the booked invocation's helpers only: a helper file
         // missing from an earlier invocation is in no booked figure, while one
         // missing from this invocation moves its tokens into unlogged_billed.
@@ -2491,7 +2598,7 @@ export async function main(argv = process.argv.slice(2)) {
           `collect-orchestrator-usage FAILED: the window holds messages the receipt never billed (${cmp.above.join("; ")}) ` +
             `and no continuation turn explains them: ` +
             (mainFile
-              ? `the session file ${mainFile} carries ${turnsInWindow.length} human turn(s) inside the window. `
+              ? `the session file ${mainFile} carries ${allTurns.length} human turn(s) inside the window. `
               : `the scan is not pinned to a session file, so its human turns cannot be read. `) +
             `Claude Code bills per invocation, so an over-count means the window opened before this invocation (a preamble ` +
             `under the same session id, a stale run.start, a reused run id) or swept in another run's messages. Nothing was ` +
@@ -2508,13 +2615,13 @@ export async function main(argv = process.argv.slice(2)) {
       // never messages outside the window. There is no percentage: the gap was
       // 2.3% and 22% on two real runs.
       if (cmp.short.length > 0) {
-        const turnsInWindow = mainTurns.filter((t) => t.ms >= windowStartMs && t.ms < windowEndMs);
+        const turnsInWindow = invocationTurns.filter((t) => t.ms >= windowStartMs && t.ms < windowEndMs);
         // Human turns at or after the window's close (review finding F1). A pinned
         // window with a finite close ends AT the next human turn, so any close other
         // than the end of the session refuses here: the receipt may be that later
         // invocation's bill. An unpinned scan has no session file to read turns from;
         // its close is approximate, which provableInvocation refuses on its own.
-        const laterTurns = mainTurns.filter((t) => t.ms >= windowEndMs);
+        const laterTurns = invocationTurns.filter((t) => t.ms >= windowEndMs);
         const proof = provableInvocation({
           receiptSessionId: receipt.session_id,
           pinnedId,
@@ -2781,8 +2888,9 @@ export async function main(argv = process.argv.slice(2)) {
   return 0;
 }
 
-const invokedDirectly =
-  process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+// import.meta.url is the module's real path; argv[1] keeps the caller's spelling (a symlinked plugin
+// folder, /var against /private/var), so the entry is compared by its real path too.
+const invokedDirectly = (() => { try { return pathToFileURL(realpathSync(process.argv[1] ?? "")).href === import.meta.url; } catch { return false; } })();
 if (invokedDirectly) {
   main().then(
     (code) => process.exit(code),

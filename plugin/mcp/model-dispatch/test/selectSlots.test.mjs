@@ -60,7 +60,9 @@ const GOLDEN_ROUTES = [
   [ctx("debug", "fix", "cross", 2), V024_OPUS],
   // Anything unrecognised falls through to the policy's default.
   [ctx("refactor", "unknown_type"), V024_OPUS],
-  [ctx("codegen", "a_task_type_no_rule_names"), V024_OPUS],
+  // The one row that departs from the transcribed routes: the code stage routes by stage alone, so any
+  // task type reaches the mechanical tier (test/stageRouting.test.mjs).
+  [ctx("codegen", "a_task_type_no_rule_names"), V024_FLASH],
 ];
 
 const shipped = () => loadPolicy({ policyName: "opus-plus-flash" });

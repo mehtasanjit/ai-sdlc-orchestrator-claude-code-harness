@@ -14,8 +14,8 @@ import { log } from "../log.js";
  *   antigravity-worker → Gemini as an agent (Antigravity SDK session)
  */
 
-/** MMO-D8 compat shim: a hand-authored policy may still use the pre-rename id. */
-const LEGACY_GEMINI_ADAPTER_ID = "mcp:gemini-flash-server";
+/** MMO-D8 compat shim: a hand-authored policy may still use the pre-rename id. Exported so every place that routes by adapter id (the executor's typists) accepts the same alias. */
+export const LEGACY_GEMINI_ADAPTER_ID = "mcp:gemini-flash-server";
 let legacyAdapterIdWarned = false;
 
 /**

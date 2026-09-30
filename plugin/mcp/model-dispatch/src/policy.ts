@@ -16,6 +16,7 @@ import { join, dirname, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { Policy, ModelConfig } from "./types.js";
 import { KNOWN_ADAPTER_IDS } from "./adapters/index.js";
+import { log } from "./log.js";
 
 const PLUGIN_POLICY_DIR = resolve(
   dirname(new URL(import.meta.url).pathname),
@@ -93,6 +94,13 @@ function validatePolicy(raw: any): Policy {
     throw new Error("Policy: 'rules' (non-empty array) required");
   }
   for (const m of raw.models) validateModel(m);
+  // No policy carries a per-run cost cap: nothing ever enforced one, and a chat that read the figure took
+  // it for a real limit and paused the run to ask about it. A policy written with one still loads; the figure
+  // is set aside here, so no tool reply (load_policy returns the loaded policy) shows it.
+  if (raw.hard_cost_cap_usd !== undefined) {
+    log("warn", "policy.setting_ignored", { policy: raw.name, key: "hard_cost_cap_usd", value: raw.hard_cost_cap_usd, applies: "no cost cap: nothing stops a run for its cost" });
+    delete raw.hard_cost_cap_usd;
+  }
   const modelIds = new Set<string>(raw.models.map((m: ModelConfig) => m.id));
   const slotNames = validateSelect(raw, modelIds);
   // Every rule references a known model id or a declared slot; check at load

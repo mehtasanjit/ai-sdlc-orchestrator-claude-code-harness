@@ -33,6 +33,121 @@ This skill is the source of truth for the orchestrator. When invoked under `/mmo
 
 ---
 
+## Executor mode — greenfield: `/mmo:greenfield` and `/mmo:pass`
+
+A second greenfield flow, for every policy alike. The typed spec replaces design.md +
+packets.json, and the MCP tool `execute_stage` types, checks and writes every file by code:
+you never type or re-type a unit's file, and the files never pass through your conversation.
+The policy still decides who types each file (its rule for the stage — never the file's kind, name or language),
+so a solo policy and a multi-model policy run exactly this flow and differ only in the typist.
+`/mmo:greenfield` and `/mmo:pass` always run it for a new app. In brownfield nothing below
+applies.
+
+```
+-1. preflight_dispatch                     (with `executor: true`, so a claude CLI that cannot run the
+                                           executor's Claude typists halts here, before anything is paid;
+                                           it also records the run's auth mode and policy, which every
+                                           execute_stage call then uses)
+0. read_brief
+1. requirements_analysis                  → requirements.md          (unchanged)
+   ── GATE 1 ─────────────────────────────────────
+2. architecture_design (subagent: architect, executor mode)
+                                          → section files (spec.sections/*.json) → submit_spec_section × N, finalize_spec
+                                          → spec.json + design.md (rendered from the spec)
+   ── GATE 2 ─────────────────────────────────────
+3. execute_stage codegen                  → one receipt
+4. execute_stage tests                    → one receipt
+5. test_run                               → the spec's install and check commands, run by you with Bash
+   execute_stage repair (failures)        → one receipt; run the checks again
+6. execute_stage docs                     → one receipt (only when the spec has docs units)
+7. senior_code_review                     (the reviewer reads the files from disk)
+   execute_stage repair (review_paths)    → one receipt; run the checks once more
+8. security_review                        (unchanged)
+8b. execute_stage acceptance              → one receipt: code runs the spec's acceptance list and marks every
+                                            criterion pass, fail or not checked (acceptance.json, acceptance.md);
+                                            a command this machine cannot run (program not found, the plan's
+                                            time limit) leaves its criteria not checked, with that reason
+    failures routed "architect"           → the architect ("acceptance fix") → execute_stage repair with its
+                                            failures → acceptance again
+    failures routed "repair"              → execute_stage repair (failures) → acceptance again
+                                            (at most three re-checks; the executor refuses a further call)
+   ── GATE 3 ─────────────────────────────────────
+9. generate_final_report                  (write-manifest.mjs writes manifest.json from the run's records;
+                                            the collector puts acceptance.md into SUMMARY.md)
+   ── GATE 4 ─────────────────────────────────────
+```
+
+Rules for executor mode:
+
+- **Skip** `cache_project_header` and `plan_task_packets`: the spec's units are the work list, and
+  `execute_stage` builds each brief by code, shared part first.
+- **Architecture:** invoke the `architect` subagent with `requirements.md`, the output directory
+  and the words "executor mode". It hands the spec over through `submit_spec_section` (header,
+  then units in batches) and closes with `finalize_spec`, which writes `<output_dir>/spec.json`
+  and `<output_dir>/design.md`. Gate 2 shows that design.md. If `finalize_spec` reports missing
+  requirement coverage, send the architect back to add the units that cover it.
+  On a Gate 2 `revise: <comments>`, invoke the `architect` again with the comments, `requirements.md`,
+  the output directory and the words "executor mode": it changes its section files, sends the header section
+  again first, then every units file (the same ids and paths are accepted again), then calls
+  `finalize_spec`. A header after `finalize_spec` starts a new spec and moves the earlier spec's
+  records to `<output_dir>/previous/<time>/`. Gate 2 then shows the new design.md.
+- **Execution:** call `execute_stage` once per stage, in the order above, with
+  `spec_path: <output_dir>/spec.json`, `stage`, `code_dir`, `pass_id` and `telemetry_path`. The
+  auth mode and the policy are the ones `preflight_dispatch` recorded; the call takes neither. It
+  is long — it reports progress per file — and returns one receipt. It appends one telemetry
+  event per typist call itself: do not `log_telemetry` for files it typed or fixed.
+- **Fixes go through the executor, routed by the policy.** Every fix is typed by the typist the
+  run's policy names for the `debug` phase — the same rule that routes fixes without the flag —
+  and written by code as exact edits to the file's current text:
+  - After the tests stage, run the spec's install and check commands yourself with Bash (the
+    `commands` of spec.json whose role is `install` or `check`, each in its `cwd` under `code_dir`).
+    After a run with failures, call `execute_stage` with `stage: "repair"` and `failures`:
+    one entry per file to change, with `path` (the file whose code is wrong; when unsure, the
+    source file the failing test exercises), `problem` (the failing test's name and its error,
+    verbatim) and `context_paths` (the failing test file, and any file the fix must agree with).
+    Then run the checks again. Repeat while the number of failing tests goes down, at most three
+    repair rounds. Read the failing output yourself: never start other helpers (general-purpose,
+    Explore) to investigate failures — the executor guard refuses a helper outside the pipeline.
+  - A failure that is not in the project's files — a tool that asks for a person's permission
+    before it runs, or a command this machine cannot run (its program not found) — is not yours to
+    fix: tell the person that reason, with the command, at the next gate. Do not change the project
+    to get around it.
+  - After the senior review, call `execute_stage` with `stage: "repair"` and `review_paths` (the
+    review.json files it wrote): every finding that names a file is fixed. Then run the checks
+    once more, with one repair round if they fail.
+  - A fix that needs a file that does not exist yet — a review finding comes back in `not_routed`
+    saying so — is sent again in `failures` with `new_file: true` and the path to create, relative
+    to `code_dir`. The receipt lists it under `created`. Never write it yourself.
+- **Failures:** a file the receipt lists as failed (every attempt refused) goes back to
+  `execute_stage` repair once, with the receipt's reason as its `problem` (`new_file: true` when it
+  does not exist). Still failing, and checks still failing after the repair rounds, are reported at
+  the next gate with the failing command and its error. You never write a project file yourself — every
+  change goes through the typist, the same in every policy — and the executor guard refuses a write
+  outside this run's own record folder (the folder of spec.json).
+- **A stopped stage:** if `execute_stage` returns an error whose receipt has `stopped` (a model
+  door refused its login or permission), stop the run and report that reason to the user. Do not
+  write the stage's files yourself: the run would no longer be the policy it names.
+- The receipts are all you read about the typed files; do not open the files to check them —
+  the senior reviewer does that, and reading them into your conversation is the cost this mode
+  exists to remove.
+- **Acceptance:** after the security review, call `execute_stage` with `stage: "acceptance"`,
+  `spec_path` and `code_dir`. Code runs every command of the spec's acceptance list in order, with
+  its whole output kept, and marks every acceptance criterion pass, fail or not checked (a command the
+  machine cannot run — its program not found, or stopped at the plan's time limit — is listed under
+  `not_run`, leaves its criteria not checked with that reason, and is routed nowhere). Each failure
+  in the receipt names its route. `architect` means an install or audit failed (a version choice):
+  invoke the `architect` subagent with the words "acceptance fix", the receipt's failure and its
+  `log_path`, then send the entries it replies with to `execute_stage` repair as `failures`.
+  `repair` means a check failed (code): send it to `execute_stage` repair as a `failures` entry (the
+  file the failing check names, the receipt's lines as the problem). Then call the acceptance stage
+  again. After three re-checks its receipt is final and a further call runs nothing; report what is
+  still failing as failed. Do not rerun, filter or re-judge the commands yourself: the verdict is
+  the acceptance stage's.
+- **Final report:** `<output_dir>/acceptance.md` is the report's acceptance table; the collector
+  copies it into SUMMARY.md between markers at Phase 9, and again when it is re-run after the
+  session closes. In SUMMARY.md, link it and do not write your own pass/fail statements about the
+  brief's acceptance criteria.
+
 ## Phase -1 — preflight_dispatch (MANDATORY, before anything else)
 
 Call `preflight_dispatch` with the run's `auth_mode` and the same `policy_name` / `project_root` /
@@ -41,6 +156,12 @@ Call `preflight_dispatch` with the run's `auth_mode` and the same `policy_name` 
 `auth_mode` is required and is the mode already resolved for this run (rule 6) — do not omit it, do not
 guess it. It changes the answer: it is what tells pre-flight which models this run actually dispatches
 through the server.
+
+Pass `executor` too: `executor: true` on every new-app (greenfield) run, whose files `execute_stage`
+types (executor mode), and `executor: false` on a brownfield run, which does not use the executor.
+The executor types with the policy's Claude models through this machine's `claude` CLI, so with
+`executor: true` and a policy that types with a Claude model, an old or missing `claude` CLI halts
+pre-flight before any paid phase, with a `halt_reason` that says what to fix.
 
 **If `ok` is false, STOP.** Print the `halt_reason` verbatim, print the failing model's `error`, and end
 the run. Do not read the brief, do not start phase 1, do not "try the mechanical tier and see". A policy
@@ -71,7 +192,8 @@ because its prerequisites are irrelevant to a run that will never call it. Do no
 do not try to "fix" it, and do not offer to install anything on its behalf.
 
 **If `ok` is true**, report the configuration to the user in one line before phase 1 — the policy name,
-each model, and on the Google Cloud path the resolved project and region — then continue. This is the only point in
+each model, and on the Google Cloud path the resolved project and region — then the result's
+`policy_notes` (when there are any) and its `executor.claude_cli`, one short line each, then continue. This is the only point in
 the run where the operator can see what is about to be billed and to which project, while it is still
 free to stop.
 
@@ -112,7 +234,9 @@ The orchestrator invokes the `architect` subagent passing `<output_dir>/requirem
 
 From `design.md`, emit `<output_dir>/packets.json` — a list of TaskPackets, one per file-sized unit of work.
 
-Suggested packet types and one packet per:
+Suggested packet types and one packet per. The task type describes the packet in reports and
+briefs only: the shipped policies route code by phase alone, whatever the file's language or type
+(`plugin/mcp/model-dispatch/test/stageRouting.test.mjs`).
 
 | task_type | What |
 |---|---|
@@ -243,7 +367,15 @@ Invoke `security-reviewer` subagent. Writes `<output_dir>/security_review.md`.
 
 ### Phase 9 — generate_final_report
 
-Read all events in `<telemetry_path>`. Build rollup manifest using the `buildManifest` shape (see `plugin/mcp/model-dispatch/src/telemetry.ts`). Write `<output_dir>/manifest.json`. Also write a brief `<output_dir>/SUMMARY.md` with: total cost, breakdown, links to key artifacts.
+Write the manifest with the plugin's own script, never by hand (a hand-typed manifest can use field names the collector cannot read):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/scripts/write-manifest.mjs" <output_dir> --pass <run_id> --policy <policy_name> --project-root "$(pwd)" --code-dir <code_dir>
+```
+
+It reads `<output_dir>/telemetry.jsonl`, builds the manifest with the server's `buildManifest` (the shape the collector reads), records the run log's gate answers and the file and line counts — for a new app, the product's files under `<code_dir>`; in brownfield, the files the run's record lists (`provenance.json`, `written-files.json`), left out when there is no record — and writes `<output_dir>/manifest.json` with `status: "provisional"`. At Gate 4, `accept` runs the same command again with `--status accepted`; `reject` leaves the status as it is. If write-manifest prints a `note:` line saying the collector's figures are left out (the dispatched total changed since the collector ran, for example after a Gate 4 `reject: <comments>` round), run the collector again (the note prints its command) before you quote a true total.
+
+Then write a brief `<output_dir>/SUMMARY.md`: total cost and breakdown by phase and model, read from `manifest.json`, and links to the key files this run wrote (requirements, design or change plan, reviews, `manifest.json`). In executor mode (greenfield), also link the spec and `acceptance.md`, and do not write your own pass/fail statements about the acceptance criteria: the collector below puts code's acceptance table into SUMMARY.md. In every other run there is no spec and no `acceptance.md`, and the collector adds no acceptance table: link only the files that exist, and do not promise an acceptance table.
 
 Then, **after** the manifest is on disk, run the orchestrator-overhead collector — telemetry holds dispatched work only, and this session's own loop is invisible to it in both auth modes:
 
@@ -396,7 +528,10 @@ explicitly.
 > ⏸ **HITL Gate 4 — Final Acceptance**
 > The full SDLC pass is complete.
 > Total cost: $X.XX  ·  Files: N  ·  Tests: passing/total
-> Reply `accept` to finalize the manifest, or `reject: <comments>` to revise.
+> Reply `accept` to finalize the manifest (write-manifest.mjs with `--status accepted`), or `reject: <comments>` to revise.
+
+`Files` is the manifest's `artifacts.files`; show `—` when the manifest has none (a brownfield run
+with no record of the files it wrote).
 
 ---
 
