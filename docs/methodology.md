@@ -249,7 +249,7 @@ What each plugin version changed about how the numbers are produced. A dispatche
 
 ### v0.9.0
 
-Brownfield cost work, on top of v0.7.12. Greenfield is unchanged from v0.7.12. The work was built on a separate branch in the steps below, newest first; the step numbers match the cost study in `docs/cost-study/README.md`.
+Brownfield cost work, on top of v0.7.12. Greenfield is unchanged from v0.7.12. The work was built on a separate branch in the steps below, newest first.
 
 | Area | v0.9.0 |
 |---|---|

@@ -165,8 +165,7 @@ Include the **companion files** a change of this kind needs to be complete, not 
 carry the feature. When the job adds or changes a public API endpoint, look in discovery for, and
 list when they exist: the generated API spec (e.g. `openapi.json` and the script that exports it),
 and every catalogue that lists the surface being extended (e.g. an MCP tool list in the docs or a
-package README). On Large2-D the senior reviewer raised two major findings the run could not act
-on, because `apps/docs/openapi.json` and the MCP tool catalogues were outside the allowlist.
+package README). Left out, they become review findings the run cannot act on.
 
 # 5. Gate 0 — Discovery Confirmation
 

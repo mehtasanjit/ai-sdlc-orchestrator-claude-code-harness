@@ -3,16 +3,11 @@
  * plan-lint — refuse a brownfield `change_plan.md` that contains the program
  * instead of the spec for it.
  *
- * Why: under a multi-model policy the architect (Opus) learned to write every
- * file in full into the plan ("Contract + Content") so the cheap tier could
- * transcribe it. Measured on the kaneo BIG brief (2026-09-17/18): 1,011–1,041
- * plan lines with 54–62 fenced code blocks against 144–478 lines / 0 blocks
- * when the same architect planned for itself. Every one of those blocks is
- * Opus output at $25/M that two Opus reviewers then re-read, and the worker's
- * contribution collapses to copying — the file round trip that
- * docs/planning/opus-plus-flash-cost-plan.md Row 4 removes. This gate is the
- * "no literal code" rule from SWE-bench Pro v2's localize contract, made
- * mechanical so it cannot be argued with mid-run.
+ * Why: under a multi-model policy the architect tends to write every file in
+ * full into the plan so the cheap tier can transcribe it. Every such block is
+ * premium-model output that both reviewers re-read, and the worker's part
+ * collapses to copying. This gate makes the "no literal code" rule mechanical
+ * so it cannot be argued with mid-run.
  *
  * What passes: signatures, one-line literals, a numbered rule list, a
  * `path:lines` pointer to the file to mirror. What fails: any fenced block
@@ -37,10 +32,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 export const DEFAULTS = { maxBlockLines: 12, maxFencedLines: 150 };
 
 /**
- * Advisory only (never fails the lint — a re-delegation costs more than it saves):
- * the brief plan form measured 407 lines / 27.5 kB on the kaneo BIG brief; the
- * multi-model plan for the same brief was 766 / 48.7 kB (Run 23), and it is
- * Opus output that both reviewers re-read. Notes feed the run's notes.md.
+ * Advisory only (never fails the lint — a re-delegation costs more than it saves).
+ * A long plan is premium-model output that both reviewers re-read. Notes feed the
+ * run's notes.md.
  */
 export const PLAN_LINE_BUDGET = 500;
 

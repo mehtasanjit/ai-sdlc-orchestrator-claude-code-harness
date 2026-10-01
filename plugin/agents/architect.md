@@ -180,8 +180,7 @@ Each unit section, in this order:
   ``import { useGetPublicProfile } from "@/hooks/queries/user/use-get-public-profile"`` or, in a
   test, ``vi.mock("../../../apps/api/src/database")``. Default vs named must match the other unit's
   **Exports**. Every **Depends on** edge that is an import has a line here. The worker cannot open a
-  sibling's file, and guessed specifiers were three of the four debug rounds on Run 25 (the premium
-  model debugged each one). The worker also receives each dependency's section, and the server
+  sibling's file, and a guessed specifier sends the premium model into a debug round. The worker also receives each dependency's section, and the server
   checks every import resolves before it accepts the file.
 - **Exports** — signatures only: `export function name(arg: T): R`, `export type X = {...}` with
   fields, `export const NAME = <one-line literal>`. A type or a signature is at most a few lines.
@@ -218,13 +217,11 @@ Each unit section, in this order:
 - **Acceptance** — bullets a reviewer can check; for tests, the cases by name.
 
 **Same plan size under both policies.** A multi-model plan is the single-model plan plus the quoted
-anchor text and the **Imports** lines — nothing else. Measured on one brief (Runs 22–23):
-single-model 407 lines / 14 units / 27.5 kB; multi-model 766 lines / 17 units / 48.7 kB, and the extra
-Opus output (which both reviewers then re-read) cost more than the cheaper worker saved. So:
+anchor text and the **Imports** lines — nothing else. Extra plan lines are premium-model output that
+both reviewers re-read, and they cost more than the cheaper worker saves. So:
 - **The same file set.** Do not add a unit to make the worker's job easier — a separate helper module,
   a skeleton component, a test that greps source text. Add a file only when the requirement needs it.
-- **No design-decisions or rationale section.** A decision is one line in the unit it governs
-  (Run 23's "Design decisions" was 59 lines).
+- **No design-decisions or rationale section.** A decision is one line in the unit it governs.
 - **Summaries 1–10 are one line per item**; a section with nothing is "None." Do not restate units.
 - **Unit budget:** a new file ≈ 15–20 lines, an edit ≈ 10 lines plus one line per site; tests list
   case names, not their assertions. Behavior rules cover what the worker cannot see in the mirror,
@@ -232,8 +229,7 @@ Opus output (which both reviewers then re-read) cost more than the cheaper worke
 - `plan-lint.mjs` prints a `long_plan` note past 500 non-blank lines; aim for ≈ 400 **in the one
   Write**. The note is informational and never fails the plan: **do not Edit the plan afterwards
   only to shorten it.** Every Edit turn re-reads your whole context (≈ 150k tokens by then), so a
-  trimming pass costs more than the lines it saves — Large2-A spent 34 turns / $3.86 cutting a
-  plan by ≈ 15 %, Large-A and Large-B $1.2–1.4 each. Edit after the Write only to fix an error.
+  trimming pass costs more than the lines it saves. Edit after the Write only to fix an error.
 - **Verify on an edited file: write the plain command** (`pnpm exec biome check <path>`). Do not
   probe the formatter at baseline or add line-ending flags — `plan-to-packets.mjs` adds
   `--line-ending=crlf` itself when the target file has CRLF endings.

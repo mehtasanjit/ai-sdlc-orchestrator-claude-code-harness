@@ -283,9 +283,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/plan-to-packets.mjs" "<output_dir>/change_pl
 ```
 
 Pass `--multi-model` when the loaded policy names more than one model. Then an `edit` unit with no edit
-sites is an error (exit 1, narrow architect Edit) instead of a silent whole-file packet — on Run 23 all five
-edit units fell to whole-file mode because the sites sat under a `### Edits` heading, and the orchestrator
-spent turns hand-rewriting the plan. The script now reads that form too; the flag catches whatever it
+sites is an error (exit 1, narrow architect Edit) instead of a silent whole-file packet. The flag catches whatever it
 still cannot read. Every packet whose verify runs `biome check` / `prettier --check` on its file also
 carries `apply.format` (the `--write` form); the server runs it after the write and before verify, so a
 formatting-only miss is not a retry.
@@ -399,10 +397,9 @@ ones after a tooling step, or refinement packets you wrote to a second file) wit
 `execute_with_model`. **Do not `Read` packets.json and do not paste packets inline** — the server
 reads the file, skips `tooling` packets (listed as `skipped_no_apply`), and returns a compact
 receipt: full detail only for packets that did not apply and verify. Reading the file and typing it
-back put ~15k tokens into every later turn (Runs 27b/28). To check one packet, `jq` that one id. The server runs them in
+back put ~15k tokens into every later turn. To check one packet, `jq` that one id. The server runs them in
 parallel (`max_parallel`, default 4) in `depends_on` order, never two on one `artifact_path` at once,
-and returns one receipt per packet plus totals — one turn for the phase instead of one per packet
-(measured: 25 turns, $3.21, for 21 packets on the row-8 run). Read the batch result:
+and returns one receipt per packet plus totals — one turn for the phase instead of one per packet. Read the batch result:
 
 | `items[].status` | What you do |
 |---|---|

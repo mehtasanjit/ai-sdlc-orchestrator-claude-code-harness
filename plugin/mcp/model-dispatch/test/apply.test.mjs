@@ -415,7 +415,7 @@ test("applyContent runs format commands before provenance, and the receipt descr
   const r = applyContent(root, "src/f.ts", "export const a = 1;   \n", {
     packetId: "tp_f",
     runId: "run-f",
-    format: ["sed -i 's/[[:space:]]*$//' {path}", "false"],
+    format: ["perl -pi -e 's/[ \\t]+$//' {path}", "false"],
   });
   assert.equal(readFileSync(join(root, "src", "f.ts"), "utf8"), "export const a = 1;\n", "format ran on the written file");
   assert.equal(r.bytes, 20, "the receipt is the file as it stays on disk");

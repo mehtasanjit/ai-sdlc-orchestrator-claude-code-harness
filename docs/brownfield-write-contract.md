@@ -55,6 +55,22 @@ Fail-safe: any bug in the hook (parse failures, missing fields, resolvable path 
 Better to permit a write than to wedge user work on a plugin bug. Denials only happen when the
 contract parses cleanly AND is active AND the path fails the check.
 
+## The server's writer (apply form and `execute_batch`)
+
+A packet with an `apply` block is written by the MCP server, not by a `Write` or `Edit` tool call, so
+the hook above never sees it. The server runs the same check itself
+([`checkWriteContract`](../plugin/mcp/model-dispatch/src/apply.ts)) before every write.
+
+| Case | What the server does |
+|---|---|
+| No `.sdlc/local/write-contract.json`, or `active:false` | Refuses the packet before any model call. The apply form exists only inside a brownfield run, after Gate 0. |
+| Packet routed to an `antigravity-worker` leaf | Refuses the packet. An agent-door worker edits the folder itself, outside this check. |
+| Path in the hardcoded off-limits list | Refuses the write (`apply.refused`). |
+| Path in the contract's `off_limits` | Refuses the write. |
+| Strict contract, path not in the `allowlist` | Refuses the write. |
+| `.sdlc/runs/<run-id>/` of the packet's own run | Allows: the run's own record. |
+| Otherwise | Writes, takes the run's provenance snapshot of the file once (before the first dispatch), formats, then verifies. |
+
 ## Off-limits, two tiers
 
 Off-limits paths come from two sources merged into the run's write contract:
