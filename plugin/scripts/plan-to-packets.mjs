@@ -57,16 +57,22 @@ const CHECK_IMPORTS = resolve(dirname(fileURLToPath(import.meta.url)), "check-im
 // Parsing
 // ---------------------------------------------------------------------------
 
-/** Every `## An — <path>` section: id, path, heading text, body lines. Plus whether `## House style` exists. */
+/**
+ * Every `## An — <path>` section: id, path, heading text, body lines. Plus whether `## House style`
+ * exists, and the commands of a `## Verify deferred` section (the plan's whole-project checks).
+ */
 export function parsePlan(text) {
   const lines = text.split("\n");
   const units = [];
+  const deferred = [];
   let houseStyle = false;
+  let inDeferred = false;
   let cur = null;
   for (const line of lines) {
     const h = line.match(/^## (.*)$/);
     if (h) {
       cur = null;
+      inDeferred = /^verify deferred\b/i.test(h[1].trim());
       if (h[1].trim() === HOUSE_STYLE) houseStyle = true;
       const u = line.match(UNIT_HEADING);
       if (u) {
@@ -75,9 +81,13 @@ export function parsePlan(text) {
       }
       continue;
     }
+    if (inDeferred && /^\s*[-*]\s/.test(line)) {
+      const cmd = backticked(line)[0];
+      if (cmd && !deferred.includes(cmd)) deferred.push(cmd);
+    }
     if (cur) cur.body.push(line);
   }
-  return { units, houseStyle };
+  return { units, houseStyle, deferred };
 }
 
 /** The lines of one `- **Name**` bullet: its first line (after the label) and its indented continuation. */
@@ -592,6 +602,14 @@ export function buildPackets(plan, opts) {
   for (const p of packets) {
     p.depends_on = p.depends_on.filter((d) => !dropped.has(d.slice(5))).map((d) => byUnit.get(d.slice(5)) ?? d);
   }
+  // The plan's own whole-project checks ride on the last packet, so the orchestrator's "run every
+  // verify_deferred once at the end" reaches them without reading the plan.
+  const carried = new Set(packets.flatMap((p) => p.verify_deferred ?? []));
+  const extra = (plan.deferred ?? []).filter((c) => !carried.has(c));
+  if (extra.length && packets.length) {
+    const last = packets[packets.length - 1];
+    last.verify_deferred = [...(last.verify_deferred ?? []), ...extra];
+  }
   return { packets, errors, warnings };
 }
 
@@ -644,8 +662,8 @@ export function main(argv = process.argv.slice(2)) {
   if (errors.length) return 1;
   const outFile = args.outFile ?? resolve(dirname(args.plan), "packets.json");
   writeFileSync(outFile, JSON.stringify(packets, null, 2) + "\n");
-  const summary = { packets: packets.length, codegen: packets.filter((p) => p.phase === "codegen" && p.task_type !== "tooling").length, tests: packets.filter((p) => p.phase === "tests").length, tooling: packets.filter((p) => p.task_type === "tooling").length, edits: packets.filter((p) => p.apply?.mode === "edits").length, warnings: warnings.length, out: outFile };
-  process.stdout.write(args.json ? JSON.stringify(summary) + "\n" : `plan-to-packets: ${summary.packets} packets (${summary.codegen} codegen, ${summary.tests} tests, ${summary.tooling} tooling; ${summary.edits} edit lists) → ${outFile}${warnings.length ? ` · ${warnings.length} warning(s)` : ""}\n`);
+  const summary = { packets: packets.length, codegen: packets.filter((p) => p.phase === "codegen" && p.task_type !== "tooling").length, tests: packets.filter((p) => p.phase === "tests").length, tooling: packets.filter((p) => p.task_type === "tooling").length, edits: packets.filter((p) => p.apply?.mode === "edits").length, deferred: new Set(packets.flatMap((p) => p.verify_deferred ?? [])).size, warnings: warnings.length, out: outFile };
+  process.stdout.write(args.json ? JSON.stringify(summary) + "\n" : `plan-to-packets: ${summary.packets} packets (${summary.codegen} codegen, ${summary.tests} tests, ${summary.tooling} tooling; ${summary.edits} edit lists; ${summary.deferred} end-of-run checks) → ${outFile}${warnings.length ? ` · ${warnings.length} warning(s)` : ""}\n`);
   return 0;
 }
 

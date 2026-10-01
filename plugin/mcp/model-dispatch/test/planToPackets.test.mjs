@@ -511,3 +511,23 @@ test("biome checks are dropped for files biome does not process (.mdx / .md / .y
   assert.equal(doc.apply.format, undefined);
   assert.ok(!warnings.some((w) => /A9.*Verify/.test(w)), "no missing-Verify warning for a docs page");
 });
+
+test("the plan's ## Verify deferred commands reach the packets once, on the last packet", () => {
+  const plan = PLAN + `
+## Verify deferred (run once after the last packet, not per file)
+
+- \`pnpm --filter @kaneo/api typecheck\`
+- \`pnpm --filter @kaneo/web typecheck\`
+- \`pnpm --filter @kaneo/web typecheck\`
+`;
+  const parsed = parsePlan(plan);
+  assert.deepEqual(parsed.deferred, ["pnpm --filter @kaneo/api typecheck", "pnpm --filter @kaneo/web typecheck"]);
+  const { packets } = buildPackets(parsed, { runId: "r1", intent: "feature-extend", planPath: ".sdlc/runs/r1/change_plan.md" });
+  const all = packets.flatMap((p) => p.verify_deferred ?? []);
+  assert.equal(all.filter((c) => c === "pnpm --filter @kaneo/api typecheck").length, 1, "a command a unit already defers is not added twice");
+  assert.ok(packets[packets.length - 1].verify_deferred.includes("pnpm --filter @kaneo/web typecheck"));
+});
+
+test("a plan without ## Verify deferred adds no end-of-run checks", () => {
+  assert.deepEqual(parsePlan(PLAN).deferred, []);
+});

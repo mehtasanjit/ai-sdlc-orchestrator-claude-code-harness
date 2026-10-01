@@ -255,6 +255,11 @@ and assertion style, i18n rule, anything the worker cannot infer from the mirror
 packet includes this section by reference; it replaces the 2–3 formatting retries per run
 measured when the worker had to guess.
 
+Put the whole-project checks (package typechecks, full test suites) in one **`## Verify deferred`**
+section, one bullet per command in backticks. `plan-to-packets.mjs` carries them into the packets,
+and the orchestrator runs each once after the last packet; a unit's own **Verify** keeps only the
+checks scoped to its file.
+
 **Never propose a change to any path outside `baseline.off_limits`'s complement (the
 allowlist).** The write-contract validator will reject the packet anyway; a well-planned change
 never asks.
