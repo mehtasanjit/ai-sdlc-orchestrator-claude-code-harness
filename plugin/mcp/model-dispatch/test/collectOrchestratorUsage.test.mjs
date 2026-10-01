@@ -1535,6 +1535,9 @@ test("identity: the manifest's own spellings win; the call log answers only when
   assert.equal(manifestPolicyName(greenfield, echoOnly), undefined);
   assert.equal(manifestPassId(greenfield, echoOnly), undefined);
 
+  // Single-model path: hand-logged lines carry the TaskPacket spelling `pass_id` (Run 31).
+  assert.equal(manifestPassId(greenfield, [{ tier: "orchestrator", pass: "echo" }, { pass_id: "from-pass-id" }]), "from-pass-id");
+
   // No manifest key and no log: undefined, never a guess. main() refuses on this.
   assert.equal(manifestPolicyName(greenfield, []), undefined);
   assert.equal(manifestPassId(greenfield, []), undefined);
@@ -1814,5 +1817,33 @@ test("the collector leaves SUMMARY.md alone on a dry run, and when the run wrote
     assert.equal(readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8"), summary, "--dry-run writes nothing");
   } finally {
     rmSync(fix.root, { recursive: true, force: true });
+  }
+});
+
+test("a run with no manifest.json (single-model, in-session only) is collected from telemetry.jsonl and gets a manifest", () => {
+  const { root, passDir, tDir } = makeGreenfieldFixture({ closingKey: "ended_at" });
+  try {
+    rmSync(join(passDir, "manifest.json"));
+    const res = spawnSync(process.execPath, [SCRIPT, passDir, "--project-root", root, "--transcripts-dir", tDir], { encoding: "utf-8" });
+    const out = (res.stdout ?? "") + (res.stderr ?? "");
+    assert.equal(res.status, 0, `expected exit 0, got ${res.status}\n${out}`);
+    assert.match(out, /no manifest\.json — creating one from telemetry\.jsonl/, out);
+    const manifest = JSON.parse(readFileSync(join(passDir, "manifest.json"), "utf-8"));
+    assert.equal(manifest.run_id, "p-test");
+    assert.equal(manifest.orchestrator_overhead.cost_usd, 1.5);
+    assert.equal(manifest.orchestrator_overhead.window.source, "telemetry-rebuild");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a directory with neither manifest.json nor telemetry.jsonl still fails clearly", () => {
+  const root = mkdtempSync(join(tmpdir(), "collect-empty-"));
+  try {
+    const res = spawnSync(process.execPath, [SCRIPT, root, "--project-root", root], { encoding: "utf-8" });
+    assert.notEqual(res.status, 0);
+    assert.match((res.stdout ?? "") + (res.stderr ?? ""), /no manifest\.json or telemetry\.jsonl/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

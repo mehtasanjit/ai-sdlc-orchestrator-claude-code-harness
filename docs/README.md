@@ -41,6 +41,7 @@ Reasoning-forward. Understand why the pieces are shaped the way they are.
 | Doc | For |
 |---|---|
 | [Architecture](architecture.md) | Plugin surface, MCP server, adapters, telemetry, auth modes — how a request flows through the plugin. |
+| [Cost study: Opus + Flash vs Opus-only](cost-study/README.md) | Every measured run (16–25 Sep 2026), what each fix changed, and the current verdict, in plain English. |
 | [Methodology](methodology.md) | How tokens and costs are derived; vendor-authoritative vs estimated; what each plugin version changed about the numbers. |
 | [Two Gemini paths](two-gemini-paths.md) | Model door vs agent door, side-by-side on the same brief. |
 | [Brownfield write contract](brownfield-write-contract.md) | How the "never touch off-limits" guarantee is enforced at the tool boundary. |

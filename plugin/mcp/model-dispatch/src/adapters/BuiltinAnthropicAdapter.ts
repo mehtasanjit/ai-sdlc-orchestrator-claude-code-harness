@@ -265,6 +265,12 @@ const STABLE_INPUT_BASENAMES = new Set([
   "requirements.md",
   "design.md",
   "security_review.md",
+  // Brownfield run record — written once before packet dispatch, then read by
+  // every packet and both reviews.
+  "intent_brief.md",
+  "discovery.md",
+  "change_plan.md",
+  "stack-profile.md",
 ]);
 export function isStableInput(input: { path: string; reason: string }): boolean {
   const basename = input.path.split("/").pop() ?? input.path;

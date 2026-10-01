@@ -38,7 +38,19 @@ import {
   resolveGcpProject,
   resolveGcpLocation,
 } from "./adapters/geminiTransports.js";
-import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides } from "./types.js";
+import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides, ApplySpec } from "./types.js";
+import {
+  EDITS_OUTPUT_SCHEMA,
+  FILE_OUTPUT_SCHEMA,
+  applyContent,
+  checkWriteContract,
+  hasActiveWriteContract,
+  extractFileContent,
+  hydrateInputs,
+  normalizeApply,
+  runApplyLoop,
+} from "./apply.js";
+import { runBatch, batchPacketsFromArgs, compactBatchReceipt } from "./batch.js";
 import { resolveProjectRoot } from "./project-root.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
 // Typed-spec executor tools (greenfield runs): listed below, handled in executor/tools.ts.
@@ -62,7 +74,9 @@ function validateTaskPacket(raw: unknown): TaskPacket {
     "id", "phase", "task_type", "module", "instruction",
     "inputs", "outputSchema", "acceptance", "budget", "pass_id",
   ];
-  const missing = required.filter((k) => packet[k] === undefined);
+  // Under apply the server supplies the {path, content} schema (apply.ts).
+  const applying = normalizeApply(packet.apply) !== null;
+  const missing = required.filter((k) => packet[k] === undefined && !(applying && k === "outputSchema"));
   if (missing.length > 0) {
     log("warn", "packet.validate.fail", {
       packet_id: typeof packet.id === "string" ? packet.id : undefined,
@@ -84,6 +98,12 @@ function validateTaskPacket(raw: unknown): TaskPacket {
     log("warn", "packet.validate.fail", { packet_id: packet.id as string, missing_fields: "budget" });
     throw new Error(
       `execute_with_model: TaskPacket.budget must be { maxInputTokens: number, maxOutputTokens: number }.`,
+    );
+  }
+  if (applying && typeof packet.artifact_path !== "string") {
+    log("warn", "packet.validate.fail", { packet_id: packet.id as string, missing_fields: "artifact_path" });
+    throw new Error(
+      `execute_with_model: packet.apply.write requires artifact_path — the repo-relative file the server writes.`,
     );
   }
   return packet as unknown as TaskPacket;
@@ -310,6 +330,235 @@ function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: str
   };
 }
 
+interface DispatchOnce {
+  decision: ReturnType<typeof pickModel>;
+  result: Awaited<ReturnType<ReturnType<typeof adapterFor>["execute"]>>;
+  events: TelemetryEvent[];
+}
+
+/** Route one packet, run it, log it, append its telemetry. Same behaviour as before the apply loop existed. */
+async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any): Promise<DispatchOnce> {
+  const decision = pickModel(
+    {
+      phase: packet.phase,
+      task_type: packet.task_type,
+      module: packet.module,
+      retry_count: packet.retry_count ?? 0,
+      intent: packet.intent,
+    },
+    policy,
+    selectOverrides()
+  );
+  log("info", "route.decide", {
+    packet_id: packet.id,
+    phase: packet.phase,
+    intent: packet.intent,
+    task_type: packet.task_type,
+    module: packet.module,
+    rule_index: decision.ruleIndex,
+    rule_reason: decision.reason,
+    model_id: decision.modelId,
+    select_slot: decision.selection?.slot,
+    select_chosen: decision.selection?.chosen,
+    select_overridden: decision.selection?.overridden,
+  });
+
+  const adapter = adapterFor(policy, decision.modelId);
+  const dispatchStarted = Date.now();
+  log("info", "dispatch.start", {
+    packet_id: packet.id,
+    model_id: decision.modelId,
+    max_out: packet.budget?.maxOutputTokens,
+    max_in: packet.budget?.maxInputTokens,
+    cache_context: a.cache_context,
+    work_dir: a.work_dir ?? a.project_root,
+  });
+  // Passed on every dispatch; completion adapters ignore it.
+  const result = await adapter.execute(packet, a.cache_context, {
+    project_root: a.project_root,
+    work_dir: a.work_dir ?? a.project_root,
+    telemetry_path: a.telemetry_path,
+  });
+  for (const att of result.attempts ?? []) {
+    log("debug", "dispatch.attempt", {
+      packet_id: packet.id,
+      attempt_number: att.attempt_number,
+      ceiling_used: att.ceiling_used,
+      hit_output_cap: att.hit_output_cap,
+      stop_reason: att.stop_reason,
+    });
+  }
+  if (result.success) {
+    log("info", "dispatch.end", {
+      packet_id: packet.id,
+      model_id: decision.modelId,
+      ok: true,
+      terminal_reason: result.terminal_reason,
+      tokens_in: result.tokens.input,
+      tokens_out: result.tokens.output,
+      tokens_cached: result.tokens.input_cached,
+      cost_usd: result.cost_usd,
+      latency_ms: Date.now() - dispatchStarted,
+      attempts: result.attempts?.length ?? 1,
+      price_basis: result.attempts?.[result.attempts.length - 1]?.price_basis,
+    });
+  } else {
+    log("error", "dispatch.error", {
+      packet_id: packet.id,
+      model_id: decision.modelId,
+      error_class: "DispatchFailed",
+      message: result.error,
+    });
+  }
+
+  // One TelemetryEvent per attempt, all sharing the packet's task_id.
+  const attempts = result.attempts ?? [
+    {
+      attempt_number: 1,
+      ceiling_used: packet.budget.maxOutputTokens,
+      hit_output_cap: false,
+      tokens: result.tokens,
+      cost_usd: result.cost_usd,
+      latency_ms: result.latency_ms,
+      success: result.success,
+      error: result.error,
+    },
+  ];
+  const modelName = getModel(policy, decision.modelId).model_name;
+  const baseEvent = {
+    ts: new Date().toISOString(),
+    pass: packet.pass_id,
+    phase: packet.phase,
+    task_type: packet.task_type,
+    task_id: packet.id,
+    module: packet.module,
+    model: modelName,
+    routed_by: "orchestrator" as const,
+    // Server-measured from the vendor's own usage report, so always
+    // "vendor" — in BOTH auth modes (estimated mode's MCP-dispatched
+    // calls still carry vendor tokens; only direct-tier events are
+    // estimates, and those arrive via log_telemetry, not here). The
+    // report keys the run's cost label off this field; before this
+    // stamp existed every dispatched event fell to "unknown" and the
+    // whole run's numbers were disowned.
+    provenance: "vendor" as const,
+    // Leaf id; the only field that distinguishes two leaves that share
+    // a vendor model name (e.g. flash-completion vs flash-agsdk-worker).
+    model_id: decision.modelId,
+    routing: {
+      policy_name: policy.name,
+      policy_version: policy.version,
+      rule_index: decision.ruleIndex,
+      rule_reason: decision.reason,
+      // Undefined unless the rule went through a slot; JSON.stringify
+      // drops undefined keys, so unslotted policies produce identical
+      // events to before slots existed.
+      select: decision.selection,
+    },
+    retry_count: packet.retry_count ?? 0,
+  };
+  const events: TelemetryEvent[] = attempts.map((att) => ({
+    ...baseEvent,
+    input_tokens: att.tokens.input,
+    input_tokens_cached: att.tokens.input_cached,
+    // Cache writes, disjoint from input_tokens: the total written, plus
+    // the 1-hour share when the adapter knows it (claude-cli). Anthropic
+    // adapters populate it; Gemini leaves both undefined and
+    // JSON.stringify drops the keys, keeping those events unchanged.
+    ...cacheWriteBuckets(att.tokens),
+    output_tokens: att.tokens.output,
+    // Already counted in output_tokens and billed at the output rate;
+    // surfaced only so a reader can see how much of a delegation's
+    // output was thinking. Undefined on adapters that don't report it.
+    output_tokens_reasoning: att.tokens.output_reasoning,
+    cost_usd: att.cost_usd,
+    latency_ms: att.latency_ms,
+    success: att.success,
+    attempt_number: att.attempt_number,
+    ceiling_used: att.ceiling_used,
+    retry_reason: att.attempt_number > 1 ? "output_cap" : undefined,
+    error: att.error,
+    // Where the dollars' rates came from ("list" or "custom" under
+    // pricing_override), which billed models had no price, and, for a
+    // claude-cli worker, Claude Code's own figure and how the cache
+    // TTL split was known. Undefined fields are dropped from the line.
+    price_basis: att.price_basis,
+    unpriced_models: att.unpriced_models?.length ? att.unpriced_models : undefined,
+    cli_reported_cost_usd: att.cli_reported_cost_usd,
+    ttl_split: att.ttl_split,
+    // claude-cli only: the dollars for the tokens the worker's own
+    // transcript explains. collect-orchestrator-usage.mjs subtracts only
+    // this share of an in-session worker, so its receipt-only side calls
+    // and unlogged tokens stay in the true total (review finding M4).
+    transcript_logged_cost_usd: att.transcript_logged_cost_usd,
+  }));
+  if (a.telemetry_path) {
+    for (const ev of events) appendEvent(a.telemetry_path, ev);
+    log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: events.length });
+  }
+  return { decision, result, events };
+}
+
+/**
+ * One packet, start to receipt: validate, hydrate, route, dispatch — and under
+ * `apply`, write / verify / retry (runApplyLoop). Shared by execute_with_model
+ * and execute_batch so a batched packet behaves exactly like a single one.
+ */
+async function runPacket(raw: unknown, a: any): Promise<unknown> {
+  const packet0 = validateTaskPacket(raw);
+  const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
+  const apply = normalizeApply(packet0.apply);
+  const projectRoot: string | undefined = a.project_root ?? resolveProjectRoot(undefined);
+
+  const needsDisk = apply !== null || packet0.inputs.some((s) => typeof s.content !== "string");
+  if (needsDisk && !projectRoot) {
+    throw new Error(
+      "execute_with_model: project_root is required when a packet uses apply or an inputs[] slice without content.",
+    );
+  }
+  let packet: TaskPacket = packet0;
+  let hydrated: string[] = [];
+  if (needsDisk) {
+    ({ packet, hydrated } = hydrateInputs(packet0, projectRoot!));
+    if (hydrated.length) log("info", "packet.hydrate", { packet_id: packet.id, files: hydrated.join(",") });
+  }
+  // The apply form is the brownfield packet flow's writer. Greenfield writes through the executor,
+  // and a greenfield project has no write contract, so apply is refused there.
+  if (apply && !hasActiveWriteContract(projectRoot!)) {
+    throw new Error(
+      `${packet0.id}: the apply form writes only inside a brownfield run, after Gate 0 activates ` +
+        ".sdlc/local/write-contract.json; no active write contract under project_root.",
+    );
+  }
+  if (apply && !packet.outputSchema) {
+    packet = { ...packet, outputSchema: apply.mode === "edits" ? EDITS_OUTPUT_SCHEMA : FILE_OUTPUT_SCHEMA };
+  }
+
+  if (!apply) {
+    const one = await dispatchOnce(packet, policy, a);
+    return { decision: one.decision, result: one.result, events: one.events, terminal_reason: one.result.terminal_reason };
+  }
+
+  return runApplyLoop({
+    packet,
+    apply,
+    projectRoot: projectRoot!,
+    runId: a.run_id,
+    keepEvents: !a.telemetry_path,
+    route: (p) =>
+      pickModel(
+        { phase: p.phase, task_type: p.task_type, module: p.module, retry_count: p.retry_count ?? 0, intent: p.intent },
+        policy,
+        selectOverrides(),
+      ),
+    dispatch: async (p) => {
+      const one = await dispatchOnce(p, policy, a);
+      return { decision: one.decision, result: one.result, events: one.events };
+    },
+    log: (level, event, fields) => log(level, event, fields),
+  });
+}
+
 const server = new Server(
   { name: SERVER_NAME, version: SERVER_VERSION },
   { capabilities: { tools: {} } }
@@ -325,9 +574,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object",
         properties: {
-          packet: { type: "object", description: "TaskPacket (see types.ts)" },
+          packet: {
+            type: "object",
+            description:
+              "TaskPacket (see types.ts). An inputs[] slice without `content` is read from disk under " +
+              "project_root (narrow it with `lines: [from, to]` or `section: '<heading>'`). " +
+              "`apply: { write: true, format?: ['cmd {path}'], verify?: ['cmd {path}', ...], max_retries? }` makes the server write the " +
+              "returned content to artifact_path (write contract + provenance), run the verify commands, retry on " +
+              "the same model with the failure appended, and return a receipt instead of the file. It returns " +
+              "status 'escalate' the moment the policy would route the next attempt to a different model.",
+          },
           policy_name: { type: "string" },
           project_root: { type: "string" },
+          run_id: {
+            type: "string",
+            description: "Brownfield run id — with apply, the server records provenance for the write under .sdlc/runs/<run_id>/ so /mmo:revert still works.",
+          },
           policy_path: { type: "string" },
           work_dir: {
             type: "string",
@@ -348,6 +610,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           verbose: { type: "boolean", description: "Shorthand for log_level: debug." },
         },
         required: ["packet"],
+      },
+    },
+    {
+      name: "execute_batch",
+      description:
+        "Execute several apply-form TaskPackets in one call: the server runs them in parallel (max_parallel, default 4) " +
+        "in depends_on order, never two on the same artifact_path at once, and returns one receipt per packet plus " +
+        "totals. Same routing, apply, verify and telemetry as execute_with_model; one orchestrator turn for the phase " +
+        "instead of one per packet.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          packets: { type: "array", items: { type: "object" }, description: "TaskPackets, each with an apply block (plan-to-packets output). Omit when packets_path is given." },
+          packets_path: { type: "string", description: "Path to packets.json (plan-to-packets output); the server reads it so the packets never pass through the caller's context. Packets without an apply block (tooling) are skipped and listed in the receipt." },
+          packet_ids: { type: "array", items: { type: "string" }, description: "With packets_path: run only these ids." },
+          policy_name: { type: "string" },
+          project_root: { type: "string" },
+          policy_path: { type: "string" },
+          run_id: { type: "string" },
+          cache_context: { type: "string" },
+          telemetry_path: { type: "string" },
+          max_parallel: { type: "number", description: "1–8, default 4." },
+          log_level: { type: "string", enum: ["error", "warn", "info", "debug", "trace"] },
+        },
+        required: [],
       },
     },
     {
@@ -490,178 +777,26 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     switch (name) {
       case "execute_with_model": {
         const a = args as any;
-        const packet = validateTaskPacket(a.packet);
-        const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
-        const decision = pickModel(
-          {
-            phase: packet.phase,
-            task_type: packet.task_type,
-            module: packet.module,
-            retry_count: packet.retry_count ?? 0,
-            intent: packet.intent,
-          },
-          policy,
-          selectOverrides()
-        );
-        log("info", "route.decide", {
-          packet_id: packet.id,
-          phase: packet.phase,
-          intent: packet.intent,
-          task_type: packet.task_type,
-          module: packet.module,
-          rule_index: decision.ruleIndex,
-          rule_reason: decision.reason,
-          model_id: decision.modelId,
-          select_slot: decision.selection?.slot,
-          select_chosen: decision.selection?.chosen,
-          select_overridden: decision.selection?.overridden,
-        });
-
-        const adapter = adapterFor(policy, decision.modelId);
-        const dispatchStarted = Date.now();
-        log("info", "dispatch.start", {
-          packet_id: packet.id,
-          model_id: decision.modelId,
-          max_out: packet.budget?.maxOutputTokens,
-          max_in: packet.budget?.maxInputTokens,
-          cache_context: a.cache_context,
-          work_dir: a.work_dir ?? a.project_root,
-        });
-        // Passed on every dispatch; completion adapters ignore it.
-        const result = await adapter.execute(packet, a.cache_context, {
-          project_root: a.project_root,
-          work_dir: a.work_dir ?? a.project_root,
-          telemetry_path: a.telemetry_path,
-        });
-        for (const att of result.attempts ?? []) {
-          log("debug", "dispatch.attempt", {
-            packet_id: packet.id,
-            attempt_number: att.attempt_number,
-            ceiling_used: att.ceiling_used,
-            hit_output_cap: att.hit_output_cap,
-            stop_reason: att.stop_reason,
-          });
+        const out = await runPacket(a.packet, a);
+        return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+      }
+      case "execute_batch": {
+        const a = args as any;
+        const { list: rawPackets, skipped } = batchPacketsFromArgs(a);
+        const packets: TaskPacket[] = rawPackets.map((p: unknown) => validateTaskPacket(p));
+        for (const p of packets) {
+          if (!normalizeApply(p.apply)) throw new Error(`execute_batch: packet ${p.id} has no apply block; a batch carries apply-form packets only (the receipt is what makes a batch cheap).`);
         }
-        if (result.success) {
-          log("info", "dispatch.end", {
-            packet_id: packet.id,
-            model_id: decision.modelId,
-            ok: true,
-            terminal_reason: result.terminal_reason,
-            tokens_in: result.tokens.input,
-            tokens_out: result.tokens.output,
-            tokens_cached: result.tokens.input_cached,
-            cost_usd: result.cost_usd,
-            latency_ms: Date.now() - dispatchStarted,
-            attempts: result.attempts?.length ?? 1,
-            price_basis: result.attempts?.[result.attempts.length - 1]?.price_basis,
-          });
-        } else {
-          log("error", "dispatch.error", {
-            packet_id: packet.id,
-            model_id: decision.modelId,
-            error_class: "DispatchFailed",
-            message: result.error,
-          });
-        }
-
-        // One TelemetryEvent per attempt, all sharing the packet's task_id.
-        const attempts = result.attempts ?? [
-          {
-            attempt_number: 1,
-            ceiling_used: packet.budget.maxOutputTokens,
-            hit_output_cap: false,
-            tokens: result.tokens,
-            cost_usd: result.cost_usd,
-            latency_ms: result.latency_ms,
-            success: result.success,
-            error: result.error,
-          },
-        ];
-        const modelName = getModel(policy, decision.modelId).model_name;
-        const baseEvent = {
-          ts: new Date().toISOString(),
-          pass: packet.pass_id,
-          phase: packet.phase,
-          task_type: packet.task_type,
-          task_id: packet.id,
-          module: packet.module,
-          model: modelName,
-          routed_by: "orchestrator" as const,
-          // Server-measured from the vendor's own usage report, so always
-          // "vendor" — in BOTH auth modes (estimated mode's MCP-dispatched
-          // calls still carry vendor tokens; only direct-tier events are
-          // estimates, and those arrive via log_telemetry, not here). The
-          // report keys the run's cost label off this field; before this
-          // stamp existed every dispatched event fell to "unknown" and the
-          // whole run's numbers were disowned.
-          provenance: "vendor" as const,
-          // Leaf id; the only field that distinguishes two leaves that share
-          // a vendor model name (e.g. flash-completion vs flash-agsdk-worker).
-          model_id: decision.modelId,
-          routing: {
-            policy_name: policy.name,
-            policy_version: policy.version,
-            rule_index: decision.ruleIndex,
-            rule_reason: decision.reason,
-            // Undefined unless the rule went through a slot; JSON.stringify
-            // drops undefined keys, so unslotted policies produce identical
-            // events to before slots existed.
-            select: decision.selection,
-          },
-          retry_count: packet.retry_count ?? 0,
-        };
-        const events: TelemetryEvent[] = attempts.map((att) => ({
-          ...baseEvent,
-          input_tokens: att.tokens.input,
-          input_tokens_cached: att.tokens.input_cached,
-          // Cache writes, disjoint from input_tokens: the total written, plus
-          // the 1-hour share when the adapter knows it (claude-cli). Anthropic
-          // adapters populate it; Gemini leaves both undefined and
-          // JSON.stringify drops the keys, keeping those events unchanged.
-          ...cacheWriteBuckets(att.tokens),
-          output_tokens: att.tokens.output,
-          // Already counted in output_tokens and billed at the output rate;
-          // surfaced only so a reader can see how much of a delegation's
-          // output was thinking. Undefined on adapters that don't report it.
-          output_tokens_reasoning: att.tokens.output_reasoning,
-          cost_usd: att.cost_usd,
-          latency_ms: att.latency_ms,
-          success: att.success,
-          attempt_number: att.attempt_number,
-          ceiling_used: att.ceiling_used,
-          retry_reason: att.attempt_number > 1 ? "output_cap" : undefined,
-          error: att.error,
-          // Where the dollars' rates came from ("list" or "custom" under
-          // pricing_override), which billed models had no price, and, for a
-          // claude-cli worker, Claude Code's own figure and how the cache
-          // TTL split was known. Undefined fields are dropped from the line.
-          price_basis: att.price_basis,
-          unpriced_models: att.unpriced_models?.length ? att.unpriced_models : undefined,
-          cli_reported_cost_usd: att.cli_reported_cost_usd,
-          ttl_split: att.ttl_split,
-          // claude-cli only: the dollars for the tokens the worker's own
-          // transcript explains. collect-orchestrator-usage.mjs subtracts only
-          // this share of an in-session worker, so its receipt-only side calls
-          // and unlogged tokens stay in the true total (review finding M4).
-          transcript_logged_cost_usd: att.transcript_logged_cost_usd,
-        }));
-        if (a.telemetry_path) {
-          for (const ev of events) appendEvent(a.telemetry_path, ev);
-          log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: events.length });
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                { decision, result, events, terminal_reason: result.terminal_reason },
-                null,
-                2,
-              ),
-            },
-          ],
-        };
+        ensurePolicy(a.policy_name, a.project_root, a.policy_path);
+        const maxParallel = Math.max(1, Math.min(8, Number(a.max_parallel ?? 4)));
+        const result = await runBatch({
+          packets,
+          maxParallel,
+          run: (p) => runPacket(p, a) as Promise<any>,
+          log: (level, event, fields) => log(level, event, fields),
+        });
+        log("info", "batch.done", { packets: packets.length, status: result.status, counts: JSON.stringify(result.counts), cost_usd: result.cost_usd, duration_ms: result.duration_ms });
+        return { content: [{ type: "text", text: JSON.stringify(compactBatchReceipt(result, skipped)) }] };
       }
       case "simulate_policy": {
         const a = args as any;

@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** The plugin's own agents (plugin/agents/*.md). */
-export const PIPELINE_AGENTS = new Set(["orchestrator", "architect", "senior-reviewer", "security-reviewer", "discovery"]);
+export const PIPELINE_AGENTS = new Set(["orchestrator", "architect", "senior-reviewer", "security-reviewer", "brownfield-senior-reviewer", "brownfield-security-reviewer", "discovery"]);
 
 // Claude Code looks an agent up by its exact name, then by the name with case, spaces, dashes and
 // underscores ignored, so `mmo:Architect` still starts the plugin's architect. Names compare the same way.

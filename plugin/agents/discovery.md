@@ -2,6 +2,10 @@
 name: discovery
 description: Brownfield discovery subagent. Reads an existing repository to build a lightweight per-run snapshot and (on the first run per project) the living project baseline. Never writes into user source; only into `.sdlc/`. Used by the orchestrator at prompt-1 section 5 and again at prompt-2 first-time-in-this-repo path.
 tools: Read, Glob, Grep, Bash
+# Discovery runs only in brownfield. A one-hour prompt cache keeps its context while it waits on
+# long reads, as the orchestrator and architect do (Claude Code honours this for plugin agents).
+experimental:
+  cacheTtl: 1h
 # Effort is pinned, the same in every run: a helper otherwise inherits the launching session's
 # effort, so a launch flag or setting could change its thinking in one run only.
 effort: high

@@ -247,6 +247,86 @@ Under `--auth=estimated`, the orchestrator subagent prices its own in-session es
 
 What each plugin version changed about how the numbers are produced. A dispatched event's `cost_usd` is stamped at dispatch and keeps the rules of the version that ran it. The orchestrator figure is rewritten each time the collector runs, so re-running the current collector over an older pass applies the current rules to that figure.
 
+### v0.9.0
+
+Brownfield cost work, on top of v0.7.12. Greenfield is unchanged from v0.7.12. The work was built on a separate branch in the steps below, newest first; the step numbers match the cost study in `docs/cost-study/README.md`.
+
+| Area | v0.9.0 |
+|---|---|
+| Helper prompt cache | The run-start `cache-ttl-check.mjs` step and the policies' `subagent_cache_ttl` key are gone; nothing writes `.claude/settings.local.json`. Brownfield keeps one hour on every helper through agent frontmatter: the orchestrator and architect (as in v0.7.12), discovery, and the brownfield reviewer copies `brownfield-senior-reviewer` and `brownfield-security-reviewer`. Greenfield's reviewers are unchanged. |
+| Apply form | `execute_with_model` and `execute_batch` refuse an apply-form packet unless `.sdlc/local/write-contract.json` is active, so only a brownfield run past Gate 0 writes through it. |
+| Repo scout | Removed from every policy and from the pipeline. |
+| Policies | `sonnet-plus-flash` is not shipped. |
+
+#### Brownfield step 0.8.12
+
+| Area | Before | From v0.8.12 |
+|---|---|---|
+| Verify on Markdown, MDX and YAML files | `plan-to-packets` passed a unit's `biome check <file>.mdx` through as its verify. Biome does not process those files and exits 1 on any content, so Large2-C spent 6 worker attempts and 2 hand-written refinement packets on two docs pages that were already correct. | Biome check / format / lint commands are dropped for `.md`, `.mdx`, `.yml` and `.yaml` targets. Any other Verify command on the unit stays, and no warning is raised. |
+| `apply.format` on hand-written packets | Only packets from `plan-to-packets` carried `format`. Debug and refinement packets the orchestrator wrote by hand left it out, so a Biome spacing difference failed verify and escalated to Opus (Large2-C: 2 escalations). | When `format` is absent, the server derives it from the verify commands with the same rule `plan-to-packets` uses (`biome check X` → `biome check --write X`, `prettier --check` → `--write`). An explicit `format` still wins. |
+| Gate 0 file scope | The proposed allowlist covered the files that carry the feature. Large2-D's senior reviewer raised two major findings the run could not act on: the API spec and the MCP tool catalogues were outside the allowlist. | Step 4b proposes the companion files a change needs to be complete as well: the generated API spec and every catalogue of the surface being extended, when discovery finds them. You still edit the list at Gate 0. |
+
+#### Brownfield step 0.8.11
+
+| Area | Before | From v0.8.11 |
+|---|---|---|
+| Plan length | The architect trimmed a written plan toward the ≈ 400-line soft target (Large2-A: 34 turns, ≈ $3.86). | The line target applies to the one Write only; `long_plan` is informational. |
+| Biome on CRLF files | `biome check` failed on edit targets with CRLF endings before any edit, and the architect rewrote verify lines by hand (Large2-A: 21 turns, ≈ $2.07). | `plan-to-packets` adds `--line-ending=crlf` to biome verify and format for CRLF edit targets. |
+
+#### Brownfield step 0.8.10
+
+| Area | Before | From v0.8.10 |
+|---|---|---|
+| Subagent cache TTL | Multi-model policies declared `subagent_cache_ttl: 1h`; `opus-only` and `opus-only-v5` declared `5m`, `flash-agsdk-only` declared nothing, and preflight warned when a single-model policy asked for 1h. The study's opus-only runs (Runs 22–35) were all measured at 1h through a local policy copy, so a new user's opus-only run did not match the published numbers. | Every shipped policy declares `1h` and the warning is gone. Since 0.8.8 the orchestrator waits for reviewers and test suites inside its turn, so single-model runs wait too; the one 5m opus-only run on 0.8.x (Run 21, $17.43) cost more than every 1h opus-only run after it. `cache-ttl-check --fix` still writes the value and asks for one relaunch when it changes. |
+
+#### Brownfield step 0.8.9
+
+| Area | Before | From v0.8.9 |
+|---|---|---|
+| Edit lists (`apply.mode: "edits"`) | Positions were `after` / `before` / `replace`, and `replace` covered exactly one line, so a deletion could not be expressed. Run 30's one refinement (an 8-line block cut to 3) ran as a hand splice by the orchestrator instead of a Flash packet. | `position: "delete"` (no `text` needed) and an optional `count` on `replace` / `delete` cover a run of lines from the anchor down. Overlapping spans and spans past the end of the file are refused with a reason the retry carries. The architect writes `×N` after the quoted anchor text for a multi-line site. |
+| Action word in the plan | `plan-to-packets` accepted only `new_file` / `edit` / `tooling`; Run 31's orchestrator told the architect `create`, 10 units failed derivation and the plan was edited and re-derived. | Unambiguous synonyms (`create` / `new` / `add` → `new_file`; `modify` / `update` / `change` → `edit`) are mapped, with a warning naming the unit. |
+| Collector run id on the single-model path | The run id was read only from a dispatched line's `pass`; hand-logged in-session lines carry `pass_id`, so Run 31's collector stopped with "no run id" until the orchestrator added a `pass` field. | `pass_id` is read as well. |
+
+#### Brownfield step 0.8.8
+
+| Area | Before | From v0.8.8 |
+|---|---|---|
+| Waiting on subagents and long tests | The orchestrator sometimes ended its turn and was resumed by a completion notification; each resume missed the prompt cache and re-wrote the whole context (Run 28: three resumes, 408k cache-write tokens, ≈ $4.1) | The orchestrator waits inside its turn (a Bash until-loop on the output file). Rates and telemetry fields are unchanged; the saving shows as fewer 1h cache-write tokens. |
+| `execute_batch` input and receipt | The orchestrator read `packets.json` (~15k tokens) and typed every packet back as tool input; the receipt restated routing and token counts for every applied packet (~8k tokens) | `packets_path` (+ optional `packet_ids`) lets the server read the file; tooling packets are skipped and listed. The receipt is one line, and an applied, verified packet keeps only path, lines, cost, attempts, verify and any non-routine field. Telemetry still records every figure. |
+
+#### Brownfield step 0.8.7
+
+| Area | Before | From v0.8.7 |
+|---|---|---|
+| Brownfield reviewers | The senior and security reviewers opened touched files one `Read` at a time, re-ran tests, typecheck, route generators and `pnpm audit`, and read library source to prove findings (Run 28: 49 + 30 tool uses). Every tool use re-reads the whole context, which is most of an Opus run's cost | Same two phases, same checklists. Each reviewer loads the whole change in one Bash call, keeps to a tool-call budget (senior about 12, at most 20; security about 10, at most 15), does not re-run commands the orchestrator already ran (it passes a one-line-per-suite summary), and runs the dependency check only when a manifest or lockfile changed. |
+| Collector without `manifest.json` | A single-model run handled in-session never calls the server, so no manifest was written and `collect-orchestrator-usage.mjs` exited 1 (Run 29) | The collector rebuilds the window from `telemetry.jsonl` and writes a manifest carrying the run id, policy and booked figures. Rates and telemetry fields are unchanged. |
+
+#### Brownfield step 0.8.6
+
+| Area | Before | From v0.8.6 |
+|---|---|---|
+| Wrapped `- **File**` bullet in `plan-to-packets` | Only the bullet's first physical line was parsed, so a bullet soft-wrapped before `**Depends on**` gave `depends_on: []` with exit 0 (Run 27b: 10 of 15 units) | Indented continuation lines are joined before parsing, and a unit with no `Depends on` anywhere gets a warning. Rates, telemetry fields and the collector are unchanged. |
+
+#### Brownfield step 0.8.5
+
+| Area | Before | From v0.8.5 |
+|---|---|---|
+| Repo scout under `opus-plus-flash-v38` | Flash scouted candidate files for the architect; its anchors were mostly wrong four rows running, so the architect re-read every slice | The preset has no `repo_scout` rule, so the scout is skipped and the architect reads the repo itself, as under opus-only. Other multi-model presets keep the scout. |
+| Cross-unit imports | The worker guessed a sibling unit's module path; the error surfaced only at the deferred typecheck and was debugged by the premium model (Run 25: three of four debug rounds) | The multi-model plan carries an `- **Imports**` bullet with each statement as written; each worker packet also receives the sections of the units it depends on; and under `--multi-model` every JS/TS packet's verify starts with `check-imports.mjs`, so an unresolvable import or a missing default/named export fails on the mechanical tier and the worker retries with the files that do exist. Rates, telemetry fields and the collector are unchanged. |
+
+#### Brownfield step 0.8.4
+
+| Area | Before | From v0.8.4 |
+|---|---|---|
+| Edit sites in `plan-to-packets` | Read only a `- **Edit anchor**` bullet (or a `### Edits` heading) with `` `:N` `` / `L<n>` / "line N" references. A `- **Edit**` bullet with `` `after :280 -> rule` `` items found no sites, so edit units fell back to whole-file packets (Run 24: 5 of 5) | `- **Edit**` / `- **Edits**` bullets are read like `- **Edit anchor**`, and `after` / `before` / `replace` / `insert` / `delete` followed by `:N` is an edit site. Run 24's plan now derives 8 edit lists instead of 0. Rates, telemetry fields and the collector are unchanged. |
+
+#### Brownfield step 0.8.1
+
+| Area | Before | From v0.8.1 |
+|---|---|---|
+| Batched dispatch under a multi-model policy | `execute_batch` was missing from the orchestrator's `tools:` list, so the orchestrator handed each batch to a helper subagent, whose transcript counted toward `orchestrator_overhead` | The orchestrator calls `execute_batch` itself. Rates, telemetry fields and the collector are unchanged. |
+| Architect tools and plan form | `Read, Write` only: files were found by guessing paths, and any fix rewrote the whole plan; the multi-model plan carried the full per-unit form | `Edit` and read-only search added. The plan is written once and fixed section by section; both policies use the brief form, and multi-model adds only verbatim anchor text and import specifiers. Architecture-phase cost per run is expected to fall; the pricing rules are unchanged. |
+
 ### v0.7.12
 
 A greenfield run goes through the typed-spec executor: `/mmo:greenfield` and `/mmo:pass` alike (before v0.7.12 `/mmo:pass` needed `--executor`; the flag is still accepted and changes nothing). Every brownfield run keeps the packet flow and change only by the rows under **Every run**.

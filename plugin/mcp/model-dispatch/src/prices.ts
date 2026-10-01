@@ -147,6 +147,8 @@ export const PRICE_LIST: PriceList = deepFreeze({
   // Every non-Mythos row on Anthropic's page (Mythos is limited availability).
   "claude-fable-5-1":  claude(10, 12.5, 20, 0.25, 50, US_ONLY), // cache read is 0.025x input on this model
   "claude-fable-5":    claude(10, 12.5, 20, 1, 50, US_ONLY),
+  // Claude Code parent sessions run on it; without a row the collector drops them from every total.
+  "claude-opus-5-5":   claude(4, 5, 8, 0.2, 20, { fast: { input: 8, output: 40 } }),
   "claude-opus-5":     claude(5, 6.25, 10, 0.5, 25, { ...US_ONLY, ...OPUS_FAST }),
   "claude-opus-4-8":   claude(5, 6.25, 10, 0.5, 25, { ...US_ONLY, ...OPUS_FAST }),
   "claude-opus-4-7":   claude(5, 6.25, 10, 0.5, 25, US_ONLY),

@@ -1,7 +1,11 @@
 ---
-name: senior-reviewer
-description: Senior code reviewer. Reads generated code module-by-module and emits a structured review with refinement TaskPackets for any defects. Invoked by the orchestrator during the senior_code_review phase.
+name: brownfield-senior-reviewer
+description: Brownfield copy of senior-reviewer. Senior code reviewer. Reads generated code module-by-module and emits a structured review with refinement TaskPackets for any defects. Invoked by the orchestrator during the senior_code_review phase.
 tools: Read, Glob, Grep, Bash, Write
+# Brownfield runs delegate this copy. Its body matches senior-reviewer.md word for word (a test checks it);
+# only the one-hour prompt cache differs, so greenfield keeps senior-reviewer.md as it is.
+experimental:
+  cacheTtl: 1h
 # Effort is pinned, the same in every run: a helper otherwise inherits the launching session's
 # effort, so a launch flag or setting could change its thinking in one run only.
 effort: high

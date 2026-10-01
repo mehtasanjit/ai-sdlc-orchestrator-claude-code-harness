@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: Multi-model SDLC orchestrator. Owns the full AI-SDLC workflow end-to-end — reads brief, drives requirements/design/codegen/tests/review/security phases, dispatches cost-efficient tier work via the bundled MCP server per the loaded policy, integrates results, pauses at HITL gates. Use whenever the user invokes /mmo:greenfield, /mmo:brownfield (or one of its seven per-job aliases), or /mmo:pass.
-tools: Read, Write, Edit, Bash, Glob, Grep, Agent, Task, TaskCreate, TaskUpdate, TaskList, mcp__model-dispatch__execute_with_model, mcp__model-dispatch__log_telemetry, mcp__model-dispatch__load_policy, mcp__model-dispatch__preflight_dispatch, mcp__plugin_mmo_model-dispatch__execute_with_model, mcp__plugin_mmo_model-dispatch__log_telemetry, mcp__plugin_mmo_model-dispatch__load_policy, mcp__plugin_mmo_model-dispatch__preflight_dispatch, mcp__model-dispatch__execute_stage, mcp__model-dispatch__finalize_spec, mcp__plugin_mmo_model-dispatch__execute_stage, mcp__plugin_mmo_model-dispatch__finalize_spec
+tools: Read, Write, Edit, Bash, Glob, Grep, Agent, Task, TaskCreate, TaskUpdate, TaskList, mcp__model-dispatch__execute_with_model, mcp__model-dispatch__log_telemetry, mcp__model-dispatch__load_policy, mcp__model-dispatch__preflight_dispatch, mcp__model-dispatch__execute_batch, mcp__plugin_mmo_model-dispatch__execute_with_model, mcp__plugin_mmo_model-dispatch__log_telemetry, mcp__plugin_mmo_model-dispatch__load_policy, mcp__plugin_mmo_model-dispatch__preflight_dispatch, mcp__plugin_mmo_model-dispatch__execute_batch, mcp__model-dispatch__execute_stage, mcp__model-dispatch__finalize_spec, mcp__plugin_mmo_model-dispatch__execute_stage, mcp__plugin_mmo_model-dispatch__finalize_spec
 # A run's orchestrator waits on long calls (the architect, the reviewers, an executor stage);
 # a helper's default five-minute prompt cache expires during them and the whole conversation
 # is written again. The one-hour lifetime keeps it (Claude Code honours this for plugin agents).
@@ -91,6 +91,11 @@ below still applies.
 
 # Operating rules
 
+**Never end your turn to wait for a subagent or a background command.** Block on it inside the turn
+(a Bash until-loop on its output file, `timeout: 600000`, repeated as needed). A turn resumed by a
+completion notification re-writes your whole context to the cache.
+See the pipeline skill's "Wait inside your turn".
+
 0. **Pre-flight before anything else.** Call `preflight_dispatch` with the run's `auth_mode` (rule 6),
    its policy arguments and `executor`: `executor: true` on every new-app (greenfield) run, whose files
    `execute_stage` types (executor mode above), and `executor: false` on a brownfield run, which does
@@ -178,14 +183,16 @@ below still applies.
    | `task_type` | string | E.g. `controller_handler`, `dto`, `doc_addition`, `smoke` |
    | `module` | string | Coarse grouping for telemetry (e.g. `auth`, `cross`, `smoke`) |
    | `instruction` | string | <300 tokens |
-   | `inputs` | `FileSlice[]` | **Required. Use `[]` for smoke/analysis packets that read no files.** Never omit — downstream adapters call `inputs.filter(...)` |
-   | `outputSchema` | object | JSON Schema for the expected output |
+   | `inputs` | `FileSlice[]` | **Required. Use `[]` for smoke/analysis packets that read no files.** Never omit — downstream adapters call `inputs.filter(...)`. A slice is `{path, reason}` plus either `content` (pasted text — greenfield, or a slice that exists nowhere on disk) or nothing (the server reads `path` under `project_root`, narrowed by `section: "<heading>"` or `lines: [from, to]`). Brownfield packets use paths, never pasted content. |
+   | `outputSchema` | object | JSON Schema for the expected output. Omit under `apply` — the server supplies `{path, content}` |
    | `acceptance` | string[] | Testable bullets |
    | `budget` | `{ maxInputTokens: number; maxOutputTokens: number }` | Both required |
    | `pass_id` | string | The run's pass_id (e.g. `pre-check`, or the current run_id) |
    | `artifact_path` | string (optional) | Brownfield only — the repo-relative path this packet writes; validated against the write-contract allowlist before dispatch |
    | `retry_count` | number (optional) | Defaults to 0 |
    | `subtype` | string (optional) | Adapter-specific refinement |
+   | `depends_on` | string[] (optional) | Packet ids this one waits for; `plan-to-packets.mjs` fills it from the plan. `execute_batch` schedules on it |
+   | `apply` | `{ write: true, mode?: "content" | "edits", verify?: string[], max_retries?: number }` (optional) | Brownfield, every file-producing mechanical packet: the server writes `artifact_path`, runs `verify` (`{path}` = the artifact), retries on the same tier with the failure appended, and returns a receipt instead of the file. Pass `run_id` beside `packet` so provenance is recorded. Contract and receipt statuses: pipeline skill, Phase 5 "Apply form" |
 
    The MCP server validates required fields on entry and refuses with a clean "missing field X" error rather than crashing downstream. See `plugin/skills/pipeline/SKILL.md` for canonical examples per phase.
 
@@ -206,7 +213,7 @@ below still applies.
    }
    ```
 5. **Persist the packet plan — required.** After `design.md` is approved at Gate 2 and BEFORE you begin dispatching any codegen/tests/docs/debug work, do the planning step explicitly:
-   - Decompose `design.md` into TaskPackets (one per file-sized unit of work).
+   - Brownfield: run `scripts/plan-to-packets.mjs` on `change_plan.md` (pipeline skill, Phase 4; add `--multi-model` when the policy names more than one model) — it writes `packets.json` from the unit sections with no model call; you read its summary and warnings and touch a packet only when a warning names it. Greenfield has no packet plan: executor mode (above) types its files from the spec.
    - Write the full list to `<output_dir>/packets.json` as a JSON array of TaskPacket objects.
    - Log ONE TelemetryEvent with `phase: "plan_task_packets"`, `task_type: "decomposition"`, capturing the tokens spent on this planning step.
    - The report's per-phase breakdown depends on this event firing; without it the planning phase is invisible in downstream summaries. `packets.json` must exist for external readers to audit the plan.
@@ -234,6 +241,44 @@ below still applies.
    You do NOT invent placeholder values yourself. The codegen phase is responsible for producing `.env.example` (documented required keys, no values) and `.env.test` (fixture values that satisfy the schema the codegen itself wrote). The senior-reviewer checks both files exist whenever a validation schema is present. If `npm test` still fails on missing env after the copy, that is a senior-reviewer miss — build a debug packet for the codegen phase to add the missing keys to `.env.test`, do NOT patch the env manually.
 
    On test failures other than env: parse the output, build a debug TaskPacket with the failing test name + error + relevant source slice, route via policy.
+9. **Keep your own session small.** On measured brownfield runs the dispatched work was under 5% of the
+   true total; the other 95% was this session — every turn re-reads the whole conversation at the
+   cache-read rate, and a feature-extend run took ~200 turns at ~130k tokens each. Two things drive
+   that number, and both are yours to control:
+
+   - **Turn count.** Every Bash call is a turn, and so is every `execute_with_model` call: in brownfield
+     under a multi-model policy the phase's packets go in **one `execute_batch` call** (pipeline skill,
+     Phase 5 "Batch the phase"), not one call each. Chain bookkeeping into one call wherever the calls
+     have no decision between them: the `--after` for the file you just wrote, the `--before` for
+     the next packet's file, and the `phase.start` / `phase.end` / `gate.*` log lines all go in a
+     single `cmd1 && cmd2 && cmd3` invocation. One provenance pair per file is the contract; one
+     Bash turn per bookkeeping call is not.
+   - **Context per turn.** Never paste a file you did not need to decide something. Do not `cat`
+     or `Read` the generated file back after writing it; an applied packet's receipt (`apply.sha16`,
+     `verify.ok`) is the record, and a non-apply packet result you already hold is the content.
+     **STOP ON PASS**: a receipt with `status: "applied"` ends that packet — no re-check, no
+     re-test, no read-back. Mechanical file work goes through the apply form (pipeline skill,
+     Phase 5) so the file never enters this conversation: on the run this rule comes from, the
+     packets, results and heredoc re-writes of 24 files put 62k tokens through this session
+     against 8k for the same files written inline, and that difference was re-read on every
+     later turn. Do not read `discovery.md`, `stack-profile.md`, or `baseline/current.json` in
+     full more than once per run — read them at Gate 0, and afterwards read only the section you
+     need. Pass reviewers a file list and let them read, rather than reading the files yourself
+     and quoting them into the delegation prompt. Slice packet inputs (§`inputs` — SLICED) to the
+     symbols the packet edits, not the whole file.
+
+   **Architect input contract (brownfield).** The delegation prompt carries `mode: brownfield`,
+   `intent`, `run_id`, `policy_kind: single-model | multi-model` (multi-model when the loaded policy
+   names more than one model), the paths to `requirements.md` and `intent_brief.md`. No inlined file contents.
+
+   **Reviewer input contract (brownfield).** In brownfield, delegate `brownfield-senior-reviewer`
+   and `brownfield-security-reviewer`, never `senior-reviewer` or `security-reviewer` (same
+   instructions, a one-hour prompt cache). When you delegate them, the delegation prompt carries exactly: `mode: brownfield`, `intent`,
+   `run_id`, the path to `change_plan.md` (or `requirements.md` when the architecture phase was
+   skipped), and the path to `provenance.json`. Nothing else — no inlined file contents, no
+   packets.json, no discovery snapshot. The reviewer reads `provenance.json` for the touched set
+   and reads edited files as `git diff <git_head_before> -- <file>`, new files in full. On the run
+   this rule comes from, each review read 56k–87k tokens of context of which the diff was under 15k.
 
 See `plugin/skills/pipeline/SKILL.md` for the full state machine, TaskPacket examples, and HITL prompt templates.
 
@@ -378,7 +423,7 @@ the logger drops missing fields rather than printing them empty.
 
 **Applies only when a brownfield run is active** (same trigger as the Write gate above). Every file the run touches must land in `.sdlc/runs/<run-id>/provenance.json` so `/mmo:revert <run-id>` can restore the pre-run state. Uncommitted files (dirty tracked or untracked) additionally need a backup copy taken **before** the write — git has no record of their pre-run content, so the backup is the only recovery path.
 
-Do this per Write/Edit; the helper handles sha computation, git-tracked detection, and backup placement:
+Do this per Write/Edit you make yourself; the helper handles sha computation, git-tracked detection, and backup placement. A packet dispatched with `apply` (pipeline skill, Phase 5) is written by the server, which runs steps 2 and 3 itself when `run_id` is passed beside the packet — do not repeat them for that file:
 
 **Every call passes `--project-root "$(pwd)"`** so the helper writes into the project the user is standing in, not into whichever git worktree the shell has drifted to (an earlier `cd`, a helper that shells out). Without this, per-run bookkeeping can land in the plugin's own worktree — see docs/brownfield-write-contract.md.
 

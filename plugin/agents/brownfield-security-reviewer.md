@@ -1,7 +1,11 @@
 ---
-name: security-reviewer
-description: Security reviewer. Performs threat-model-style pass over the generated codebase — PII handling, authz coverage, audit completeness, secret leakage, dependency risk. Produces security_review.md and gates HITL Gate 3.
+name: brownfield-security-reviewer
+description: Brownfield copy of security-reviewer. Security reviewer. Performs threat-model-style pass over the generated codebase — PII handling, authz coverage, audit completeness, secret leakage, dependency risk. Produces security_review.md and gates HITL Gate 3.
 tools: Read, Glob, Grep, Bash, Write
+# Brownfield runs delegate this copy. Its body matches security-reviewer.md word for word (a test checks it);
+# only the one-hour prompt cache differs, so greenfield keeps security-reviewer.md as it is.
+experimental:
+  cacheTtl: 1h
 # Effort is pinned, the same in every run: a helper otherwise inherits the launching session's
 # effort, so a launch flag or setting could change its thinking in one run only.
 effort: high

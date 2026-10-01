@@ -34,23 +34,61 @@ Only which phases FIRE changes per intent (per the intent matrix in
 
 ## Cost impact
 
-Two shipped policies represent the two ends of the trade-off:
+Three shipped policies cover the trade-off:
 
-| Policy | Where everything runs | Typical mid-size run cost |
+| Policy | Where the judgment tier runs | Where the mechanical tier runs |
 |---|---|---|
-| `opus-only` | Every phase on Claude Opus | **$10 – 30** |
-| `opus-plus-flash` (default) | Judgment on Opus, mechanical on Gemini Flash | **$0.30 – 3** |
+| `opus-only` | Claude Opus | Claude Opus |
+| `opus-plus-flash` (default) | Claude Opus | Gemini Flash |
 
-~10× reduction on the same output because 60-80% of a full run is mechanical work that fits
-what Flash is good at (pattern-matching, in-context generation, filling schema-driven
-templates). Judgment work (understanding the repo, decomposing into packets, reviewing the
-output) stays on premium because that's where quality matters most.
+### What the runs measured
+
+Four brownfield studies on one TypeScript monorepo (three `feature-extend`, one `refactor`),
+each run under every policy, dispatched cost summed from `telemetry.jsonl`:
+
+| Study | `opus-only` | `opus-plus-flash`, completion door | `opus-plus-flash`, agent door |
+|---|---|---|---|
+| feature-extend 1 | $3.89 | $2.92 | $6.28 |
+| feature-extend 2 | $9.55 | $5.99 | $7.83 |
+| feature-extend 3 | $5.25 | $2.70 | $8.71 |
+| refactor | $2.72 | $1.11 | $1.79 |
+
+Three things the table shows:
+
+1. **The completion door saves 25–60%, not 10×.** In `opus-plus-flash` the five judgment phases
+   (requirements, change plan, packet plan, senior review, security review) cost the same as they
+   do under `opus-only` — the policy only moves codegen and tests, and those were 35–50% of an
+   `opus-only` run, not 60–80%. On the runs above the Opus phases were 85–90% of the
+   `opus-plus-flash` dispatched total; Flash was $0.03–0.62.
+2. **The agent door can cost more than `opus-only`.** `flash-agsdk-worker` re-sends the whole
+   conversation every turn and re-reads the repo per packet: 1.7–2.9M fresh plus 4–9M cached input
+   tokens per run, with the tests phase alone at $1.6–2.9 against $0.05–0.15 on the completion door.
+   Leave the slot on `flash-completion` for `feature-extend`, `bugfix`, and `refactor`.
+3. **Dispatched cost is not the bill.** `node plugin/scripts/collect-orchestrator-usage.mjs` on
+   the most recent `opus-plus-flash` run (dispatched $2.39) reconstructed the driver session from
+   its transcripts: 211 API messages, 27.6M cached-read tokens, 0.87M cache writes, 112k output —
+   **$22.26 of session on top of $0.29 of Flash**, true total $22.55. The session, not the
+   packets, is 93% of a run.
+
+### What that means for the policy choice
+
+| Lever | Effect on the true total |
+|---|---|
+| Fewer driver turns — bookkeeping chained into one Bash call per packet (orchestrator.md rule 9) | each turn removed saves one full context re-read at the cache-read rate, ~$0.07 on Opus at 130k tokens |
+| Reviewers read diffs, not trees (rule 9, reviewer contract) | the two reviews read 56–87k tokens each on the measured run; the diff was under 15k |
+| `light` security review when the touched set has no security surface (pipeline Phase 8) | skips one judgment-tier phase on presentation-only changes |
+| Codegen output ceiling 6000 instead of 3000 | no doublings on the measured run instead of 4; a ceiling is free until used |
+
+A policy that splits the judgment tier across Opus and Sonnet is refused under `estimated` — a
+single environment variable cannot honor it — and runs only under `vendor`.
 
 Every dispatch's actual cost lands in `.sdlc/runs/<id>/telemetry.jsonl`. Rates come from the dated
 price list (`plugin/mcp/model-dispatch/src/prices.ts`), or from a model's `pricing` block only under
 `pricing_override: true`. The orchestrator's estimates read that same price from `load_policy`'s
 `effective_price` — never hardcoded, and tokens are never estimated except when the telemetry mode
-is explicitly `estimated`.
+is explicitly `estimated`. The driver session's cost lands beside the dispatch events as one
+`tier: "orchestrator"` event once the collector runs; `manifest.json` then carries both
+`total_cost_usd` (dispatched) and `true_total_cost_usd`.
 
 ## Escalation
 

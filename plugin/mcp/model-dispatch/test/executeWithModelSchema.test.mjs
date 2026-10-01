@@ -53,9 +53,14 @@ test("the validator is wired into the execute_with_model handler", () => {
   // The validator must be called on the packet before it's used.
   // Downstream code accesses packet.inputs.filter(...) etc., so
   // validation MUST come first.
-  const validateIdx = src.indexOf("validateTaskPacket(a.packet)");
-  assert.notEqual(validateIdx, -1, "validateTaskPacket must be called on args.packet");
-  // Make sure it's inside execute_with_model handler, not lingering elsewhere.
-  const handlerIdx = src.indexOf('"execute_with_model"');
-  assert.ok(handlerIdx > 0 && validateIdx > handlerIdx, "validator call must be inside execute_with_model handler");
+  // The handler delegates to runPacket(raw, a), whose first statement validates the raw packet;
+  // execute_batch validates every packet the same way before scheduling.
+  const validateIdx = src.indexOf("const packet0 = validateTaskPacket(raw)");
+  assert.notEqual(validateIdx, -1, "runPacket must validate the raw packet first");
+  const runPacketIdx = src.indexOf("async function runPacket(");
+  assert.ok(runPacketIdx > 0 && validateIdx > runPacketIdx, "validator call must be inside runPacket");
+  const handlerIdx = src.indexOf('case "execute_with_model"');
+  assert.ok(src.indexOf("runPacket(a.packet, a)", handlerIdx) > handlerIdx, "execute_with_model must hand args.packet to runPacket");
+  const batchIdx = src.indexOf('case "execute_batch"');
+  assert.ok(src.indexOf("validateTaskPacket(p)", batchIdx) > batchIdx, "execute_batch must validate every packet");
 });

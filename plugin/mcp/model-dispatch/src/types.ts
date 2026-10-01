@@ -33,8 +33,54 @@ export type Phase =
 
 export interface FileSlice {
   path: string;
-  content: string;
+  /**
+   * Omit it and the server reads the file at `path` (under `project_root`)
+   * itself, narrowed by `lines` or `section` when given. The orchestrator
+   * then never pastes file text into a packet.
+   */
+  content?: string;
   reason: string;
+  /** 1-based inclusive line range to read from the file on disk. */
+  lines?: [number, number];
+  /**
+   * A Markdown heading to read from the file on disk: that heading line
+   * and everything up to the next heading of the same or a higher level.
+   * Matched by substring against the heading text, first hit wins.
+   */
+  section?: string;
+}
+
+/**
+ * Editor-side apply for a mechanical packet. The server writes the returned
+ * `content` to `artifact_path`, runs `verify`, and retries on the mechanical
+ * tier with the failure appended — the orchestrator sees a receipt, not the
+ * file. Stops before any attempt the policy would route to a different model
+ * than the first one, so escalation stays the orchestrator's decision.
+ */
+export interface ApplySpec {
+  write: boolean;
+  /**
+   * `content` (default): the model returns the whole file. `edits`: the model
+   * returns `{edits: [{anchor, position, text, line?, count?}]}` and the server splices
+   * them into the existing file — for an edit to a large file, where returning
+   * the whole file would cost more output than the change is worth.
+   */
+  mode?: "content" | "edits";
+  /**
+   * Shell commands run from `project_root` after the write; `{path}` is
+   * replaced by the artifact path. All must exit 0 for the attempt to pass.
+   */
+  verify?: string[];
+  /**
+   * Formatter commands run after the write and before `verify` (same `{path}`
+   * substitution). Their exit code is ignored — `verify` still judges the file —
+   * so a formatting-only miss costs a second of formatter time, not a retry.
+   */
+  format?: string[];
+  /** Mechanical-tier retries the server may spend on verify failures. Default 2. */
+  max_retries?: number;
+  /** Seconds each verify command may run. Default 120. */
+  verify_timeout_sec?: number;
 }
 
 export interface TaskPacket {
@@ -44,6 +90,7 @@ export interface TaskPacket {
   module: string;
   instruction: string;
   inputs: FileSlice[];
+  /** Optional under `apply`: the server substitutes the `{path, content}` file schema. */
   outputSchema: Record<string, any>;
   acceptance: string[];
   budget: { maxInputTokens: number; maxOutputTokens: number };
@@ -63,6 +110,8 @@ export interface TaskPacket {
    * than for `docs`) via a rule matching on both `phase` and `intent`.
    */
   intent?: string;
+  /** Brownfield only. See ApplySpec. */
+  apply?: ApplySpec;
 }
 
 export interface TelemetryEvent {

@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.7.12-blue)](.claude-plugin/marketplace.json)
+[![Version](https://img.shields.io/badge/version-0.9.0-blue)](.claude-plugin/marketplace.json)
 
 ![How the plugin works — you paste two prompts, an orchestrator routes premium work to Claude Opus and mechanical work to Gemini Flash, and your project gets both generated code and a full audit trail](docs/assets/hero.svg)
 
@@ -139,14 +139,14 @@ Two guardrails ship on:
 - **Escalation** — a mechanical-tier packet that fails validation twice auto-routes to Opus on the third attempt. Prevents infinite retries when Flash can't solve a particular puzzle.
 - **No cost cap** — no policy sets a dollar limit and nothing stops a run for its cost. The orchestrator makes at most three repair rounds after a failing check run, and the acceptance stage runs at most three re-checks. A policy that still declares `hard_cost_cap_usd` loads, with the figure set aside and a warning.
 
-Two policies ship:
+Three policies ship:
 
-| Policy | Uses | Typical mid-size run cost |
-|---|---|---|
-| `opus-only` | Claude Opus for every phase | $10 – 30 |
-| `opus-plus-flash` (default) | Opus for judgment, Gemini Flash for mechanical | $0.30 – 3 |
+| Policy | Uses | Dispatched cost, mid-size feature-extend | True total incl. the driver session |
+|---|---|---|---|
+| `opus-only` | Claude Opus for every phase | $2.7 – 9.6 | not yet measured |
+| `opus-plus-flash` (default) | Opus for judgment, Gemini Flash for mechanical | $1.1 – 6.0 | $22 (one measured run) |
 
-Deep dive: [docs/brownfield-routing.md](docs/brownfield-routing.md).
+The two columns are different numbers. *Dispatched* is what `telemetry.jsonl` records — every packet the MCP server sent to a model. *True total* adds the Claude Code session that drives the run, which the collector reconstructs from the session transcripts after the run ends. On the measured `opus-plus-flash` run the driver session was 93% of the bill, so the policy that moves the driver tier is the one that moves the total. Numbers, run by run: [docs/brownfield-routing.md](docs/brownfield-routing.md).
 
 ## Greenfield vs. brownfield
 

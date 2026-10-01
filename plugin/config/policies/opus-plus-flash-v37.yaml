@@ -43,6 +43,10 @@ models:
     # AI Studio door. Unset → adapter falls through to Vertex ADC, same rates.
     auth: { env: GEMINI_API_KEY }
     max_output_tokens_absolute: 8192
+    # Mechanical packets: low thinking. Gemini bills thinking as output and it counts against
+    # the output cap; at the default level a 295-byte SVG cost 5,952 output tokens and long edit
+    # lists hit the 8,192 cap (measured 2026-09-21). The agent leaf keeps its own setting.
+    reasoning: { tier: low }
 
   # The SAME model reached as an AGENT (Antigravity SDK session with tools and
   # a working directory). Same rates; several times more tokens per packet

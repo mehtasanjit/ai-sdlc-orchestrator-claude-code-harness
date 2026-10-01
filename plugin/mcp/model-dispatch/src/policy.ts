@@ -13,13 +13,14 @@
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import type { Policy, ModelConfig } from "./types.js";
 import { KNOWN_ADAPTER_IDS } from "./adapters/index.js";
 import { log } from "./log.js";
 
 const PLUGIN_POLICY_DIR = resolve(
-  dirname(new URL(import.meta.url).pathname),
+  dirname(fileURLToPath(import.meta.url)),
   "..",
   "..",
   "..",

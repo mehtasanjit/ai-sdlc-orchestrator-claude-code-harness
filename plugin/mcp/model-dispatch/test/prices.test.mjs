@@ -118,6 +118,7 @@ const CLAUDE_PAGE = {
   "claude-opus-4-5":    card(5, 6.25, 10, 0.5, 25),
   "claude-opus-4-1":    card(15, 18.75, 30, 1.5, 75),
   "claude-opus-4":      card(15, 18.75, 30, 1.5, 75),
+  "claude-opus-5-5":    card(4, 5, 8, 0.2, 20),
   "claude-sonnet-5":    card(2, 2.5, 4, 0.2, 10),
   "claude-sonnet-4-6":  card(3, 3.75, 6, 0.3, 15),
   "claude-sonnet-4-5":  card(3, 3.75, 6, 0.3, 15),
