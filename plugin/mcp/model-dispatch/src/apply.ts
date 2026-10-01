@@ -591,6 +591,12 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
     if (!existsSync(abs)) return { status: "refused", decision: route(packet), attempts, tokens, cost_usd: 0, events_written: 0, events: keepEvents ? [] : undefined, refusal: `${packet.artifact_path}: edits mode needs an existing file` };
     editsBase = readFileSync(abs, "utf8");
   }
+  // Snapshot the file before anything is dispatched, so the backup is the original even if a worker
+  // touches the file itself.
+  if (runId) {
+    const allowed = checkWriteContract(projectRoot, packet.artifact_path!, { runId });
+    if (allowed.allowed) runProvenance("before", projectRoot, runId, allowed.rel, packet.id);
+  }
 
   const finish = (status: ApplyStatus, extra: Partial<ApplyOutcome> = {}): ApplyOutcome => ({
     status,

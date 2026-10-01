@@ -530,6 +530,21 @@ async function runPacket(raw: unknown, a: any): Promise<unknown> {
         ".sdlc/local/write-contract.json; no active write contract under project_root.",
     );
   }
+  if (apply) {
+    // An Antigravity worker edits the project folder itself, outside the write contract and the
+    // per-file before/after snapshots, and parallel sessions would see each other's edits.
+    const first = pickModel(
+      { phase: packet.phase, task_type: packet.task_type, module: packet.module, retry_count: packet.retry_count ?? 0, intent: packet.intent },
+      policy,
+      selectOverrides(),
+    );
+    if (getModel(policy, first.modelId).adapter === "antigravity-worker") {
+      throw new Error(
+        `${packet0.id}: routed to '${first.modelId}' (antigravity-worker). The apply form and execute_batch do not ` +
+          "run agent-door workers; route this phase to a completion-door model (flash-completion) or dispatch it without apply.",
+      );
+    }
+  }
   if (apply && !packet.outputSchema) {
     packet = { ...packet, outputSchema: apply.mode === "edits" ? EDITS_OUTPUT_SCHEMA : FILE_OUTPUT_SCHEMA };
   }

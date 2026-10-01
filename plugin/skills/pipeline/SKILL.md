@@ -390,7 +390,9 @@ output files in one loop. Greenfield keeps its own order: senior review, repair,
 security review.
 
 **Batch the phase (brownfield, multi-model policies).** Do not dispatch the derived packets one call at
-a time. One `execute_batch` call carries every apply-form packet of the phase: pass
+a time. When the run's mechanical tier is an Antigravity worker (`antigravity-worker`, chosen as the agent
+door), the server refuses apply-form and batched packets: dispatch those packets one at a time without
+`apply` instead. One `execute_batch` call carries every apply-form packet of the phase: pass
 `packets_path: <output_dir>/packets.json` (plus `packet_ids` when only some should run — e.g. the
 ones after a tooling step, or refinement packets you wrote to a second file) with the same
 `policy_name`, `project_root`, `run_id`, `telemetry_path` and `cache_context` you would pass to
