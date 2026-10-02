@@ -24,7 +24,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const AGENTS = ["orchestrator", "architect", "discovery", "senior-reviewer", "security-reviewer", "brownfield-senior-reviewer", "brownfield-security-reviewer"];
+const AGENTS = ["orchestrator", "architect", "discovery", "senior-reviewer", "security-reviewer", "brownfield-senior-reviewer", "brownfield-security-reviewer", "packet-worker"];
 
 /** The YAML block between the first pair of --- fences. */
 function frontmatter(md) {

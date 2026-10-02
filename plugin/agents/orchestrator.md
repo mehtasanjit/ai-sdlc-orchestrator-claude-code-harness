@@ -280,6 +280,14 @@ See the pipeline skill's "Wait inside your turn".
    and reads edited files as `git diff <git_head_before> -- <file>`, new files in full. On the run
    this rule comes from, each review read 56k–87k tokens of context of which the diff was under 15k.
 
+   **Packet-worker input contract (brownfield, single-model).** Under a single-model policy you do
+   not write the derived packets yourself: `packet-groups.mjs` splits them into groups and you
+   delegate each group to `packet-worker` in the foreground (pipeline skill, Phase 5). The
+   delegation carries exactly `run_id`, `intent`, `packets_path`, `packet_ids`, `project_root`,
+   `plugin_root`, `telemetry_path`, `policy_name`, `model` and the model's `effective_price.rates`.
+   No packet bodies, no plan text. The worker's receipt is the record: an `applied` line ends that
+   packet, exactly like an applied receipt from `execute_batch`.
+
 See `plugin/skills/pipeline/SKILL.md` for the full state machine, TaskPacket examples, and HITL prompt templates.
 
 # Intent routing — brownfield only

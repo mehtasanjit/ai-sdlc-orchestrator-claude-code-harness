@@ -372,7 +372,7 @@ every dispatch inside the loop below already logs itself via the MCP server (`ro
 
 For each packet, in dependency order:
 
-**Direct-tier work (subagent handles it, no MCP dispatch):** the orchestrator (Opus) writes the file directly. Estimate tokens via `chars/3.8` heuristic for both inputs and outputs; take pricing constants from this model's `effective_price.rates` in the `load_policy` result (the dated price list's card for the day, or the policy's block only under `pricing_override: true`: the price the server and the post-run collector bill at; see orchestrator rule 6); log a TelemetryEvent via `log_telemetry`.
+**Direct-tier work (subagent handles it, no MCP dispatch):** the orchestrator (Opus) writes the file directly — except a brownfield single-model run's packets, which go to packet workers (below). Estimate tokens via `chars/3.8` heuristic for both inputs and outputs; take pricing constants from this model's `effective_price.rates` in the `load_policy` result (the dated price list's card for the day, or the policy's block only under `pricing_override: true`: the price the server and the post-run collector bill at; see orchestrator rule 6); log a TelemetryEvent via `log_telemetry`.
 
 **Mechanical-tier work (routed to another model):** call `execute_with_model` with the packet, `policy_name`, `project_root: $(pwd)`, and `cache_context`. The server routes per policy. Pass `project_root` on every dispatch, exactly as pre-flight received it: it is what lets the loader prefer a repo-local `routing-policy.yaml` over the shipped preset, and omitting it is the historical bug — the preview named the user's policy while the billed calls quietly routed under a different one. Validate the returned structured output against the schema; if invalid, construct a *refined* packet (new id, `retry_count+1`, with the validation error appended to instruction) and re-dispatch. After 2 mechanical-tier retries fail, the policy escalates to the subagent's own tier automatically (rule with `retry_count: { gte: 2 }`).
 
@@ -411,6 +411,37 @@ and returns one receipt per packet plus totals — one turn for the phase instea
 `tooling` packets (no model) run as shell steps between batches where their `depends_on` puts them:
 batch everything before the tooling step, run it, batch the rest. Then run every `verify_deferred`
 command once. Under a single-model policy nothing is dispatched and this paragraph does not apply.
+
+**Hand the phase to packet workers (brownfield, single-model policies).** Do not write the derived
+packets in your own conversation: each file written here re-reads the whole run's context (measured:
+119 turns and 20.6M cached tokens, two thirds of an opus-only run's cost). Group them instead:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/packet-groups.mjs" "<output_dir>/packets.json"
+```
+
+It prints `steps` in dependency order: `{kind: "worker", packet_ids}` groups of at most six packets,
+and `{kind: "tooling", packet_id}` shell steps placed where a later packet needs them. Walk the steps
+in order. For a worker step, delegate the `packet-worker` agent in the foreground with exactly:
+`run_id`, `intent`, `packets_path`, `packet_ids`, `project_root`, `plugin_root` (the value of
+`CLAUDE_PLUGIN_ROOT`), `telemetry_path`, `policy_name`, `model` and the model's
+`effective_price.rates` from `load_policy`. Nothing else: no packet bodies, no plan text, no file
+contents. The worker writes, formats, verifies, records provenance and telemetry, and returns one
+receipt line per packet. Its receipt is the record — do not read its files back. A tooling step
+runs as a shell step, as above.
+
+Read each receipt: `applied` needs nothing; `verify_failed` or `blocked` go to the next worker step
+as the first packets (or to one more worker after the last step) with the receipt's failure appended
+to the packet's `instruction` in a second packets file; handle a packet in your own conversation only
+after a worker failed it twice. Then run every `verify_deferred` command once and send a failure to
+one packet-worker as a debug packet. Refinement packets from the reviewers go to a packet-worker the
+same way: write them to `<output_dir>/refinement-packets.json` and pass that file as `packets_path`.
+
+**Format before verify (single-model).** A packet's `apply.format` (the `--write` form of its
+formatter) runs after the write and before `apply.verify` — the server already does this for a
+dispatched packet; under a single-model policy the worker does it, and so do you for a
+single-model packet you write yourself. A formatting-only miss is then never a retry. Record provenance `--after` once the format
+has run, so the recorded hash is the file on disk.
 
 **Apply form (brownfield, every file-producing mechanical packet).** The server writes the file, runs the verify commands, retries on the mechanical tier with the failure appended, and returns a receipt. Your side of the contract:
 

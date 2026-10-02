@@ -247,6 +247,15 @@ Under `--auth=estimated`, the orchestrator subagent prices its own in-session es
 
 What each plugin version changed about how the numbers are produced. A dispatched event's `cost_usd` is stamped at dispatch and keeps the rules of the version that ran it. The orchestrator figure is rewritten each time the collector runs, so re-running the current collector over an older pass applies the current rules to that figure.
 
+### v0.9.1
+
+Brownfield single-model runs only. Multi-model brownfield runs (`opus-plus-flash` and the others) and greenfield are unchanged.
+
+| Area | v0.9.0 | v0.9.1 |
+|---|---|---|
+| Who writes a single-model run's packets | The orchestrator wrote every packet in its own conversation, so each file re-read the whole run's context (Large2-J, `opus-only-v5`, 28 files: 119 orchestrator turns, 20.6M cached tokens, ≈ $13.50 of ≈ $20.19). | `packet-groups.mjs` splits the derived packets into groups of at most six in dependency order, with tooling steps where a later packet needs them, and the orchestrator delegates each group to the new `packet-worker` agent. A worker starts with an empty context, writes, formats, verifies, records provenance and telemetry, and returns one receipt line per packet. Workers use the default five-minute prompt cache. |
+| Format before verify | Single-model packets carried `apply.format`, but nothing ran it in-session, so a formatting-only miss cost a fix-up turn (Large2-J: 3). | The worker runs `apply.format` before `apply.verify`, and provenance `--after` after the format. |
+
 ### v0.9.0
 
 Brownfield cost work, on top of v0.7.12. Greenfield is unchanged from v0.7.12. The work was built on a separate branch in the steps below, newest first.
