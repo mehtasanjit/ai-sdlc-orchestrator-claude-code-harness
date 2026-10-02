@@ -6,7 +6,7 @@ argument-hint: ""
 Brownfield entry point. This command takes no arguments. Everything it needs it asks for.
 
 Follow the operating manual in
-[plugin/skills/brownfield-guide/SKILL.md](/plugin/skills/brownfield-guide/SKILL.md),
+`${CLAUDE_PLUGIN_ROOT}/skills/brownfield-guide/SKILL.md`,
 with this handover:
 
 - `intent:` — not set. Ask which job type at step 4a.

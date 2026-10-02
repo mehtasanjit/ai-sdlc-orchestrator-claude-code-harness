@@ -22,6 +22,13 @@ import type { ModelPricing } from "./types.js";
  */
 
 export const PRICE_LIST_VERIFIED = "2026-09-14";
+/**
+ * When the Claude Opus 5.5 row (the desktop app's default model) was verified
+ * from the same Anthropic page, so an mmo run whose chat is on it can be
+ * priced. Only that row carries this date; the rest of the list keeps
+ * PRICE_LIST_VERIFIED.
+ */
+export const OPUS_5_5_VERIFIED = "2026-09-26";
 export const ANTHROPIC_PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing";
 export const GEMINI_PRICING_URL = "https://ai.google.dev/gemini-api/docs/pricing";
 /**
@@ -147,6 +154,9 @@ export const PRICE_LIST: PriceList = deepFreeze({
   // Every non-Mythos row on Anthropic's page (Mythos is limited availability).
   "claude-fable-5-1":  claude(10, 12.5, 20, 0.25, 50, US_ONLY), // cache read is 0.025x input on this model
   "claude-fable-5":    claude(10, 12.5, 20, 1, 50, US_ONLY),
+  // Base $4, 5m write $5, 1h write $8, cache read $0.20 (0.05x input on this model), output $20; fast mode $8 / $40;
+  // US-only inference 1.1x, as for every Claude 4.6 and later model.
+  "claude-opus-5-5":   claude(4, 5, 8, 0.2, 20, { ...US_ONLY, fast: { input: 8, output: 40 } }).map((p) => ({ ...p, verified: OPUS_5_5_VERIFIED })),
   "claude-opus-5":     claude(5, 6.25, 10, 0.5, 25, { ...US_ONLY, ...OPUS_FAST }),
   "claude-opus-4-8":   claude(5, 6.25, 10, 0.5, 25, { ...US_ONLY, ...OPUS_FAST }),
   "claude-opus-4-7":   claude(5, 6.25, 10, 0.5, 25, US_ONLY),

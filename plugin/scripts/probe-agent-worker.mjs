@@ -17,10 +17,10 @@
  * Exit 0: delegation completed and priced. Exit 1: cause named in words.
  */
 
-import { existsSync, mkdtempSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ─── pure helpers ─────────────────────────────────────────────────────
 
@@ -210,20 +210,13 @@ export function readFlag(argv, name) {
  * and a raw ERR_MODULE_NOT_FOUND stack says nothing about the fix.
  */
 async function loadServerModules(pluginRoot) {
-  const serverDir = join(pluginRoot, "mcp", "model-dispatch");
-  const distPolicy = join(serverDir, "dist", "policy.js");
-  const distAdapters = join(serverDir, "dist", "adapters", "index.js");
-  if (!existsSync(distPolicy) || !existsSync(distAdapters)) {
-    throw new Error(
-      `The bundled server is not built, so there is no adapter to probe with. ` +
-        `Run: node ${join(pluginRoot, "scripts", "verify-setup.mjs")} --fix`
-    );
+  // From the pre-built bundle the plugin ships (lib/server-lib.mjs), so a GitHub install can probe too.
+  const lib = join(pluginRoot, "mcp", "model-dispatch", "bundle", "lib.mjs");
+  if (!existsSync(lib)) {
+    throw new Error(`This copy of the plugin is missing its pre-built server code (${lib}); reinstall the plugin.`);
   }
-  const [{ loadPolicy }, { createAdapter }] = await Promise.all([
-    import(`file://${distPolicy}`),
-    import(`file://${distAdapters}`),
-  ]);
-  return { loadPolicy, createAdapter };
+  const { policy, adapters } = await import(pathToFileURL(lib).href);
+  return { loadPolicy: policy.loadPolicy, createAdapter: adapters.createAdapter };
 }
 
 /**
@@ -315,7 +308,10 @@ async function main() {
 }
 
 // Direct-execution gate so the test suite can import the pure helpers.
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// Both sides with links followed, as the other scripts do: with a plain comparison a linked plugin folder makes it a
+// no-op.
+const invokedDirectly = (() => { try { return realpathSync(process.argv[1] ?? "") === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();
+if (invokedDirectly) {
   main()
     .then((code) => process.exit(code))
     .catch((err) => {

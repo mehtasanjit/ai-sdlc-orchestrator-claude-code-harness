@@ -170,9 +170,10 @@ if (!hasVertex) {
 
 step("Bundled MCP server dependencies");
 const mcpDir = join(ROOT, "plugin", "mcp", "model-dispatch");
-const nodeMods = join(mcpDir, "node_modules");
-if (existsSync(nodeMods) && existsSync(join(mcpDir, "dist", "server.js"))) {
-  ok("MCP server already built.");
+// The server ships pre-built and committed (bundle/server.mjs and bundle/lib.mjs), so a clone
+// needs no install or build to run it; npm install + build are only for a copy whose bundle is missing.
+if (existsSync(join(mcpDir, "bundle", "server.mjs")) && existsSync(join(mcpDir, "bundle", "lib.mjs"))) {
+  ok("MCP server ready (it ships pre-built).");
 } else {
   console.log(`  Installing dependencies and building the MCP server...`);
   try {
@@ -238,7 +239,7 @@ const mcpEntry = {
   mcpServers: {
     "model-dispatch": {
       command: "node",
-      args: [join(ROOT, "plugin", "mcp", "model-dispatch", "dist", "server.js")],
+      args: [join(ROOT, "plugin", "mcp", "model-dispatch", "bundle", "server.mjs")],
       // Stdio MCP servers inherit nothing — every variable the server reads
       // must be forwarded explicitly.
       env: {

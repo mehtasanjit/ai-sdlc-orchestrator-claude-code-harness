@@ -24,6 +24,8 @@
  * is echoed — findings show only pattern name + line number + a short
  * masked preview, never the raw match.
  */
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 // ─── patterns ─────────────────────────────────────────────────────────
 // Each entry: { name, kind, re }. `re` MUST have the /g flag so scan()
@@ -245,8 +247,10 @@ async function cli(argv) {
   process.exit(1);
 }
 
-// Detect direct CLI invocation vs library import.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Detect direct CLI invocation vs library import. The path is turned into a real file URL with links followed, so a
+// folder with a space (URL-encoded in import.meta.url) or a link still matches.
+const invokedDirectly = (() => { try { return pathToFileURL(realpathSync(process.argv[1] ?? "")).href === import.meta.url; } catch { return false; } })();
+if (invokedDirectly) {
   cli(process.argv).catch((e) => {
     console.error(`dispatch-sanitize CLI error: ${e?.message ?? e}`);
     process.exit(2);

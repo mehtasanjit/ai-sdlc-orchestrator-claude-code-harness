@@ -34,6 +34,7 @@ const healthy = {
   hasClaudeCli: true,
   hasNodeModules: true,
   hasDist: true,
+  hasBundle: true,
   env: { ANTHROPIC_API_KEY: "x", GEMINI_API_KEY: "y" },
 };
 
@@ -51,6 +52,8 @@ test("mcpPaths resolves the server paths under the plugin root", () => {
   const paths = mcpPaths("/plugins/orch");
   assert.equal(paths.serverDir, "/plugins/orch/mcp/model-dispatch");
   assert.equal(paths.distEntry, "/plugins/orch/mcp/model-dispatch/dist/server.js");
+  assert.equal(paths.bundleEntry, "/plugins/orch/mcp/model-dispatch/bundle/server.mjs");
+  assert.equal(paths.bundleLib, "/plugins/orch/mcp/model-dispatch/bundle/lib.mjs");
   assert.equal(paths.nodeModules, "/plugins/orch/mcp/model-dispatch/node_modules");
 });
 
@@ -65,7 +68,8 @@ test("a fully prepared machine reports ready with nothing outstanding", () => {
 test("a missing server build blocks, and names the mid-run failure it prevents", () => {
   // The defect this whole script exists for: `/plugin install` succeeds while
   // dist/server.js is absent, and the run dies at the first dispatch.
-  const state = evaluate({ ...healthy, hasDist: false });
+  // The plugin ships its server pre-built (bundle/), and the manifest starts that bundle.
+  const state = evaluate({ ...healthy, hasDist: false, hasBundle: false });
   assert.equal(state.ok, false);
   assert.deepEqual(idsOf(state), ["mcp-build"]);
   assert.match(state.problems[0].message, /dispatch/i);
@@ -75,9 +79,16 @@ test("a missing server build blocks, and names the mid-run failure it prevents",
 test("missing dependencies block, and both repairable faults are reported together", () => {
   // A fresh clone has neither. Reporting only the first would send the user
   // through two round trips to learn about the second.
-  const state = evaluate({ ...healthy, hasNodeModules: false, hasDist: false });
+  const state = evaluate({ ...healthy, hasNodeModules: false, hasDist: false, hasBundle: false });
   assert.equal(state.ok, false);
   assert.deepEqual(idsOf(state), ["mcp-dependencies", "mcp-build"]);
+});
+
+test("the shipped pre-built bundle needs nothing installed or built; dist/ alone is not enough", () => {
+  // A GitHub install has the committed bundle and no node_modules or dist: that is a working install.
+  assert.deepEqual(evaluate({ ...healthy, hasNodeModules: false, hasDist: false, hasBundle: true }).problems, []);
+  // The manifest starts bundle/server.mjs, so a copy with dist/ but no bundle still cannot dispatch.
+  assert.deepEqual(idsOf(evaluate({ ...healthy, hasBundle: false })), ["mcp-build"]);
 });
 
 test("Node older than 20 blocks and points at an upgrade, not at --fix", () => {
@@ -345,10 +356,12 @@ test("the setup script ships inside the plugin, where an install can reach it", 
   // It lives under plugin/ on purpose: the plugin directory is what gets
   // copied into the plugin cache, so the script is present after an install
   // even when the user never cloned the repo.
+  // Only the mmo plugin has setup: the zero-touch plugin writes one record at each chat's start and needs nothing
+  // set up of its own.
   const { plugins } = readJson(".claude-plugin/marketplace.json");
-  for (const p of plugins) {
-    assert.ok(existsSync(join(ROOT, p.source, "scripts", "verify-setup.mjs")));
-  }
+  const mmo = plugins.find((p) => p.name === "mmo");
+  assert.ok(existsSync(join(ROOT, mmo.source, "scripts", "verify-setup.mjs")));
+  assert.ok(plugins.every((p) => p.name === "mmo" || existsSync(join(ROOT, p.source, ".claude-plugin", "plugin.json"))), "every other plugin in the catalogue is a real plugin folder");
 });
 
 test("SETUP.md quotes the names the catalogue actually publishes", () => {
@@ -415,8 +428,10 @@ test("the README documents the install a first-time user is given, with the real
   const readme = readFileSync(join(ROOT, "README.md"), "utf8");
   const mkt = readJson(".claude-plugin/marketplace.json");
   assert.ok(readme.includes("SETUP.md"), "the README must point at the instructions Claude Code follows");
+  // The command finds the installed copy through Claude Code's record (installed_plugins.json, by
+  // "<plugin>@<marketplace>"), so an older copy in the cache is never picked; the cache path form is also accepted.
   assert.ok(
-    readme.includes(`cache/${mkt.name}/${mkt.plugins[0].name}/`),
+    readme.includes(`cache/${mkt.name}/${mkt.plugins[0].name}/`) || readme.includes(`"${mkt.plugins[0].name}@${mkt.name}"`),
     "the repair command in the README must use the published marketplace and plugin names"
   );
 });
@@ -482,6 +497,7 @@ test("evaluate reports no Gemini credentials when every value is a placeholder",
     hasClaudeCli: true,
     hasNodeModules: true,
     hasDist: true,
+    hasBundle: true,
     hasAdcFile: false,
     env: {
       GEMINI_API_KEY: "${GEMINI_API_KEY}",
@@ -505,6 +521,7 @@ test("evaluate stays quiet about placeholders when there are none", () => {
     hasClaudeCli: true,
     hasNodeModules: true,
     hasDist: true,
+    hasBundle: true,
     hasAdcFile: true,
     env: { ANTHROPIC_API_KEY: "sk-real" },
   });
@@ -604,6 +621,7 @@ function findingFor(scenario) {
     hasClaudeCli: true,
     hasNodeModules: true,
     hasDist: true,
+    hasBundle: true,
     env,
     vertex: state,
     agentWorker: scenario.agentWorker ?? null,
@@ -680,6 +698,7 @@ test("the findings named in the matrix prose are ones the checker can produce", 
     hasClaudeCli: true,
     hasNodeModules: true,
     hasDist: true,
+    hasBundle: true,
     env: { GEMINI_API_KEY: "${GEMINI_API_KEY}" },
   });
   assert.ok(placeholders.some((p) => p.id === "env-placeholders"));
@@ -689,6 +708,7 @@ test("the findings named in the matrix prose are ones the checker can produce", 
     hasClaudeCli: true,
     hasNodeModules: true,
     hasDist: true,
+    hasBundle: true,
     env: { GOOGLE_CLOUD_PROJECT: "some-project", MMO_SELECT: "gemini-flash=flash-agsdk-worker" },
     vertex: vertexCredentialState({ env: { GOOGLE_CLOUD_PROJECT: "some-project" } }),
     agentWorker: { hasVenv: true, sdkImportable: true, detail: null },

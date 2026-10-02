@@ -10,6 +10,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { gitInstalled, gitRoot } from "./git.mjs";
 
 const LEVELS = new Set(["error", "warn", "info", "debug", "trace"]);
 
@@ -25,6 +26,9 @@ const LEVELS = new Set(["error", "warn", "info", "debug", "trace"]);
  */
 export function resolveProjectRoot(explicit, cwd = process.cwd()) {
   if (explicit) return explicit;
+  // No git project here, or no real git: cwd, without starting git (lib/git.mjs: on a Mac without the developer
+  // tools the git stub opens an install dialog).
+  if (!gitRoot(cwd) || !gitInstalled()) return cwd;
   const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", cwd });
   const top = r.status === 0 ? r.stdout.trim() : null;
   if (!top) return cwd;

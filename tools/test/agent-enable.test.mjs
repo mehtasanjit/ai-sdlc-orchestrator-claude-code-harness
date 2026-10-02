@@ -47,6 +47,7 @@ const healthy = {
   hasClaudeCli: true,
   hasNodeModules: true,
   hasDist: true,
+  hasBundle: true,
   hasAdcFile: false,
   env: {},
   // null, not an object with everything false — observeAgentWorker returns null

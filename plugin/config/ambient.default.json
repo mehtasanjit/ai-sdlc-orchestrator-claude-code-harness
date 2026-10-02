@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "routing": "on",
+  "routing_defaults": {
+    "auth": "estimated"
+  },
+  "retention_days": 30
+}

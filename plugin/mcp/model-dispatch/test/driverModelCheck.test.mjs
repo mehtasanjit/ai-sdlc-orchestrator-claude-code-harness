@@ -29,6 +29,7 @@ function run(args, envOverrides = {}) {
   const env = { ...process.env, ...envOverrides };
   delete env.MMO_SELECT;
   if (!("CLAUDE_CODE_SUBAGENT_MODEL" in envOverrides)) delete env.CLAUDE_CODE_SUBAGENT_MODEL;
+  if (!("CLAUDE_CODE_SUBAGENT_MODEL_FORCE" in envOverrides)) delete env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE;
   const res = spawnSync(process.execPath, [SCRIPT, ...args], { env, encoding: "utf-8" });
   return { code: res.status, stdout: res.stdout, stderr: res.stderr };
 }
@@ -311,3 +312,4 @@ test("no stranded-value note appears when the project has no settings file", () 
     assert.doesNotMatch(r.stderr, /already declares/, "nothing is stranded, so nothing to report");
   });
 });
+

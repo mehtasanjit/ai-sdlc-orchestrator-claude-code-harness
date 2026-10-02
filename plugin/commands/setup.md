@@ -1,5 +1,5 @@
 ---
-description: "Re-verify or re-configure the SDLC plugin for this project. Runs the mechanical setup steps silently (MCP server build, environment check, credential probe), pauses only when a human decision is genuinely needed (missing credentials, Gemini door choice, policy pick). Idempotent — safe to re-run any time after `/plugin update` or when a credential changes."
+description: "Re-verify or re-configure the SDLC plugin for this project. Runs the mechanical setup steps silently (install check, environment check, credential probe), pauses only when a human decision is genuinely needed (missing credentials, Gemini door choice, policy pick). Idempotent — safe to re-run any time after `/plugin update` or when a credential changes."
 argument-hint: "[--policy=<name>] [--gemini-door=enterprise|antigravity] [--user]"
 ---
 
@@ -10,7 +10,7 @@ pause only when a human decision is genuinely required.
 
 **Argument parsing:**
 - `--policy=<name>` — pre-answer the policy pick (skips the browser). Must match a file in
-  `plugin/config/policies/<name>.yaml` — the directory listing is the authoritative preset set
+  `${CLAUDE_PLUGIN_ROOT}/config/policies/<name>.yaml` — the directory listing is the authoritative preset set
   (`opus-plus-flash` is the recommended default; a wrong name makes the loader print the live
   list).
 - `--gemini-door=<enterprise|antigravity>` — pre-answer the Gemini door choice. `enterprise` is the
@@ -21,25 +21,26 @@ pause only when a human decision is genuinely required.
 # Scope
 
 This is the RE-VERIFY / RE-CONFIGURE command. First-time install (marketplace add + `/plugin
-install`) still lives in [SETUP.md](../../SETUP.md) — the plugin has to exist before its slash
-commands do. `/mmo:setup` covers everything from step 3 of SETUP.md onward: MCP server build,
+install`) still lives in the repository's `SETUP.md` — the plugin has to exist before its slash
+commands do. `/mmo:setup` covers everything from step 3 of SETUP.md onward: the install check,
 environment check, credential probe, Gemini door, policy pick, and the hand-over banner.
 
 Every step below auto-runs unless it hits a genuine decision. Print one line per completed step,
 so the user can see progress. Pause only when a step actually needs a human answer.
 
-# 1. Build / rebuild the MCP server (silent)
+# 1. Check the install (silent)
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/verify-setup.mjs" --fix --project-root "$(pwd)"
 ```
 
-`--fix` installs the MCP server's npm deps and TypeScript-compiles it. Idempotent — no-op if the
-build is already current. Report the one-line result and continue.
+The MCP server ships pre-built inside the plugin, so on a normal install there is nothing to build
+and `--fix` does nothing. It repairs only a copy whose pre-built server is missing (it installs the
+server's npm deps and builds it). Report the one-line result and continue.
 
 If the script exits non-zero, print the error, its `fix:` field, and STOP. This is a blocking
-issue (Node < 20, missing Claude Code CLI, a build error) and must be resolved before anything
-downstream can work.
+issue (Node < 20, missing Claude Code CLI, a missing pre-built server) and must be resolved before
+anything downstream can work.
 
 # 2. Read the verify result and pause only for missing credentials
 
@@ -149,10 +150,9 @@ plugin MCP servers at session boot. In this session the setup changes are on dis
 # Idempotency
 
 Every step is safe to re-run:
-- The MCP build is a `tsc` no-op if nothing changed.
+- The install check changes nothing when the pre-built server is present.
 - The credential probe reads env / settings; it never writes.
 - The Gemini-door flip is a plain settings write.
 - The policy pick reads `.sdlc/project.json` first and skips the browser if a policy is already set.
 
-Re-run `/mmo:setup` after `/plugin update` (the update wipes `dist/`; `--fix` restores it), or
-whenever a credential changes.
+Re-run `/mmo:setup` after `/plugin update`, or whenever a credential changes.

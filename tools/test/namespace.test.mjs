@@ -66,6 +66,10 @@ const RETIRED_PATTERNS = [
       "docs/architecture.md", // documents the MMO-D8 compat shim by name
       // Pins that the compat shim still validates; must name the alias to test it.
       "plugin/mcp/model-dispatch/test/policyResolution.test.mjs",
+      // The pre-built single-file bundles are compiled from the three source files above, so they carry the same
+      // compat-shim alias.
+      "plugin/mcp/model-dispatch/bundle/server.mjs",
+      "plugin/mcp/model-dispatch/bundle/lib.mjs",
     ],
   },
 ];

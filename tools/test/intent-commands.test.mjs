@@ -106,7 +106,8 @@ test("the seven job commands all point at the shared brownfield-guide skill", ()
     const body = read("plugin", "commands", COMMAND_FILE[id]);
     assert.match(
       body,
-      /plugin\/skills\/brownfield-guide\/SKILL\.md/,
+      // The installed plugin's own copy: a repository path exists only in a clone (tools/test/plugin-paths.test.mjs).
+      /\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/brownfield-guide\/SKILL\.md/,
       `${COMMAND_FILE[id]} must delegate to brownfield-guide/SKILL.md, not duplicate its own manual`,
     );
   }

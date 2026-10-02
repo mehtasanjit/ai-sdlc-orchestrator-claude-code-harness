@@ -50,6 +50,13 @@ Behavior:
    - Otherwise (not in allowlist, not off-limits) — deny.
 5. `contract.strict = false` (equivalent to `--strict-write=off`) downgrades every enforcement
    to a warning; the file is written but a warning is logged.
+6. A write outside the project that holds the session's active contract is refused as a
+   cross-project write. "Inside" is judged on the paths as written first; only when that says
+   "outside" is it judged again with links resolved on both sides. So a project reached through a
+   linked folder (macOS's `/tmp` and `/var`, a linked code folder) is judged the same whichever form
+   a path takes: the session's folder always reads with links resolved, while a write's path
+   arrives as written. The second look can only find a path inside, so it never refuses a write the
+   first look allows.
 
 Fail-safe: any bug in the hook (parse failures, missing fields, resolvable path issues) → allow.
 Better to permit a write than to wedge user work on a plugin bug. Denials only happen when the

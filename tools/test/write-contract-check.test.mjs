@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -302,3 +302,41 @@ for (const buildPath of ["dist/bundle.js", "build/out.css", ".next/server/page.j
     } finally { cleanup(dir); }
   });
 }
+
+test("a project reached through a linked folder: writes inside it are judged inside, whichever form the path takes", async () => {
+  // The session's folder comes from process.cwd(), which the system gives with every link resolved
+  // (/private/var/... on macOS), while a write's path arrives as written (/var/...). Compared as text, every write in
+  // a project under a linked folder (macOS's /tmp and /var, a linked code folder) would be refused as "OUTSIDE the
+  // calling session's contracted repo".
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "write-contract-link-")));
+  const real = join(base, "real", "proj");
+  const link = join(base, "link");
+  const outside = join(base, "elsewhere");
+  try {
+    mkdirSync(join(real, ".sdlc", "local"), { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(join(base, "real"), link);
+    writeFileSync(join(real, ".sdlc", "local", "write-contract.json"), JSON.stringify({ schema_version: 1, active: true, strict: true, run_id: "r1", allowlist: ["src/**"], off_limits: [".env"] }));
+    const viaLink = join(link, "proj");
+    const cases = [
+      [viaLink, join(viaLink, "src", "a.ts"), 0, "session in the linked form, path in the linked form"],
+      [viaLink, join(real, "src", "a.ts"), 0, "session in the linked form, path in the real form"],
+      [real, join(viaLink, "src", "a.ts"), 0, "session in the real form, path in the linked form"],
+      [viaLink, "src/a.ts", 0, "a relative path"],
+    ];
+    for (const [cwd, file, code, what] of cases) {
+      const r = await runHook(cwd, { tool_input: { file_path: file } });
+      assert.equal(r.code, code, `${what}: ${r.stderr}`);
+    }
+    // The rules still hold, in either form: not in the allowlist, off-limits, and truly outside.
+    const notListed = await runHook(viaLink, { tool_input: { file_path: join(viaLink, "docs", "x.md") } });
+    assert.equal(notListed.code, 2);
+    assert.match(notListed.stderr, /docs\/x\.md is not in the confirmed allowlist/, "judged by the allowlist, not as a write outside the project");
+    const off = await runHook(viaLink, { tool_input: { file_path: join(viaLink, ".env") } });
+    assert.equal(off.code, 2);
+    assert.match(off.stderr, /matches off-limits pattern "\.env"/);
+    const away = await runHook(viaLink, { tool_input: { file_path: join(outside, "x.ts") } });
+    assert.equal(away.code, 2);
+    assert.match(away.stderr, /resolves OUTSIDE the calling session's contracted repo/);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});

@@ -30,16 +30,19 @@
  * attempt; anything else, including anything unknown, is an attempt.
  */
 import { execFileSync, spawn } from "node:child_process";
+import { claudeCommand } from "../claudeCommand.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import type { AttemptRecord, ModelConfig, TaskPacket } from "../types.js";
 import { GeminiFlashAdapter } from "../adapters/GeminiFlashAdapter.js";
 import { AntigravityWorkerAdapter } from "../adapters/AntigravityWorkerAdapter.js";
 import { priceClaudeCliResult } from "../adapters/claudeCliLedger.js";
 import { computeCostUsd } from "../pricing.js";
 import { mapSidecarTokens } from "../delegation/workerProcess.js";
+// The Python workers' folder, from the package root: in the single-file bundle this module is not two folders
+// below it (paths.ts).
+import { WORKER_DIR } from "../paths.js";
 
 export type Door = "lean-opus" | "flash-completion" | "agy";
 /** Which answer the job asks for: a whole file, or a fix to one. */
@@ -98,6 +101,11 @@ export interface TypeRequest {
   sharedFile: string;
   contract: Contract;
   passId: string;
+  /**
+   * Stops the call when it fires (zero-touch hand-offs: the person pressed Stop): a typist that runs a program kills
+   * its process group. Optional, and never set by the executor, so a workflow's typing is not affected.
+   */
+  signal?: AbortSignal;
 }
 
 export interface Typist {
@@ -303,7 +311,7 @@ let cliHelp: string | undefined;
  * by the check and by every typist after it.
  */
 export function claudeHelp(fresh = false): string {
-  if (fresh || cliHelp === undefined) cliHelp = execFileSync("claude", ["--help"], { encoding: "utf8", timeout: 30_000 });
+  if (fresh || cliHelp === undefined) cliHelp = execFileSync(claudeCommand(), ["--help"], { encoding: "utf8", timeout: 30_000 });
   return cliHelp;
 }
 
@@ -330,14 +338,18 @@ function removeScratch(dir: string): void {
 }
 
 /** Runs a child in its own process group and kills the whole group on timeout, so nothing is left billing. */
-function runChild(cmd: string, args: string[], opts: { env: Record<string, string>; cwd: string; input: string; timeoutMs: number }): Promise<{ code: number | null; out: string; err: string; timedOut: boolean }> {
+function runChild(cmd: string, args: string[], opts: { env: Record<string, string>; cwd: string; input: string; timeoutMs: number; signal?: AbortSignal }): Promise<{ code: number | null; out: string; err: string; timedOut: boolean }> {
   return new Promise((done) => {
     const child = spawn(cmd, args, { env: opts.env, cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
     let out = "", err = "", timedOut = false;
+    const kill = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ } };
     const timer = setTimeout(() => {
       timedOut = true;
-      try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
+      kill();
     }, opts.timeoutMs);
+    // A stop asked for while the program runs (TypeRequest.signal) ends its whole process group at once.
+    const onAbort = () => { err += "stopped: the call was cancelled"; kill(); };
+    if (opts.signal?.aborted) onAbort(); else opts.signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("error", (e) => { err += String(e); });
@@ -346,7 +358,7 @@ function runChild(cmd: string, args: string[], opts: { env: Record<string, strin
     // listener that error would take the whole MCP server down. It is part of
     // this child's failure, which the caller reports as a failed attempt.
     child.stdin.on("error", (e) => { err += String(e); });
-    child.on("close", (code) => { clearTimeout(timer); done({ code, out, err, timedOut }); });
+    child.on("close", (code) => { clearTimeout(timer); opts.signal?.removeEventListener("abort", onAbort); done({ code, out, err, timedOut }); });
     child.stdin.end(opts.input);
   });
 }
@@ -369,7 +381,10 @@ export class LeanOpusTypist implements Typist {
     const cwd = mkdtempSync(join(tmpdir(), "mmo-typist-"));
     let r: Awaited<ReturnType<typeof runChild>>;
     try {
-      r = await runChild("claude", args, { env: leanOpusEnv(this.opts.env ?? process.env, this.opts.authMode, this.leaf.auth?.env), cwd, input: req.framed, timeoutMs: this.opts.timeoutMs });
+      // The program is looked up on the PATH the child runs with, as spawn itself does, then in the Claude app
+      // (claudeCommand.ts): never on another PATH than the one this typist was given.
+      const env = leanOpusEnv(this.opts.env ?? process.env, this.opts.authMode, this.leaf.auth?.env);
+      r = await runChild(claudeCommand(env), args, { env, cwd, input: req.framed, timeoutMs: this.opts.timeoutMs, signal: req.signal });
     } finally {
       removeScratch(cwd);
     }
@@ -431,7 +446,6 @@ export class FlashCompletionTypist implements Typist {
 
 // ─── agy ────────────────────────────────────────────────────────────────
 
-const WORKER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "worker");
 export const TYPIST_WORKER = join(WORKER_DIR, "typist_worker.py");
 
 
@@ -479,7 +493,7 @@ export class AgyTypist implements Typist {
     const args = agyWorkerArgs({ briefFile, sharedFile: req.sharedFile, schemaFile, model: this.leaf.model_name, region: this.agent.location, workdir: scratch, receiptFile, thinking: this.opts.effort, maxModelCalls: this.opts.maxModelCalls, timeoutSec: this.opts.timeoutSec, apiRetries: this.opts.apiRetries, apiRetryInitialMs: this.opts.apiRetryInitialMs });
     // The worker enforces its own time limit and still writes its receipt; the
     // extra 30 s is the process-group kill for a worker that hangs past it.
-    const r = await runChild(this.agent.python, args, { env: agyEnv(process.env, this.agent.project, this.agent.location), cwd: scratch, input: "", timeoutMs: (this.opts.timeoutSec + 30) * 1000 });
+    const r = await runChild(this.agent.python, args, { env: agyEnv(process.env, this.agent.project, this.agent.location), cwd: scratch, input: "", timeoutMs: (this.opts.timeoutSec + 30) * 1000, signal: req.signal });
     const latency = Date.now() - started;
     if (!existsSync(receiptFile)) {
       const why = r.timedOut ? `the agent typist did not finish within ${this.opts.timeoutSec + 30} s (killed; its usage is unknown)` : `the agent typist wrote no receipt (usage unknown): ${r.err.slice(-300)}`;

@@ -345,7 +345,7 @@ On `incremental` refresh, merge the delta into `current.json` in place; the per-
 **Runs only when triggered.** This is the additional step from plan §21 for repos with a stack we don't already know well. When it triggers:
 
 **Trigger conditions (any of):**
-1. Group 3 detected a stack (or dominant stack) that has no matching pre-authored adapter in `plugin/skills/pipeline/stacks/`. In v1, we ship `generic.md`, `nest.md`, `python.md`. So a repo whose primary stack is React/Next.js, Go, Rails, Java, Rust, etc. triggers this step.
+1. Group 3 detected a stack (or dominant stack) that has no matching pre-authored adapter in `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/stacks/`. In v1, we ship `generic.md`, `nest.md`, `python.md`. So a repo whose primary stack is React/Next.js, Go, Rails, Java, Rust, etc. triggers this step.
 2. Repo-root `CLAUDE.md` explicitly declares a custom framework — grep for phrases like `custom framework`, `internal framework`, `bespoke framework`, `in-house framework`, or a `## Framework:` heading pointing at something unfamiliar.
 3. The caller passed `--adaptive-profile` (forces the step regardless of stack detection).
 

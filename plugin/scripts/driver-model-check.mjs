@@ -57,9 +57,9 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadServerLib } from "./lib/server-lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DIST = join(HERE, "..", "mcp", "model-dispatch", "dist");
 
 /**
  * Every phase the orchestrator handles on the driver tier, across both modes
@@ -234,16 +234,16 @@ function parseArgs(argv) {
   return args;
 }
 
+// The dispatch server's routing, from the pre-built single-file bundle every install has (lib/server-lib.mjs): a copy
+// installed from GitHub has no compiled dist/ folder.
 async function loadDist() {
   try {
-    const policyMod = await import(pathToFileURL(join(DIST, "policy.js")).href);
-    const routingMod = await import(pathToFileURL(join(DIST, "routing.js")).href);
-    return { policyMod, routingMod };
+    const lib = await loadServerLib();
+    return { policyMod: lib.policy, routingMod: lib.routing };
   } catch (err) {
     throw new Error(
-      `could not load the dispatch server's compiled routing from ${DIST} — the MCP ` +
-        `server is not built. Fix: node "${join(HERE, "verify-setup.mjs")}" --fix ` +
-        `--project-root "$(pwd)"  (original error: ${err.message})`
+      `could not load the dispatch server's routing — part of the plugin is missing. Reinstall the plugin ` +
+        `(original error: ${err.message})`
     );
   }
 }

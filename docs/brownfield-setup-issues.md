@@ -15,7 +15,7 @@ The table's "handled by" column names the script or subagent that owns each issu
 |---|---|---|---|
 | 1 | Node too old (< 20) | `env-checks.mjs` | Detect, print required version + install/upgrade instructions (nvm / brew / nodejs.org), exit clean. Cannot auto-upgrade — needs user action. |
 | 2 | Git missing or too old (< 2.30) | `env-checks.mjs` | Same — detect, print install instructions per-platform. |
-| 3 | MCP server `dist/` not built | `verify-setup.mjs` | Auto-build via `verify-setup.mjs --fix`. |
+| 3 | MCP server `dist/` not built | `verify-setup.mjs` | Auto-build via `verify-setup.mjs --fix`. The server ships pre-built (`bundle/`), so an install has nothing to build. |
 | 4 | Plugin command-name conflict | `env-checks.mjs` | Detect (best-effort scan of `~/.claude/plugins/*/plugin.json`), list conflicts, prompt for a rename or uninstall of the conflicting plugin. |
 | 5 | Filesystem write permission denied on `~/.claude/` | `env-checks.mjs` | Detect, print `sudo chown -R $USER ~/.claude` (with $USER expanded), exit. |
 | 5b | Filesystem write permission denied on `.sdlc/local/` | `env-checks.mjs` | Same shape — clear chmod fix. Deferred if not in a git repo. |

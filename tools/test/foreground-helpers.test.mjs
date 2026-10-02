@@ -86,7 +86,8 @@ test("the script speaks the hook protocol: deny JSON on stdout for a refused lau
   const hooks = JSON.parse(readFileSync(join(ROOT, "plugin", "hooks", "hooks.json"), "utf8"));
   const entry = hooks.hooks.PreToolUse.find((h) => h.matcher === "Agent|Task");
   assert.ok(entry, "registered in hooks.json");
-  assert.match(entry.hooks[0].command, /scripts\/foreground-helpers\.mjs/);
+  // Run through hooks/node.sh: it leaves quietly on a computer without Node.js.
+  assert.match(entry.hooks[0].command, /^sh "\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/node\.sh" foreground-helpers\.mjs$/);
 });
 
 

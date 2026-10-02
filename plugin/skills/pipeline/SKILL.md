@@ -236,7 +236,7 @@ From `design.md`, emit `<output_dir>/packets.json` — a list of TaskPackets, on
 
 Suggested packet types and one packet per. The task type describes the packet in reports and
 briefs only: the shipped policies route code by phase alone, whatever the file's language or type
-(`plugin/mcp/model-dispatch/test/stageRouting.test.mjs`).
+(`${CLAUDE_PLUGIN_ROOT}/mcp/model-dispatch/test/stageRouting.test.mjs`).
 
 | task_type | What |
 |---|---|
@@ -263,7 +263,7 @@ When the app uses a validating `ConfigModule` (or Joi / Zod / envalid equivalent
 
 ### Brownfield-mode task types (v1)
 
-The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`plugin/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance.
+The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`${CLAUDE_PLUGIN_ROOT}/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance.
 
 | task_type | Purpose | Common `subtype` values |
 |---|---|---|
@@ -502,7 +502,7 @@ off_limits}`). Build `off_limits` by concatenating `.sdlc/project.json.off_limit
 with the AI-configs from `baseline.ai_configs_detected` and any ticket-specific paths the user
 added at Gate 0. The PreToolUse hook and the packet validator both read the merged list — the
 UX shrinks (Gate 0 doesn't re-ask about constants each ticket), the enforcement is unchanged.
-See `plugin/scripts/write-contract-check.mjs` for the hook.
+See `${CLAUDE_PLUGIN_ROOT}/scripts/write-contract-check.mjs` for the hook.
 
 **Default the AI-coexistence answer to OFF-LIMITS.** A user who hits `approved` without reading
 must not accidentally authorize the plugin to rewrite their `.cursor/rules` or their custom

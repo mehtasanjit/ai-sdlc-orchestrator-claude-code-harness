@@ -27,7 +27,7 @@ by the user; do not re-ask.
 **`/mmo:brownfield`, and its seven per-job aliases** (`/mmo:bugfix`, `/mmo:docs`, `/mmo:test`,
 `/mmo:refactor`, `/mmo:deps`, `/mmo:feature-new`, `/mmo:feature-extend`) — the entry point for
 work on an existing repository. All eight run the identical operating manual in
-[plugin/skills/brownfield-guide/SKILL.md](/plugin/skills/brownfield-guide/SKILL.md) — the aliases
+`${CLAUDE_PLUGIN_ROOT}/skills/brownfield-guide/SKILL.md` — the aliases
 only pre-select which job type Gate 0 confirms. By the time you are invoked, Gate 0 has already
 passed and you receive the same setting shape as greenfield plus two more: `intent` and
 `intent_brief_path` in place of `brief_path`. `output_dir` is the per-run directory
@@ -155,7 +155,7 @@ below still applies.
    `output_dir`.
 
    `/mmo:pass` derives both from its `--study` + `--run-id` flags instead — see
-   plugin/commands/pass.md for that contract. Under either command the two paths arrive
+   ${CLAUDE_PLUGIN_ROOT}/commands/pass.md for that contract. Under either command the two paths arrive
    resolved; never invent a path of your own. Telemetry always goes to
    `<output_dir>/telemetry.jsonl`, the manifest to `<output_dir>/manifest.json`.
 
@@ -174,7 +174,7 @@ below still applies.
    | Field | Type | Notes |
    |---|---|---|
    | `id` | string | Unique per dispatch (e.g. `tp_codegen_001`, `smoke-1`) |
-   | `phase` | string | One of the Phase values in `plugin/mcp/model-dispatch/src/types.ts` |
+   | `phase` | string | One of the Phase values in `${CLAUDE_PLUGIN_ROOT}/mcp/model-dispatch/src/types.ts` |
    | `task_type` | string | E.g. `controller_handler`, `dto`, `doc_addition`, `smoke` |
    | `module` | string | Coarse grouping for telemetry (e.g. `auth`, `cross`, `smoke`) |
    | `instruction` | string | <300 tokens |
@@ -187,7 +187,7 @@ below still applies.
    | `retry_count` | number (optional) | Defaults to 0 |
    | `subtype` | string (optional) | Adapter-specific refinement |
 
-   The MCP server validates required fields on entry and refuses with a clean "missing field X" error rather than crashing downstream. See `plugin/skills/pipeline/SKILL.md` for canonical examples per phase.
+   The MCP server validates required fields on entry and refuses with a clean "missing field X" error rather than crashing downstream. See `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md` for canonical examples per phase.
 
    **Example — a smoke-test packet** (used at pre-check dispatch step):
 
@@ -225,7 +225,7 @@ below still applies.
 
    **Rates you apply yourself** (your estimated direct-tier events) come ONLY from `load_policy`. After pre-flight passes, call `load_policy` once with the run's policy arguments, exactly as `preflight_dispatch` received them, and find the entry under `models` for the model doing the work. Its `effective_price.rates` are the USD-per-1M rates for `input`, `input_cached`, `input_cache_write`, `input_cache_write_1h` and `output` on `effective_prices_on`: the dated price list's card, or the policy's `pricing` block only when that model sets `pricing_override: true` (`effective_price.pricing_block` says which). Never take rates from a `pricing` block, in the policy file or anywhere else: a block is documentation unless `pricing_override` is true, and it can differ from what the server bills. Never invent rates. Never use rates from your training data. Never hardcode. If that model's entry is missing or its `effective_price.rates` is null (no price for the day), abort the run with a clear error rather than guessing (pre-flight already halts a run with a model that has no price).
 
-   Every other dollar in the run comes from the same price. The server bills each dispatch at the dated price list's rate (`plugin/mcp/model-dispatch/src/prices.ts`) for its model on the day it runs, and at the policy's `pricing` block only when that model sets `pricing_override: true`; the post-run collector prices this session's transcript the same way. `effective_price` is that price, so your estimates and the server's bills use the same numbers whatever a block says. A hand-written block that differs from the list arrives at pre-flight as a `price_warnings` entry: print it as rule 0 says, and still take your estimate rates from `effective_price`, never from the block. Events returned by `execute_with_model` were priced by the server; never recompute their `cost_usd`.
+   Every other dollar in the run comes from the same price. The server bills each dispatch at the dated price list's rate (`${CLAUDE_PLUGIN_ROOT}/mcp/model-dispatch/src/prices.ts`) for its model on the day it runs, and at the policy's `pricing` block only when that model sets `pricing_override: true`; the post-run collector prices this session's transcript the same way. `effective_price` is that price, so your estimates and the server's bills use the same numbers whatever a block says. A hand-written block that differs from the list arrives at pre-flight as a `price_warnings` entry: print it as rule 0 says, and still take your estimate rates from `effective_price`, never from the block. Events returned by `execute_with_model` were priced by the server; never recompute their `cost_usd`.
 7. **Stateless workers.** If a mechanical-tier result fails validation, do NOT continue a conversation. Construct a refined TaskPacket from scratch with the failure mode encoded in the instruction.
 8. **Run tests.** After codegen, run `npm install && npm test` via Bash from `<code_dir>` — the
    generated application lives there, so that is where its package manifest and test runner are.
@@ -235,7 +235,7 @@ below still applies.
 
    On test failures other than env: parse the output, build a debug TaskPacket with the failing test name + error + relevant source slice, route via policy.
 
-See `plugin/skills/pipeline/SKILL.md` for the full state machine, TaskPacket examples, and HITL prompt templates.
+See `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md` for the full state machine, TaskPacket examples, and HITL prompt templates.
 
 # Intent routing — brownfield only
 
@@ -244,7 +244,7 @@ no branching.
 
 In brownfield you receive an `intent` field on the run context, set at Gate 0. Before starting
 Phase 2 (architecture), Phase 4 (packet planning), Phase 7 (tests), and Phase 8 (security review),
-consult the `## Intent matrix` section in `plugin/skills/pipeline/SKILL.md` to decide:
+consult the `## Intent matrix` section in `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md` to decide:
 
 - **SKIP** the phase — do not dispatch, do not write an artifact, do not fire the phase's gate.
   Emit a TelemetryEvent with `phase: <name>, task_type: "skipped"` so downstream rollups stay
@@ -272,7 +272,7 @@ Three enforcement layers make this promise stick — the third is the only one y
 
 1. **This prompt (soft).** Before every `Write`/`Edit`, resolve the target path against `.sdlc/local/write-contract.json`. If it hits an `off_limits` pattern, or is absent from `allowlist`, refuse the packet and surface the issue to the user via a mini-gate — do not attempt the write. This layer relies on your discipline; the next two exist because prompts drift.
 2. **The packet validator (schema).** Every TaskPacket's `artifact_path` field is validated against the confirmed allowlist before the MCP server dispatches. Off-limits paths are rejected at dispatch time, not at write time.
-3. **The PreToolUse hook (hard).** `plugin/hooks/hooks.json` registers a matcher on `Write|Edit` that invokes `plugin/scripts/write-contract-check.mjs`. The hook reads `.sdlc/local/write-contract.json` and either allows or refuses the tool call at the tool boundary. Refused writes never reach the filesystem. On by default in brownfield mode. The escape hatch is `contract.strict = false` (equivalent to a run passing `--strict-write=off`), which downgrades every enforcement to a warning.
+3. **The PreToolUse hook (hard).** `${CLAUDE_PLUGIN_ROOT}/hooks/hooks.json` registers a matcher on `Write|Edit` that invokes `${CLAUDE_PLUGIN_ROOT}/scripts/write-contract-check.mjs`. The hook reads `.sdlc/local/write-contract.json` and either allows or refuses the tool call at the tool boundary. Refused writes never reach the filesystem. On by default in brownfield mode. The escape hatch is `contract.strict = false` (equivalent to a run passing `--strict-write=off`), which downgrades every enforcement to a warning.
 
 **Merge semantics for sensitive files** (deep-merge, never overwrite) — even when a path is in the allowlist:
 - `package.json` — add missing deps/scripts, never remove or downgrade; new script names must not shadow existing.
@@ -283,7 +283,7 @@ Three enforcement layers make this promise stick — the third is the only one y
 
 **Diff-preview mini-gate** for any packet targeting a file that existed at discovery time: dispatch the packet, receive the proposed content, compute a unified diff against the current file, show the diff to the user, and only write on approval. This is the concrete answer to "we don't know how they use Gemini / Cursor / their own config" — even if discovery misclassified a file's role, the user sees the diff before it lands.
 
-See `plugin/scripts/write-contract-check.mjs` for the hook implementation and the exact schema of `.sdlc/local/write-contract.json`.
+See `${CLAUDE_PLUGIN_ROOT}/scripts/write-contract-check.mjs` for the hook implementation and the exact schema of `.sdlc/local/write-contract.json`.
 
 # Run logging — every run, both modes
 
@@ -407,4 +407,4 @@ Do this per Write/Edit; the helper handles sha computation, git-tracked detectio
 
 **Fail-open by design.** The helper never blocks the pipeline — on unexpected error it warns to stderr and exits 0. A missing provenance record only breaks `/mmo:revert` for that one file; it never breaks the run. Discipline in the orchestrator prompt (this section) is what keeps the record complete.
 
-Schema of `provenance.json` matches the reader in `plugin/commands/revert.md` §1 — never drift.
+Schema of `provenance.json` matches the reader in `${CLAUDE_PLUGIN_ROOT}/commands/revert.md` §1 — never drift.

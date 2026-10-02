@@ -9,7 +9,7 @@ interview round-trip, but Gate 0 always fires and always re-confirms scope befor
 written.
 
 Follow the operating manual in
-[plugin/skills/brownfield-guide/SKILL.md](/plugin/skills/brownfield-guide/SKILL.md),
+`${CLAUDE_PLUGIN_ROOT}/skills/brownfield-guide/SKILL.md`,
 with this handover:
 
 - `intent: deps` — already chosen. Skip step 4a; Gate 0 re-confirms it.

@@ -1,6 +1,6 @@
 # Repo guide
 
-This repository holds `mmo` (Multi-Model Orchestrator) v0.7.12 — a Claude Code plugin that runs a
+This repository holds `mmo` (Multi-Model Orchestrator) v0.8.5 — a Claude Code plugin that runs a
 full software-delivery pipeline against a brief (requirements → design → code → senior review →
 tests → security review), routes each phase to the model that fits it, and records what each phase
 cost — plus the harness, tests and documentation that ship it.
@@ -20,10 +20,11 @@ for reading or changing the code.
 | Path | What it holds |
 |---|---|
 | `plugin/` | The installable plugin: slash commands, subagents, skills, routing policies, the bundled MCP server, the policy console, hooks and scripts. |
+| `zero-touch/` | The `zero-touch` plugin: the person's zero-touch settings and the switch. Its start hook (`scripts/start-chat.mjs`) marks each new chat with its mode and models (`scripts/mark.mjs`) and shows the start lines (the summary once per save, then only what needs action; at once in the terminal, with the first message in the desktop app); its settings hooks (`scripts/settings-hook.mjs`, through `hooks/settings.sh`) run the settings box in the chat: the boxes word for word (`scripts/boxes.mjs`), the saved choices in the plugin's own data folder (`scripts/settings.mjs`), every text it shows (`scripts/messages.mjs`), and a copy of mmo's Google check (`scripts/google.mjs`). It holds none of mmo's workflow or hand-off code: everything zero-touch does in a chat is the `mmo` plugin's, in workflow mode and hand-off mode alike. See [ambient-mode.md](ambient-mode.md). |
 | `tools/` | Repo-side scripts and the root test suite — setup, cost reporting, log formatting. |
 | `docs/` | User and contributor documentation, plus specs, planning notes and recorded walkthroughs. |
 | `examples/` | Four project briefs (`unit-convert`, `quick-demo`, `workforce-ops`, `travel-ops`), plus the recorded output of two runs against `quick-demo` — one model-path, one agent-path — under `examples/quick-demo/passes/`. |
-| `.claude-plugin/marketplace.json` | Marketplace manifest that makes this repo installable through `/plugin install`. |
+| `.claude-plugin/marketplace.json` | Marketplace manifest that makes this repo installable through `/plugin install`. It lists both plugins, `mmo` and `zero-touch`. |
 | `package.json` | Root manifest. Owns `npm test`, `npm run setup`, `npm run report`, `npm run verify`. |
 | `README.md` · `SETUP.md` · `CONTRIBUTING.md` · `CLAUDE.md` · `SECURITY.md` | What the plugin does, how to install it, how to contribute, the writing rules, the disclosure policy. |
 | `.sdlc/` | Appears once you run the plugin in a folder: telemetry, manifests, per-run artifacts. Git-ignored, never source. |
@@ -56,11 +57,13 @@ path, one API call per unit of work, nothing here is installed and nothing here 
 
 | File | Reach for it when |
 |---|---|
-| `tools/setup.mjs` | Installing from a clone rather than the marketplace. Checks prerequisites, installs and builds the MCP server, writes `.mcp.json`. Also `npm run setup`. |
+| `tools/setup.mjs` | Installing from a clone rather than the marketplace. Checks prerequisites, checks the MCP server (it ships pre-built; builds it only when the bundle is missing), writes `.mcp.json`. Also `npm run setup`. |
 | `tools/report.mjs` | Rendering the cost report for a finished run: `node tools/report.mjs <pass-dir>`, or `npm run report -- <pass-dir>`. Add `--markdown` for a file-ready version. |
-| `plugin/mcp/model-dispatch/src/server.ts` | Reading or changing the MCP server. Claude Code launches the compiled `dist/server.js`; the source is here. One adapter per model surface sits in `src/adapters/`. |
+| `plugin/mcp/model-dispatch/src/server.ts` | Reading or changing the MCP server. Claude Code launches the pre-built `bundle/server.mjs`, and the plugin's scripts load `bundle/lib.mjs` (entry `src/lib.ts`); the source is here. `npm run build` in that folder compiles (`tsc`) and then writes both bundles (`scripts/bundle.mjs`); commit `bundle/` with any change under `src/`, or `tools/test/server-bundle.test.mjs` fails. One adapter per model surface sits in `src/adapters/`. |
 | `plugin/policy-console/policy-server.mjs` | Serving the policy console on `127.0.0.1`. Normally started for you by `plugin/scripts/setup-policy.mjs`. |
 | `plugin/mcp/model-dispatch/worker/gemini_worker.py` | Debugging the agent path. The MCP server spawns it; you do not start it by hand. |
+| `plugin/mcp/model-dispatch/src/handoff/` | Reading or changing zero-touch's hand-off tools (`write_document`, `write_tests_from_cases`, `repeat_edit_across_files`, `undo_hand_off`): each tool's form check, brief and answer checks, the scratch copy a test or check command runs in, the record of what landed and its undo. They type through the executor's own typists. |
+| `plugin/scripts/ambient/hook.mjs` | Reading or changing what zero-touch does at each hook moment. One dispatcher for zero-touch's sixteen hooks; the rules it applies are in `plugin/scripts/ambient/lib/`. `zero-touch/scripts/start-chat.mjs` is the separate start hook that decides a chat's mode. |
 | `plugin/mcp/model-dispatch/src/executor/` | Reading or changing the typed-spec executor (greenfield: `/mmo:greenfield` and `/mmo:pass`). `brief.ts` renders briefs and fix briefs; `typists.ts` holds the three typists (their environments, request shapes and failure classification); `checks.ts` the checks on every answer; `run.ts` the stage runner (the ladder, repairs, warm-up); `acceptance.ts` the acceptance stage (runs the spec's acceptance commands and marks every criterion); `tools.ts` the MCP tools. The typed spec itself is in `src/spec/`, and `worker/typist_worker.py` is the agent-door typist. |
 | `plugin/scripts/write-manifest.mjs` | Rebuilding a run's `manifest.json` from its records. Phase 9 runs it; the manifest is never typed by hand. The collector copies the acceptance table into SUMMARY.md with `plugin/scripts/lib/acceptance-summary.mjs`. |
 | `plugin/scripts/executor-guard.mjs` | Debugging a refused helper launch or write in an executor run. It keeps that run's orchestrator to the pipeline's own helpers and to writes inside its own run's record folder. |
@@ -75,10 +78,11 @@ path, one API call per unit of work, nothing here is installed and nothing here 
 | `skills/` | Playbooks a subagent reads at run time. `pipeline/SKILL.md` carries the state machine, the task-packet schema (one packet per unit of work, the unit that gets routed to a model) and the approval gates; `brownfield-guide/SKILL.md` covers work on an existing repo. Per-stack guidance lives in `skills/pipeline/stacks/`. |
 | `config/policies/` | Routing policies as YAML — the directory listing is the authoritative preset set (`opus-plus-flash.yaml` is the default). A policy maps each phase to a model and prices each model; it sets no cost cap. |
 | `config/intents.json` | The seven brownfield job types. |
+| `config/ambient.default.json` | mmo's shipped zero-touch settings: `routing`, `routing_defaults` (the cost recording, `auth`), `retention_days`. The person's zero-touch choices (mode, models, hand-off typists) are not here: they are made in the settings box and kept by the `zero-touch` plugin. |
 | `mcp/model-dispatch/` | The MCP server package (see the table above). |
 | `policy-console/` | The policy console package. |
-| `scripts/` | Node scripts the commands shell out to — setup checks, credential discovery, the write-contract hook, provenance recording, run logging. |
-| `hooks/` | `hooks.json` registers: a `PreToolUse` write-contract check that refuses edits outside an approved file list, a `PreToolUse` rule that keeps the pipeline's own helpers in the foreground, the executor guard (`PreToolUse` and `PostToolUse`) that keeps a greenfield executor run's orchestrator to its own record folder, and a `PostToolUse` telemetry heartbeat. |
+| `scripts/` | Node scripts the commands shell out to — setup checks, credential discovery, the write-contract hook, provenance recording, run logging. `scripts/ambient/` holds zero-touch: the hook dispatcher and its libraries (workflow mode's recognition, workflow start, second-job queue and project lock; hand-off mode's recognition, lines, model pin and safety net; the chat's mode record), and zero-touch's two step scripts, `workflow-stopped.mjs` and `git-baseline.mjs`, which Claude runs when zero-touch tells it to ([ambient-mode.md](ambient-mode.md)). Nothing of mmo's own uses this folder. `scripts/handoff-models.mjs` asks the server's own router which model a policy gives each kind of hand-off work. |
+| `hooks/` | `hooks.json` registers: a `PreToolUse` write-contract check that refuses edits outside an approved file list, a `PreToolUse` rule that keeps the pipeline's own helpers in the foreground, the executor guard (`PreToolUse` and `PostToolUse`) that keeps a greenfield executor run's orchestrator to its own record folder, and a `PostToolUse` telemetry heartbeat: the pipeline's own hooks, with no timeout of their own (the three that run node go through `node.sh`). `ambient.sh` is the POSIX shim for zero-touch's sixteen hooks (eleven for workflow mode, among them the policy stamp on a zero-touch run's model-server calls, the release of a project at `/clear`, and the clean-up after a turn that ended in an error, and five more for hand-off mode), which the zero-touch plugin registers in its own `zero-touch/hooks/hooks.json` and runs through `zero-touch/hooks/mmo-hook.sh`; they do nothing in a chat the zero-touch plugin did not mark. |
 | `templates/` | Fragments copied into a target project, such as the `.gitignore` entry for run artifacts. |
 | `examples/` | Sandbox projects you point the plugin at by hand — six tiny apps, one per brownfield job type — plus copies of the four example briefs, which live here because only `plugin/` is copied on install. |
 

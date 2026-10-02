@@ -19,7 +19,7 @@ import { evaluate, missingLeanOpusFlags, LEAN_OPUS_FLAGS } from "../../plugin/sc
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const TYPISTS = join(ROOT, "plugin", "mcp", "model-dispatch", "dist", "executor", "typists.js");
 
-const healthy = { nodeMajor: 20, hasClaudeCli: true, hasNodeModules: true, hasDist: true, env: { ANTHROPIC_API_KEY: "x", GEMINI_API_KEY: "y" } };
+const healthy = { nodeMajor: 20, hasClaudeCli: true, hasNodeModules: true, hasDist: true, hasBundle: true, env: { ANTHROPIC_API_KEY: "x", GEMINI_API_KEY: "y" } };
 
 /** A `claude --help` text listing the given options, one per line as Claude Code prints them. */
 const help = (...flags) => ["Usage: claude [options] [command] [prompt]", "", "Options:", ...flags.map((f) => `  ${f} <value>   what it does`), "  -h, --help   display help for command"].join("\n");

@@ -12,20 +12,16 @@
  */
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { Policy, ModelConfig } from "./types.js";
 import { KNOWN_ADAPTER_IDS } from "./adapters/index.js";
 import { log } from "./log.js";
+import { PLUGIN_ROOT } from "./paths.js";
 
-const PLUGIN_POLICY_DIR = resolve(
-  dirname(new URL(import.meta.url).pathname),
-  "..",
-  "..",
-  "..",
-  "config",
-  "policies"
-);
+// The shipped presets, found from the package root so the compiled files and the single-file bundle agree (see
+// paths.ts). It is built from a file path, not a URL's pathname, so a space in a folder name stays a space.
+const PLUGIN_POLICY_DIR = join(PLUGIN_ROOT, "config", "policies");
 
 export function loadPolicy(opts: {
   policyName?: string;          // e.g. "opus-only"

@@ -50,40 +50,81 @@ Check the version it reports against `.claude-plugin/marketplace.json` on the re
 branch. If they differ, the refresh above was skipped; run it and install again.
 
 The plugin's files are in place from here on, but neither its slash commands nor its bundled model
-server are live in this session, and no reload makes them so: Claude Code builds the command list
-and starts plugin MCP servers when a session starts. Do not go looking for a reload command —
-`/reload-plugins` does not exist in the desktop app, and running it wastes the user's turn on an
-error. Step 6 says what to tell them instead, and why running the pipeline here would produce a
-wrong answer rather than merely an inconvenient one.
+server are live in this session: Claude Code builds the command list and starts plugin MCP servers
+when a session starts. This setup hands over with a new session (step 6), which is the path it has
+been checked with. `/reload-plugins` exists in the desktop app as well as the terminal, but whether it
+makes this plugin's commands and server live mid-setup has not been checked, so do not rely on it.
+Step 6 says what to tell them instead, and why running the pipeline here would produce a wrong
+answer rather than merely an inconvenient one.
 
 Continue with the build below. It runs as a shell command and does not need the plugin's slash
 commands to exist.
 
-## 3. Build the bundled model server
+**Zero-touch is a separate, optional plugin.** Install it only if the user wants to work in plain words. It has
+three modes, chosen in the chat (there is no default: the first chat after install asks). Workflows (workflow mode): a request in
+English that starts with what is wanted ("fix the login bug", "I want a to-do app") starts the matching workflow
+without typing a command, and every other message stays an ordinary chat. Hand-off (hand-off mode): the chat's own model does the
+development and hands new documents, specs and plans, new tests, and one change repeated across many files to the
+model the person picks for each (Flash 3.8, Sonnet 5, or keep it in the chat). Off: nothing changes.
 
-**This step is required. Skipping it produces a plugin that installs cleanly and then fails
-partway through the first run.**
-
-The plugin dispatches mechanical phases to a cost-efficient model through a bundled MCP server.
-The plugin manifest points at that server's build output, which is not tracked in git — a fresh
-install carries the source but neither the dependencies nor the build. Until this step runs, the
-configured server path does not exist.
-
-Locate the installed plugin and run its setup script:
-
-```bash
-node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/verify-setup.mjs | tail -1)" --fix
+```
+/plugin install zero-touch@tilicho-ai-labs
 ```
 
-`--fix` installs the server's dependencies and builds it. The script re-checks afterwards and
-exits non-zero if the plugin still cannot run.
+Or, in any chat, in plain words: "install the zero-touch plugin from the develop branch of
+github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness". Then start a new chat (plugins load when a chat
+starts).
+
+It needs `mmo`: installing it brings `mmo` along, and an `mmo` already installed at an older version (anyone who used
+its typed commands before) is updated by zero-touch itself at the first chat, which says to start a new chat
+in a minute (Claude Code leaves an installed dependency at its version). Nothing to build and no file to edit.
+
+What the computer needs: Node.js 20 or newer; git (every change workflow, and Hand-off's tests and repeated changes,
+are checked and undone with it); a Claude plan login or an API key; and, for Flash 3.8, a Google connection (an AI
+Studio key or a Google Cloud sign-in with a project). The desktop app reads environment values only from
+`~/.claude/settings.json` (its `env` block), never from the terminal's start-up files. Zero-touch says at the first
+chat what is missing, and asking Claude "help me connect Google for zero-touch" walks through Google.
+
+The first chat after install asks for the settings in Claude's question box: the mode (Workflows, Hand-off or Off),
+then the models for it. Later, typing `change zero-touch settings` in any chat opens the same box; a choice
+applies to new chats. Enabled, every new chat has zero-touch in the chosen mode; disabled in the plugin list
+(desktop app: **+** → **Plugins** → **Manage plugins**), new chats have none. See `docs/ambient-mode.md`.
+
+**When the person asked to install zero-touch, the install ends here.** Do not run steps 3 to 6 (they set up the
+typed `/mmo:` commands), and do not tell them about refresh or update commands, API keys or setup checks (run step 1's
+refresh yourself when it is needed; just never hand the person a command): zero-touch's
+first chat checks what its settings need and says exactly what is missing, in plain words. Then reply with exactly
+these three lines and nothing else (no list of installed plugins, no modes, no notes about other plugins):
+
+> Zero-touch is installed.
+> Start a new chat: plugins load when a chat starts.
+> That chat will ask you how zero-touch should work.
+
+## 3. Check the install
+
+The plugin dispatches mechanical phases to a cost-efficient model through a bundled MCP server. The
+server, and the server code the plugin's scripts load, ship pre-built inside the plugin
+(`mcp/model-dispatch/bundle/server.mjs` and `bundle/lib.mjs`), so an install from the marketplace
+needs nothing installed or built.
+
+Run the plugin's setup check once to see what this computer has (Node, the Claude Code CLI,
+credentials). The path comes from Claude Code's own record of the installed copy, so an older
+copy still in the cache is never picked by mistake:
+
+```bash
+node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/verify-setup.mjs"
+```
+
+`--fix` repairs only a copy whose pre-built server is missing (a damaged install, or a clone being
+developed): it installs the server's dependencies and builds it. The script exits non-zero if the
+plugin cannot run.
 
 ## 4. Read the result and tell the user where they stand
 
 The script reports three kinds of finding:
 
 - **`✗` blocking** — the plugin cannot run. Node older than 20, a missing Claude Code CLI, or a
-  server build that failed. Each carries the command that fixes it. Resolve these before
+  pre-built server that is missing from this copy. Each carries the command that fixes it. Resolve these before
   continuing.
 - **`!` warning** — the plugin runs, but some policies will not. Missing credentials are
   reported here, never written on the user's behalf. Ask the user for whichever they need:
@@ -151,7 +192,7 @@ here.
 On **Antigravity SDK**, run the same script from step 3 with `--enable-agent` instead of `--fix`:
 
 ```bash
-node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/verify-setup.mjs | tail -1)" --enable-agent
+node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/verify-setup.mjs" --enable-agent
 ```
 
 That flag writes the selection into `.claude/settings.local.json` in the current folder — this
@@ -184,7 +225,7 @@ every shipped preset; the browser only opens if the user picks `Author a new pol
 1. Enumerate policies:
 
    ```bash
-   node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/setup-policy.mjs | tail -1)" --list-json --project-root "$(pwd)"
+   node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/setup-policy.mjs" --list-json --project-root "$(pwd)"
    ```
 
 2. Ask the user via `AskUserQuestion` which policy to use. Options are one per policy from step 1
@@ -193,7 +234,7 @@ every shipped preset; the browser only opens if the user picks `Author a new pol
 3. If the user picks a policy name, run the credential check:
 
    ```bash
-   node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/setup-policy.mjs | tail -1)" --check-creds --policy=<chosen> --project-root "$(pwd)"
+   node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/setup-policy.mjs" --check-creds --policy=<chosen> --project-root "$(pwd)"
    ```
 
    - `ok: true` → persist with `--policy=<chosen>`. Done.
@@ -203,7 +244,7 @@ every shipped preset; the browser only opens if the user picks `Author a new pol
 4. If the user picks `Author a new policy (opens browser)`, run the script bare:
 
    ```bash
-   node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/setup-policy.mjs | tail -1)" --project-root "$(pwd)"
+   node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/setup-policy.mjs" --project-root "$(pwd)"
    ```
 
    This starts the policy console (`plugin/policy-console/`, a single HTML page served by a tiny
@@ -278,11 +319,11 @@ the restart it was meant to save.
 The same script, without `--fix`, re-checks an existing install and changes nothing:
 
 ```bash
-node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/verify-setup.mjs | tail -1)"
+node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/verify-setup.mjs"
 ```
 
-Run it after `/plugin update`. An update re-copies the plugin from source, which removes the
-build produced in step 3; re-running with `--fix` restores it.
+Run it after `/plugin update` if anything looks wrong. The server ships pre-built, so an update needs nothing
+rebuilt; `--fix` repairs only a copy whose pre-built server is missing.
 
 The same script switches the mechanical tier between the two Gemini doors at any time, in either
 direction — `--enable-agent` records the selection and builds the Python environment the agent path
@@ -311,7 +352,7 @@ project from scratch), the plugin runs **additional prerequisite checks** after 
 `--fix`. Same script, extra flag:
 
 ```bash
-node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/verify-setup.mjs | tail -1)" --brownfield-check
+node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/verify-setup.mjs" --brownfield-check
 ```
 
 `--brownfield-check` runs the greenfield checks in step 3–4 AND then appends:

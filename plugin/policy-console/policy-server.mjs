@@ -88,6 +88,7 @@ const ANTHROPIC_EFFORT_TIERS = ["off", "low", "medium", "high", "xhigh", "max"];
 // tools/test/policy-console-presets.test.mjs fails when this list and the
 // directory disagree.
 const SHIPPED_PRESETS = [
+  "fable51-plus-flash-v38",
   "flash-agsdk-only",
   "opus-only",
   "opus-only-v5",

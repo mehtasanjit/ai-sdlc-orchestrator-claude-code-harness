@@ -27,8 +27,8 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, relative, sep, dirname, isAbsolute } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { HARDCODED_OFF_LIMITS } from "./lib/off-limits.mjs";
 import { log } from "./lib/log.mjs";
 
@@ -69,6 +69,40 @@ function findContractPath(start) {
 }
 
 /**
+ * A path with every link in it resolved, also for a file that does not exist yet: the deepest folder that exists is
+ * resolved and the rest appended. Anything that cannot be resolved stays as given.
+ */
+function realPath(p) {
+  let head = resolve(p);
+  const rest = [];
+  for (let i = 0; i < 256; i++) {
+    try { return join(realpathSync(head), ...rest); } catch { /* not there (yet): try its folder */ }
+    const parent = dirname(head);
+    if (parent === head) break;
+    rest.unshift(basename(head));
+    head = parent;
+  }
+  return resolve(p);
+}
+
+/**
+ * `absTarget`'s path inside `root` ("src/a.ts"), or null when it is outside. Judged on the paths as written first; only
+ * when that says "outside" is it judged again with links resolved on both sides. Why: the session's folder comes from
+ * process.cwd(), which the system gives with every link resolved (/private/var/... on macOS), while a write's path
+ * arrives as written (/var/...). Compared as text only, every write in a project under a linked folder (macOS's /tmp
+ * and /var, a linked code folder) would be refused as a write outside the project. The second look can only find a
+ * path inside, never move one outside, so it never refuses a write the first look allows.
+ */
+function insidePath(root, absTarget) {
+  const rel = (from, to) => relative(from, to).split(sep).join("/");
+  const outside = (r) => r === ".." || r.startsWith("../") || isAbsolute(r);
+  const asWritten = rel(root, absTarget);
+  if (!outside(asWritten)) return asWritten;
+  const resolved = rel(realPath(root), realPath(absTarget));
+  return outside(resolved) ? null : resolved;
+}
+
+/**
  * Repo-relative path resolution + escape detection. Returns `{ rel, escapes }`
  * where `escapes: true` means the target resolves OUTSIDE the contract's repo
  * root. An escape is a category error — the run is trying to write outside
@@ -77,9 +111,8 @@ function findContractPath(start) {
 function toRepoRelative(target, contractPath) {
   const repoRoot = resolve(contractPath, "..", "..", ".."); // .sdlc/local/write-contract.json → repo root
   const abs = resolve(repoRoot, target);
-  let rel = relative(repoRoot, abs);
-  if (sep !== "/") rel = rel.split(sep).join("/");
-  return { rel, escapes: rel.startsWith("../") || rel === ".." };
+  const inside = insidePath(repoRoot, abs);
+  return { rel: inside ?? relative(repoRoot, abs).split(sep).join("/"), escapes: inside === null };
 }
 
 /**
@@ -195,8 +228,7 @@ async function main() {
   // contract and mislabeled the escape as "not in allowlist."
   if (cwdContract && cwdContract.active === true) {
     const cwdRepoRoot = resolve(cwdContractPath, "..", "..", "..");
-    const cwdRel = relative(cwdRepoRoot, absTarget).split(sep).join("/");
-    if (cwdRel.startsWith("../") || cwdRel === "..") {
+    if (insidePath(cwdRepoRoot, absTarget) === null) {
       const targetContract = findContractPath(dirname(absTarget));
       deny(
         `${absTarget} resolves OUTSIDE the calling session's contracted repo ` +
