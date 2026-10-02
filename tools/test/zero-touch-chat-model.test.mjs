@@ -25,10 +25,10 @@ const ZT = join(ROOT, "zero-touch");
 const START = join(ZT, "hooks", "start-chat.sh");
 const M = await import(join(ZT, "scripts", "messages.mjs"));
 const S = await import(join(ZT, "scripts", "settings.mjs"));
-const { writeZtSettings, ztData, fakeClaudeBin } = await import(join(ROOT, "tools", "test", "lib", "chat-start.mjs"));
+const { writeZtSettings, ztData, fakeClaudeBin, OFFLINE_GCLOUD_BIN } = await import(join(ROOT, "tools", "test", "lib", "chat-start.mjs"));
 const { serverBuilt } = await import(join(ROOT, "tools", "test", "lib", "server-built.mjs"));
 const SKIP = serverBuilt();
-const BASE_PATH = `${fakeClaudeBin()}:${dirname(process.execPath)}:/usr/bin:/bin`;
+const BASE_PATH = `${fakeClaudeBin()}:${OFFLINE_GCLOUD_BIN}:${dirname(process.execPath)}:/usr/bin:/bin`;
 
 test("each workflow model choice names the model it plans with, as the workflows' own router says", { skip: SKIP ?? false }, () => {
   const check = join(ROOT, "plugin", "scripts", "driver-model-check.mjs");

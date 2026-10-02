@@ -1,0 +1,7 @@
+#!/bin/sh
+# A stand-in for Google's `gcloud`, first on PATH for every root test: the tests are offline, and a real gcloud would
+# contact Google (a refused or slow sign-in then decides the result). It answers like a computer that cannot reach
+# Google, which zero-touch and the setup scripts treat as "unknown". Tests of a working or refused sign-in put their
+# own fake gcloud ahead of this one.
+echo "ERROR: (gcloud) Could not resolve host: oauth2.googleapis.com (stand-in for tests: no network)" >&2
+exit 1

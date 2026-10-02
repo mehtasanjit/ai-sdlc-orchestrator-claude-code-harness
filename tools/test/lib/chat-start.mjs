@@ -99,6 +99,14 @@ let claudeBin = null;
  * Claude Code's command-line program is missing, as it is on a test PATH of node and the system folders only. A real
  * install has it; tests about something else put this folder first.
  */
+/**
+ * The offline stand-in `gcloud` (stand-in-gcloud/gcloud): for a test that builds its own PATH from the system's
+ * folders (/usr/bin holds the real gcloud on some computers, GitHub's Ubuntu runner among them), so no test contacts
+ * Google. It answers like a computer that cannot reach Google. A test of a working or refused sign-in puts its own
+ * fake gcloud ahead of it.
+ */
+export const OFFLINE_GCLOUD_BIN = join(ROOT, "tools", "test", "lib", "stand-in-gcloud");
+
 export function fakeClaudeBin() {
   if (claudeBin) return claudeBin;
   claudeBin = mkdtempSync(join(tmpdir(), "zt-claude-bin-"));

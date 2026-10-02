@@ -19,6 +19,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
+// The installed copies these tests build are at the plugin's own version, as a real install is.
+const VERSION = JSON.parse(readFileSync(join(ROOT, "plugin", ".claude-plugin", "plugin.json"), "utf8")).version;
 const ZT = join(ROOT, "zero-touch");
 const U = await import(join(ZT, "scripts", "mmo-update.mjs"));
 const M = await import(join(ZT, "scripts", "messages.mjs"));
@@ -122,7 +124,7 @@ test("the hook shim never runs an mmo without zero-touch's hooks, even when the 
   const dir = mkdtempSync(join(tmpdir(), "zt-shim-"));
   try {
     const cache = join(dir, "cache", "m");
-    const ztHere = join(cache, "zero-touch", "0.8.5");
+    const ztHere = join(cache, "zero-touch", VERSION);
     mkdirSync(join(ztHere, "hooks"), { recursive: true });
     writeFileSync(join(ztHere, "hooks", "mmo-hook.sh"), readFileSync(join(ZT, "hooks", "mmo-hook.sh")));
     const ran = join(dir, "ran");
@@ -135,13 +137,13 @@ test("the hook shim never runs an mmo without zero-touch's hooks, even when the 
       return p;
     };
     const stale = mmo("0.8.4", null);
-    mmo("0.8.5", 1);
+    mmo(VERSION, 1);
     const data = join(dir, "data");
     mkdirSync(data);
     writeFileSync(join(data, "mmo-root"), `${stale}\n`);
     const run = () => { rmSync(ran, { force: true }); spawnSync("sh", [join(ztHere, "hooks", "mmo-hook.sh"), "session-start"], { input: "{}", env: { PATH: process.env.PATH, HOME: dir, CLAUDE_PLUGIN_DATA: data } }); return existsSync(ran) ? readFileSync(ran, "utf8").trim() : null; };
-    assert.equal(run(), "0.8.5", "the kept answer names an early build: the current mmo beside zero-touch runs instead");
-    writeFileSync(join(cache, "mmo", "0.8.5", "scripts", "ambient", "api.json"), JSON.stringify({ zero_touch_api: 0 }));
+    assert.equal(run(), VERSION, "the kept answer names an early build: the current mmo beside zero-touch runs instead");
+    writeFileSync(join(cache, "mmo", VERSION, "scripts", "ambient", "api.json"), JSON.stringify({ zero_touch_api: 0 }));
     assert.equal(run(), null, "no mmo with zero-touch's hooks: nothing runs");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

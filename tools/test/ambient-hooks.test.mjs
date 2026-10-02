@@ -15,6 +15,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
+// The installed copies these tests build are at the plugin's own version, as a real install is.
+const VERSION = JSON.parse(readFileSync(join(ROOT, "plugin", ".claude-plugin", "plugin.json"), "utf8")).version;
 const { startingChats } = await import(join(ROOT, "tools", "test", "lib", "chat-start.mjs"));
 const SHIM = join(ROOT, "plugin", "hooks", "ambient.sh");
 
@@ -202,13 +204,13 @@ test("zero-touch's shim finds mmo's folder in every layout, and passes the hook'
     const shim = (script, env = {}) => spawnSync("sh", [script, "pre-any"], { input: '{"session_id":"a"}', encoding: "utf8", env: { PATH: process.env.PATH, ...env } });
     // Installed: <cache>/<marketplace>/zero-touch/<version> beside <cache>/<marketplace>/mmo/<version>.
     const cache = join(dir, "cache", "mkt");
-    const mmo = fakeMmo(join(cache, "mmo", "0.8.5"));
-    const installed = ztIn(join(cache, "zero-touch", "0.8.5"));
+    const mmo = fakeMmo(join(cache, "mmo", VERSION));
+    const installed = ztIn(join(cache, "zero-touch", VERSION));
     let r = shim(installed);
     assert.equal(r.status, 0);
     assert.equal(r.stdout, `${mmo}|pre-any|{"session_id":"a"}`);
-    // Another mmo version installed: the one Claude Code's record names (kept by the start hook) wins.
-    const other = fakeMmo(join(cache, "mmo", "0.8.6"));
+    // Another mmo version installed (an older build): the one Claude Code's record names (kept by the start hook) wins.
+    const other = fakeMmo(join(cache, "mmo", "0.8.4"));
     const data = join(dir, "data");
     mkdirSync(data);
     writeFileSync(join(data, "mmo-root"), `${other}\n`);

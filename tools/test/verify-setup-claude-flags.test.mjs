@@ -17,6 +17,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { evaluate, missingLeanOpusFlags, LEAN_OPUS_FLAGS } from "../../plugin/scripts/verify-setup.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const { OFFLINE_GCLOUD_BIN } = await import(join(ROOT, "tools", "test", "lib", "chat-start.mjs"));
 const TYPISTS = join(ROOT, "plugin", "mcp", "model-dispatch", "dist", "executor", "typists.js");
 
 const healthy = { nodeMajor: 20, hasClaudeCli: true, hasNodeModules: true, hasDist: true, hasBundle: true, env: { ANTHROPIC_API_KEY: "x", GEMINI_API_KEY: "y" } };
@@ -88,7 +89,7 @@ test("the setup check reads the installed CLI's help and prints the finding", ()
     chmodSync(join(bin, "claude"), 0o755);
     return spawnSync(process.execPath, [join(ROOT, "plugin", "scripts", "verify-setup.mjs"), "--project-root", home], {
       encoding: "utf8", cwd: home, timeout: 60_000,
-      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, ANTHROPIC_API_KEY: "x", GEMINI_API_KEY: "y" },
+      env: { PATH: `${bin}:${OFFLINE_GCLOUD_BIN}:/usr/bin:/bin`, HOME: home, ANTHROPIC_API_KEY: "x", GEMINI_API_KEY: "y" },
     });
   };
   const old = run(NO_EFFORT);

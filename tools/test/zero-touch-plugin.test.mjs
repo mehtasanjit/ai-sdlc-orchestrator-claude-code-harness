@@ -20,6 +20,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
+// The installed copies these tests build are at the plugin's own version, as a real install is.
+const VERSION = JSON.parse(readFileSync(join(ROOT, "plugin", ".claude-plugin", "plugin.json"), "utf8")).version;
 const ZT = join(ROOT, "zero-touch");
 const START = join(ZT, "hooks", "start-chat.sh");
 const SHIM = join(ROOT, "plugin", "hooks", "ambient.sh");
@@ -449,10 +451,10 @@ test("where mmo is installed, for the hooks this plugin runs in mmo's folder: Cl
       if (api !== null) writeFileSync(join(p, "scripts", "ambient", "api.json"), JSON.stringify({ zero_touch_api: api }));
       return p;
     };
-    const ztHere = join(plugins, "cache", "ours", "zero-touch", "0.8.5");
+    const ztHere = join(plugins, "cache", "ours", "zero-touch", VERSION);
     mkdirSync(ztHere, { recursive: true });
     const theirs = mmo("theirs", "0.9.0");
-    const ours = mmo("ours", "0.8.5");
+    const ours = mmo("ours", VERSION);
     const record = (plugs) => writeFileSync(join(plugins, "installed_plugins.json"), JSON.stringify({ version: 2, plugins: plugs }));
     const env = { HOME: home, CLAUDE_PLUGIN_DATA: join(dir, "data") };
     record({ "mmo@theirs": [{ installPath: theirs }], "mmo@ours": [{ installPath: ours }], "zero-touch@ours": [{ installPath: ztHere }] });

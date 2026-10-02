@@ -1,6 +1,6 @@
 # Repo guide
 
-This repository holds `mmo` (Multi-Model Orchestrator) v0.8.5 — a Claude Code plugin that runs a
+This repository holds `mmo` (Multi-Model Orchestrator) v0.8.6 — a Claude Code plugin that runs a
 full software-delivery pipeline against a brief (requirements → design → code → senior review →
 tests → security review), routes each phase to the model that fits it, and records what each phase
 cost — plus the harness, tests and documentation that ship it.
@@ -95,9 +95,21 @@ npm install
 npm test
 ```
 
-`npm test` expands to `node --test tools/test/*.test.mjs && node tools/test-mcp.mjs`. The 17 files
-under `tools/test/` cover setup, command wiring, the write-contract hook, logging, reporting and
+`npm test` expands to `node --test --import ./tools/test/lib/stand-ins.mjs tools/test/*.test.mjs && node tools/test-mcp.mjs`.
+The 17 files under `tools/test/` cover setup, command wiring, the write-contract hook, logging, reporting and
 the writing style. The suite is offline — no API key, no network call, no cost.
+
+The root tests are offline and do not depend on what the computer has installed. `tools/test/lib/stand-ins.mjs`,
+loaded before every test file, puts stand-ins first on PATH:
+- **`gcloud`**, always: it answers like a computer that cannot reach Google, so no test contacts Google. Tests of a
+  working or refused Google sign-in put their own fake `gcloud` ahead of it.
+- **`claude`**, only when the computer has none (GitHub's test runner): zero-touch checks for Claude Code's program
+  before a new-app workflow or a Claude hand-off. The stand-in answers `--version` and `--help` and refuses anything
+  else, so no test runs a model. A real `claude` is never replaced.
+
+Some root tests also import the server's compiled code (`plugin/mcp/model-dispatch/dist/`, not committed). Build it
+once with `npx tsc` in `plugin/mcp/model-dispatch` (or `npm run build` there, which also rebuilds the committed
+bundle). The GitHub workflow runs `npx tsc` before the tests.
 
 `tools/test-mcp.mjs` chains the MCP server's own suite onto the end. That suite compiles TypeScript
 first, so it needs the server's dependencies installed:

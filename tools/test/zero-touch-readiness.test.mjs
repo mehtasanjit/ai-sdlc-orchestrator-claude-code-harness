@@ -116,13 +116,13 @@ test("the saved line ends with the setup check: ready, or what is missing; the f
 
 test("through the real hook: asking for help connecting Google gives Claude the fixed steps; a chat start says when the program is missing", async () => {
   const { spawnSync } = await import("node:child_process");
-  const { writeZtSettings, ztData } = await import(join(ROOT, "tools", "test", "lib", "chat-start.mjs"));
+  const { writeZtSettings, ztData, OFFLINE_GCLOUD_BIN } = await import(join(ROOT, "tools", "test", "lib", "chat-start.mjs"));
   const dir = mkdtempSync(join(tmpdir(), "zt-ready-"));
   try {
     const home = join(dir, "home");
     mkdirSync(home);
     writeZtSettings(home, { mode: "workflows" }, { google: false });
-    const env = { PATH: `${join(dir, "none")}:/usr/bin:/bin:${resolve(process.execPath, "..")}`, HOME: home, MMO_HOME: home, CLAUDE_PLUGIN_DATA: ztData(home) };
+    const env = { PATH: `${join(dir, "none")}:${OFFLINE_GCLOUD_BIN}:/usr/bin:/bin:${resolve(process.execPath, "..")}`, HOME: home, MMO_HOME: home, CLAUDE_PLUGIN_DATA: ztData(home) };
     const sh = (script, args, payload) => spawnSync("sh", [join(ROOT, "zero-touch", "hooks", script), ...args], { input: JSON.stringify(payload), env, encoding: "utf8" });
     const start = JSON.parse(sh("start-chat.sh", [], { session_id: "c1", source: "startup" }).stdout);
     assert.match(start.systemMessage, /• Google's Flash 3\.8 can't be used yet/);

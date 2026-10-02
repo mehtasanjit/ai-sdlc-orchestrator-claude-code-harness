@@ -3,8 +3,7 @@
  *
  * Why: zero-touch needs mmo, its dependency, at the version shipped beside it. Claude Code installs a missing
  * dependency with zero-touch, but leaves one that is already installed at its old version, even with a version range
- * in zero-touch's manifest ("mmo@^0.8.5"); only `claude plugin update mmo@…` moves it (checked on Claude Code 2.1.286,
- * installing zero-touch over an older mmo). So the first chat that finds mmo too old
+ * in zero-touch's manifest; only `claude plugin update mmo@…` moves it. So the first chat that finds mmo too old
  * (mark.mjs mmoState) starts Claude Code's own update of mmo, from the marketplace the person installed it from, at
  * the scope it was installed at, in the background, and says to start a new chat in a minute (plugins load when a
  * chat starts). A mmo the person switched off is "off", never "too-old", so it is never overruled; nothing else is

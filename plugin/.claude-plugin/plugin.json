@@ -1,6 +1,6 @@
 {
   "name": "mmo",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "Multi-Model Orchestrator plugin for Claude Code. Reads a project brief and routes SDLC phases to configured models per policy.",
   "author": { "name": "Tilicho Labs" },
   "license": "MIT",

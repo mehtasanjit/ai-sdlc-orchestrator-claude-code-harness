@@ -1,0 +1,22 @@
+#!/bin/sh
+# A stand-in for Claude Code's `claude` program, for running the tests on a computer without Claude Code (GitHub's
+# test runner). Zero-touch and the setup check only look for the program and read its version and its help (the
+# flags a new-app run needs); no test asks it to run a model, so anything else is refused.
+case "$1" in
+  --version|-v) echo "2.1.999 (Claude Code stand-in for tests)" ;;
+  --help|-h) cat <<'HELP'
+Usage: claude [options] [command] [prompt]
+
+Options:
+  -p, --print                          Print the response and exit
+  --model <model>                      Model for the session
+  --output-format <format>             Output format
+  --tools <tools...>                   Tools the model may use
+  --append-system-prompt-file <file>   Append a file to the system prompt
+  --effort <level>                     Reasoning effort
+  --strict-mcp-config                  Use only the given MCP servers
+  --no-session-persistence             Do not save the session
+HELP
+  ;;
+  *) echo "claude stand-in: the tests never run a model" >&2; exit 1 ;;
+esac

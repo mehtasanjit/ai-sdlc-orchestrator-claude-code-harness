@@ -35,10 +35,10 @@ const HOOK = join(ZT, "hooks", "settings.sh");
 const M = await import(join(ZT, "scripts", "messages.mjs"));
 const B = await import(join(ZT, "scripts", "boxes.mjs"));
 const S = await import(join(ZT, "scripts", "settings.mjs"));
-const { writeGoogleLogin, writeZtSettings, ztData, fakeClaudeBin } = await import(join(ROOT, "tools", "test", "lib", "chat-start.mjs"));
+const { writeGoogleLogin, writeZtSettings, ztData, fakeClaudeBin, OFFLINE_GCLOUD_BIN } = await import(join(ROOT, "tools", "test", "lib", "chat-start.mjs"));
 const { chatMode } = await import(join(ROOT, "plugin", "scripts", "ambient", "lib", "chat-mode.mjs"));
 // A stand-in `claude` first: a real install has the command, and the setup check says when it is missing.
-const BASE_PATH = `${fakeClaudeBin()}:${dirname(process.execPath)}:/usr/bin:/bin`;
+const BASE_PATH = `${fakeClaudeBin()}:${OFFLINE_GCLOUD_BIN}:${dirname(process.execPath)}:/usr/bin:/bin`;
 const DESKTOP = "claude-desktop";
 
 function sandbox({ settings = { mode: "workflows" }, google = true } = {}) {

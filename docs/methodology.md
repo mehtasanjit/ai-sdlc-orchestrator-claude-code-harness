@@ -248,9 +248,9 @@ Under `--auth=estimated`, the orchestrator subagent prices its own in-session es
 
 What each plugin version changed about how the numbers are produced. A dispatched event's `cost_usd` is stamped at dispatch and keeps the rules of the version that ran it. The orchestrator figure is rewritten each time the collector runs, so re-running the current collector over an older pass applies the current rules to that figure.
 
-### v0.8.5
+### v0.8.6
 
-0.8.5 adds **zero-touch** ([ambient-mode.md](ambient-mode.md)). A typed `/mmo:` command changes only in the rows under **What changes for a typed run**. No dispatched event is priced differently.
+0.8.6 adds **zero-touch** ([ambient-mode.md](ambient-mode.md)). A typed `/mmo:` command changes only in the rows under **What changes for a typed run**. No dispatched event is priced differently.
 
 Zero-touch is switched by its own plugin, `zero-touch`, listed beside `mmo` in the same marketplace. That plugin holds the settings box and the chat's start, in five hooks of its own. The person chooses the mode (Workflows, Hand-off or Off) and the models in Claude Code's own question box, in the chat, in the desktop app and the terminal alike: no file to edit, no command to type. The choices are kept in the plugin's own data folder (`${CLAUDE_PLUGIN_DATA}/settings.json`, deleted with the plugin). At each new chat's start (a new chat, `/clear`, a fork) the start hook marks the chat with them, and the chat keeps them for its whole life; a change reaches new chats. Everything else zero-touch does is sixteen more hooks the zero-touch plugin registers, whose code sits in `mmo`'s folder (`plugin/scripts/ambient/`) behind one shell shim, which returns before `node` starts in a chat the zero-touch plugin did not mark; without the zero-touch plugin none of them exists.
 
