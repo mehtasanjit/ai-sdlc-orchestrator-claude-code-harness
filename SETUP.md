@@ -94,11 +94,12 @@ applies to new chats. Enabled, every new chat has zero-touch in the chosen mode;
 typed `/mmo:` commands), and do not tell them about refresh or update commands, API keys or setup checks (run step 1's
 refresh yourself when it is needed; just never hand the person a command): zero-touch's
 first chat checks what its settings need and says exactly what is missing, in plain words. Then reply with exactly
-these three lines and nothing else (no list of installed plugins, no modes, no notes about other plugins):
+these four lines and nothing else (no list of installed plugins, no modes, no notes about other plugins):
 
 > Zero-touch is installed.
 > Start a new chat: plugins load when a chat starts.
 > That chat will ask you how zero-touch should work.
+> The guide, with what to type and what you'll see: https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/blob/develop/docs/zero-touch-guide.md
 
 ## 3. Check the install
 

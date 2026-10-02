@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.8.6-blue)](.claude-plugin/marketplace.json)
+[![Version](https://img.shields.io/badge/version-0.8.7-blue)](.claude-plugin/marketplace.json)
 
 ![How the plugin works — you paste two prompts, an orchestrator routes premium work to Claude Opus and mechanical work to Gemini Flash, and your project gets both generated code and a full audit trail](docs/assets/hero.svg)
 
@@ -218,7 +218,7 @@ Both check the install, show which model each phase will run on, confirm the pla
 
 Thirteen commands, split by purpose. All are declared in [plugin/commands/](plugin/commands/) with the same descriptions shown here.
 
-[Zero-touch](docs/ambient-mode.md) is a separate, optional plugin in the same marketplace, with two modes and an Off setting, chosen in the chat: the first chat after install asks in Claude's question box, and `change zero-touch settings` opens the same box later (a choice applies to new chats). **Workflow mode** (the default) starts the right workflow from a plain request, with no command typed, on the models the person picked; any message that is not one of the eight jobs stays an ordinary chat. **Hand-off mode** leaves the development to the chat's own model and hands new docs, specs, plans, tests and one change repeated across files to the model the person picked for each kind of work, checked by code before anything reaches the project. A project's own `routing-policy.yaml` is not used by zero-touch. Install `zero-touch` to switch it on and disable it to switch it off; with it off, no zero-touch hook acts.
+[Zero-touch](docs/ambient-mode.md) is a separate, optional plugin in the same marketplace, with two modes and an Off setting, chosen in the chat: the first chat after install asks in Claude's question box, and `change zero-touch settings` opens the same box later (a choice applies to new chats). **Workflow mode** (the default) starts the right workflow from a plain request, with no command typed, on the models the person picked; any message that is not one of the eight jobs stays an ordinary chat. **Hand-off mode** leaves the development to the chat's own model and hands new docs, specs, plans, tests and one change repeated across files to the model the person picked for each kind of work, checked by code before anything reaches the project. A project's own `routing-policy.yaml` is not used by zero-touch. Install `zero-touch` to switch it on and disable it to switch it off; with it off, no zero-touch hook acts. New to it? Start with the [zero-touch guide](docs/zero-touch-guide.md): install, settings, both modes and five scenarios to try, in plain words.
 
 ### Run the pipeline
 
@@ -330,6 +330,7 @@ node tools/setup.mjs
 - [docs/methodology.md](docs/methodology.md) — how tokens and costs are recorded
 - [docs/two-gemini-paths.md](docs/two-gemini-paths.md) — measured comparison of the two doors on the same brief
 - [docs/brownfield-routing.md](docs/brownfield-routing.md) — which model does which work
+- [docs/zero-touch-guide.md](docs/zero-touch-guide.md) — zero-touch in plain words, for anyone: install, settings, both modes, five scenarios to try, and what runs at each step
 - [docs/ambient-mode.md](docs/ambient-mode.md) — zero-touch (its own plugin, `zero-touch`: enable it to switch it on). Workflow mode: a plain-words request starts its `/mmo:` workflow, no command typed. Hand-off mode: the chat's own model develops, and docs, tests and repeated edits go to the policy's typing model
 - [docs/walkthroughs/](docs/walkthroughs/) — the two Gemini paths, frame by frame ([model](docs/walkthroughs/model-path.html), [agent](docs/walkthroughs/agent-path.html))
 - [examples/unit-convert/](examples/unit-convert/) — one endpoint, one conversion, minutes to run

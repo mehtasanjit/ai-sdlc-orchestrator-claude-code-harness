@@ -242,7 +242,7 @@ not answer on their behalf.
 
 # 7. Close out
 
-After the orchestrator emits the final report:
+After the orchestrator emits the final report and Gate 4 is accepted (its answer logged):
 
 1. Append a row to `.sdlc/ledger.md` (human-readable) and `.sdlc/ledger.json` (machine mirror).
 2. Update `.sdlc/CLAUDE-SDLC.md` with the latest project fingerprint + a link to the ledger.

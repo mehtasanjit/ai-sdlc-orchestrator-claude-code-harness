@@ -248,6 +248,10 @@ Under `--auth=estimated`, the orchestrator subagent prices its own in-session es
 
 What each plugin version changed about how the numbers are produced. A dispatched event's `cost_usd` is stamped at dispatch and keeps the rules of the version that ran it. The orchestrator figure is rewritten each time the collector runs, so re-running the current collector over an older pass applies the current rules to that figure.
 
+### v0.8.7
+
+0.8.7 changes no number. A brownfield write contract now binds only its own run, while that run is live by its own log: once the log shows an abort, a failure, or Gate 4 accepted, it binds nothing ([brownfield-write-contract.md](brownfield-write-contract.md)). While the run is live, its contract and its log are refused to `Write` and `Edit`. Before, the close-out could not switch the contract off, so after a normal finish it kept refusing every edit outside that run's allowlist in the project, the next run's included. Zero-touch changes only its first chat's welcome, which now gives the address of the [zero-touch guide](zero-touch-guide.md).
+
 ### v0.8.6
 
 0.8.6 adds **zero-touch** ([ambient-mode.md](ambient-mode.md)). A typed `/mmo:` command changes only in the rows under **What changes for a typed run**. No dispatched event is priced differently.

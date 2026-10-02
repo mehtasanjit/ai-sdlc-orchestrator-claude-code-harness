@@ -143,7 +143,7 @@ Recorded on the same brief: model path 43k / 34k tokens for $0.84 wall-clock 28 
 |---|---|---|
 | `/mmo:brownfield` refuses on a non-git folder | Brownfield requires a git repo — the write-contract and revert both need commit-level state. | `git init` first, or use `/mmo:greenfield` on an empty folder for greenfield. |
 | Gate 0 shows constant off-limits paths you did not add | Setup wrote `off_limits_default` (`.env*`, `.mcp.json`, `node_modules/**`, etc.) to `.sdlc/project.json`. Gate 0 merges them with per-run additions before showing you the full list. | Expected. Edit `.sdlc/project.json.off_limits_default` if the project-wide default itself is wrong. |
-| A write-contract PreToolUse hook blocked an expected write | A path outside the allowlist, or a path in off-limits. Hook is HARD-BLOCK by default. | Add the path at Gate 0's File-scope question, or re-run with `--strict-write=off` to downgrade to WARN (defeats the safety guarantee). |
+| A write-contract PreToolUse hook blocked an expected write | A path outside the allowlist, or a path in off-limits, while that contract's run is live (a finished run's contract binds nothing). Hook is HARD-BLOCK by default. | Add the path at Gate 0's File-scope question, or re-run with `--strict-write=off` to downgrade to WARN (defeats the safety guarantee). |
 | Want to undo the last brownfield run | Every brownfield run writes `provenance.json` under `.sdlc/runs/<run-id>/`. | `/mmo:revert` (interactive picker) or `/mmo:revert <run-id>`. |
 
 ## Repair after `/plugin update`

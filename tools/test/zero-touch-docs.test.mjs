@@ -46,13 +46,18 @@ function handoffTools() {
 
 const WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen"];
 
-/** The one zero-touch note: the version notes' section for the plugin's own version. */
+/**
+ * The version note that introduced zero-touch: the one "### v…" section of docs/methodology.md that says it "adds
+ * **zero-touch**". A later release keeps it where it is and adds its own section, so this finds it by what it says,
+ * not by the current version (which must still have a section of its own).
+ */
 function zeroTouchNote() {
   const version = JSON.parse(read("plugin", ".claude-plugin", "plugin.json")).version;
-  const start = NOTES.indexOf(`### v${version}\n`);
-  assert.ok(start >= 0, `docs/methodology.md has a "### v${version}" section`);
-  const next = NOTES.indexOf("\n### v", start + 1);
-  return NOTES.slice(start, next < 0 ? undefined : next);
+  assert.ok(NOTES.includes(`### v${version}\n`), `docs/methodology.md has a "### v${version}" section`);
+  const sections = NOTES.split(/\n(?=### v)/).filter((s) => s.startsWith("### v"));
+  const notes = sections.filter((s) => /^\d+\.\d+\.\d+ adds \*\*zero-touch\*\*/m.test(s));
+  assert.equal(notes.length, 1, "one version note introduces zero-touch");
+  return notes[0];
 }
 
 test("every document that counts zero-touch's hooks states the number hooks.json registers", () => {
@@ -65,7 +70,7 @@ test("every document that counts zero-touch's hooks states the number hooks.json
   const rows = [...table.matchAll(/^\| `([a-z-]+)` \|/gm)].map((m) => m[1]);
   assert.deepEqual(rows.slice().sort(), hooks.slice().sort(), "the manual's hook table lists exactly the registered hooks");
   // Every other count in the documents: "zero-touch's <number> ... hooks", "<number> zero-touch hooks".
-  for (const [name, text] of [["docs/repo-guide.md", GUIDE], ["docs/methodology.md", zeroTouchNote()], ["docs/ambient-mode.md", MANUAL], ["zero-touch/README.md", read("zero-touch", "README.md")]]) {
+  for (const [name, text] of [["docs/repo-guide.md", GUIDE], ["docs/methodology.md", NOTES], ["docs/ambient-mode.md", MANUAL], ["zero-touch/README.md", read("zero-touch", "README.md")]]) {
     for (const m of text.matchAll(/\b(?:zero-touch's (\w+)(?: \w+)? hooks|(\w+) zero-touch hooks)\b/gi)) {
       const stated = (m[1] ?? m[2]).toLowerCase();
       if (!WORDS.includes(stated) && !/^\d+$/.test(stated)) continue; // "its own zero-touch hooks": no number
@@ -108,7 +113,7 @@ test("the documents' settings table is the shipped settings file, and the settin
   assert.ok(MANUAL.includes("`" + DEFAULTS.handoff.chat_model + "`"), "the manual names the standard chat model");
 });
 
-test("the version notes hold one zero-touch note, under the plugin's version, and it covers both modes", () => {
+test("the version notes hold one note that introduced zero-touch, every version has its own section, and the note covers both modes", () => {
   const note = zeroTouchNote();
   // Builds that were never released have no section of their own.
   for (const old of ["v0.8.0", "v0.8.1", "v0.8.2", "v0.8.3"]) {
@@ -170,13 +175,15 @@ test("no document finds the installed plugin by sorting cache folders", () => {
   }
 });
 
-// A zero-touch install ends with "start a new chat": the setup guide Claude follows for an install tells the person
-// nothing about an unset API key or a marketplace refresh command.
-test("the setup guide ends a zero-touch install at 'start a new chat', with no commands or setup checks for the person", () => {
+// A zero-touch install ends with "start a new chat" and the guide's address: the setup guide Claude follows for an
+// install tells the person nothing about an unset API key or a marketplace refresh command. The address is the one the
+// first chat's welcome shows (zero-touch/scripts/messages.mjs GUIDE_URL).
+test("the setup guide ends a zero-touch install at 'start a new chat', with no commands or setup checks for the person", async () => {
   const setup = read("SETUP.md");
+  const { GUIDE_URL } = await import(join(ROOT, "zero-touch", "scripts", "messages.mjs"));
   assert.match(setup, /When the person asked to install zero-touch, the install ends here\./);
   assert.match(setup, /Do not run steps 3 to 6/);
-  // The exact three lines, and nothing else.
-  assert.match(setup, /reply with exactly\s+these three lines and nothing else/);
-  assert.match(setup, /> Zero-touch is installed\.\n> Start a new chat: plugins load when a chat starts\.\n> That chat will ask you how zero-touch should work\./);
+  // The exact four lines, and nothing else.
+  assert.match(setup, /reply with exactly\s+these four lines and nothing else/);
+  assert.ok(setup.includes(`> Zero-touch is installed.\n> Start a new chat: plugins load when a chat starts.\n> That chat will ask you how zero-touch should work.\n> The guide, with what to type and what you'll see: ${GUIDE_URL}`));
 });

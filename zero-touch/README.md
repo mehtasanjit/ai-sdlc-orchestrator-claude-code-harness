@@ -62,4 +62,5 @@ says to start a new one in a minute). Then start a new chat: plugins load when a
 - **Needs:** the `mmo` plugin (declared as a dependency) and Node.js 20 or newer. Without it, zero-touch says so once
   per chat and Claude works as normal.
 
+In plain words, with five scenarios to try: [docs/zero-touch-guide.md](../docs/zero-touch-guide.md).
 How it works and what it stores: [docs/ambient-mode.md](../docs/ambient-mode.md).

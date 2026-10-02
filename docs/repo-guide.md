@@ -1,6 +1,6 @@
 # Repo guide
 
-This repository holds `mmo` (Multi-Model Orchestrator) v0.8.6 — a Claude Code plugin that runs a
+This repository holds `mmo` (Multi-Model Orchestrator) v0.8.7 — a Claude Code plugin that runs a
 full software-delivery pipeline against a brief (requirements → design → code → senior review →
 tests → security review), routes each phase to the model that fits it, and records what each phase
 cost — plus the harness, tests and documentation that ship it.
@@ -96,7 +96,7 @@ npm test
 ```
 
 `npm test` expands to `node --test --import ./tools/test/lib/stand-ins.mjs tools/test/*.test.mjs && node tools/test-mcp.mjs`.
-The 17 files under `tools/test/` cover setup, command wiring, the write-contract hook, logging, reporting and
+The files under `tools/test/` cover setup, command wiring, the write-contract hook, logging, reporting and
 the writing style. The suite is offline — no API key, no network call, no cost.
 
 The root tests are offline and do not depend on what the computer has installed. `tools/test/lib/stand-ins.mjs`,

@@ -13,6 +13,20 @@
  * The orchestrator writes/updates this file after Gate 0 approval and
  * clears it (sets active:false) when the run closes. See plan §4 / §26.
  *
+ * A contract binds its own run, and only while that run is live:
+ *   - Once the run has ended by its own log (lib/run-log.mjs: an abort, a failed
+ *     run, or a completed run whose Gate 4 is accepted), the contract binds
+ *     nothing, exactly as if it were switched off. The brownfield guide's
+ *     close-out comes after Gate 4 is accepted, so its records and the switch-off
+ *     go through; and a contract never switched off no longer holds the project.
+ *     Before this, the close-out was refused (it writes under the off-limits
+ *     `.sdlc/**`), and the contract kept refusing every edit outside the finished
+ *     run's allowlist, in every chat, the next run's Gate 0 included.
+ *   - While the run is live, the contract file and the run's own log
+ *     (.sdlc/runs/<run-id>/orchestrator.log, written only by mmo-log.mjs) are
+ *     refused to Write and Edit whatever the allowlist says: the run must not
+ *     widen its own contract, switch it off, or log its own end by hand.
+ *
  * Fail-safe philosophy: any bug in this hook must NOT block user work.
  * Parse failures, missing fields, unresolvable paths — all allow. The
  * only denials are on known off-limits or non-allowlist matches when the
@@ -31,6 +45,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { HARDCODED_OFF_LIMITS } from "./lib/off-limits.mjs";
 import { log } from "./lib/log.mjs";
+import { runEnded } from "./lib/run-log.mjs";
 
 const CONTRACT_REL_PATH = ".sdlc/local/write-contract.json";
 
@@ -175,6 +190,26 @@ function readContractSafe(path) {
   }
 }
 
+/** The project a contract file belongs to: <root>/.sdlc/local/write-contract.json. */
+const contractRoot = (contractPath) => resolve(contractPath, "..", "..", "..");
+
+/** Whether a parsed contract binds writes now: it is active, and its run has not ended by its own log. */
+function binds(contract, contractPath) {
+  return !!contract && contract.active === true && !runEnded(contractRoot(contractPath), contract.run_id);
+}
+
+/**
+ * Whether `rel` is the contract file or the run's own log (or a rotated piece of it), which a live run may not
+ * Write or Edit. Compared without case: on a case-insensitive disk `.SDLC/...` is the same file.
+ */
+function guardsTheRun(rel, runId) {
+  const r = rel.toLowerCase();
+  if (r === CONTRACT_REL_PATH) return true;
+  if (typeof runId !== "string" || !runId) return false;
+  const runLog = `.sdlc/runs/${runId.toLowerCase()}/orchestrator.log`;
+  return r === runLog || r.startsWith(`${runLog}.`);
+}
+
 function allow(msg, ctx = {}) {
   if (msg && process.env.MMO_DEBUG === "1") {
     console.error(`[mmo-brownfield write-contract] ALLOW: ${msg}`);
@@ -226,8 +261,8 @@ async function main() {
   // target-anchored lookup would say. Closes the SiteNotes shape:
   // session cwd=repoA, target=absolute path in repoB, old code found repoA's
   // contract and mislabeled the escape as "not in allowlist."
-  if (cwdContract && cwdContract.active === true) {
-    const cwdRepoRoot = resolve(cwdContractPath, "..", "..", "..");
+  if (binds(cwdContract, cwdContractPath)) {
+    const cwdRepoRoot = contractRoot(cwdContractPath);
     if (insidePath(cwdRepoRoot, absTarget) === null) {
       const targetContract = findContractPath(dirname(absTarget));
       deny(
@@ -284,12 +319,31 @@ async function main() {
   if (!contract || contract.active !== true) {
     allow("contract not active");
   }
+  if (!binds(contract, contractPath)) {
+    allow(`the contract's run ${contract.run_id} has ended; its contract binds nothing`, { runId: contract.run_id });
+  }
 
   // The upfront cwd-anchored escape check has already fired if the target
   // resolves outside cwd's contract. If we reach here with a contract, either
   // it's the same as cwd's (and target is inside it) or it's target-anchored
   // (and target is by definition inside it). `escapes` cannot be true here.
   const { rel } = toRepoRelative(target, contractPath);
+
+  // The contract and the run's own log decide what this run may write and when it is over: while the run is live,
+  // neither is the run's to Write or Edit, whatever the allowlist and its own folder's carve-out below say.
+  if (guardsTheRun(rel, contract.run_id)) {
+    if (contract.strict === false) {
+      console.error(
+        `[mmo-brownfield write-contract] WARN: ${rel} is the run's own contract or log. Allowed because contract.strict = false.`
+      );
+      allow("contract or run log, but strict=false", { runId: contract.run_id, path: rel });
+    }
+    deny(
+      `${rel} is the run's own write contract or log (run ${contract.run_id ?? "?"}), which a live run may not ` +
+      `change: the contract is switched off by the run's end, and the log is written by mmo-log.mjs only.`,
+      { runId: contract.run_id, path: rel, matchedRule: rel, strict: contract.strict }
+    );
+  }
 
   // The run's own output directory is auto-allowlisted (agents/orchestrator.md
   // requires direct-tier artifacts to land under `.sdlc/runs/<run-id>/`).

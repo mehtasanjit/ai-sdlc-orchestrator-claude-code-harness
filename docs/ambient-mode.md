@@ -1,5 +1,7 @@
 # Zero-touch — workflows from plain words, and hand-off mode
 
+> This is the full reference. For zero-touch in plain words, with five scenarios to try, see the [zero-touch guide](zero-touch-guide.md).
+
 Zero-touch is the part of the plugin that works while you chat with Claude Code as usual. It is switched by its own plugin, **`zero-touch`**, listed beside `mmo` in the same marketplace: install and enable it and new chats have zero-touch; disable it and no chat has any (zero-touch's workflow and hand-off hooks are registered by the zero-touch plugin itself, so Claude Code does not run them for a disabled plugin). Without it no zero-touch hook acts, and the `mmo` plugin runs its `/mmo:` commands and nothing else.
 
 It has two modes, and an Off setting, all chosen in the chat (below):

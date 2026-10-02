@@ -17,6 +17,13 @@ const JOBS = "build a new app, fix a bug, add to a feature, build a new feature,
 
 // ─── Start messages ──────────────────────────────────────────────────────
 
+/**
+ * The plain-language guide (docs/zero-touch-guide.md), on the branch zero-touch installs from: installing a plugin
+ * copies only its own folder, so the welcome is where every new user is shown where it is.
+ * tools/test/zero-touch-guide-link.test.mjs checks the file is there.
+ */
+export const GUIDE_URL = "https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/blob/develop/docs/zero-touch-guide.md";
+
 /** The first chat after install, nothing chosen yet. */
 export function welcomeMessage() {
   return [
@@ -25,6 +32,7 @@ export function welcomeMessage() {
     "Welcome to zero-touch. It lets Claude give parts of the work to other AI models you choose, with no special commands to learn.",
     "Before Claude answers your first message, it will ask you a few quick questions: how zero-touch should work, and which AI models to use. Your answers apply straight away, starting with this chat.",
     `You can change them at any time: type "${CHANGE}".`,
+    `The guide, with what to type and what you'll see: ${GUIDE_URL}`,
   ].join("\n");
 }
 
@@ -402,7 +410,7 @@ export function settingsNote(box) {
  * What Claude writes before the first box where the person may not see zero-touch's welcome (the desktop app shows it
  * only as a collapsed notice): the box alone, right after their first message, would come out of nowhere.
  */
-export const WELCOME_SAY = `Welcome to zero-touch. Before I answer, please choose how it should work. You can change this at any time by typing "${CHANGE}".`;
+export const WELCOME_SAY = `Welcome to zero-touch. Before I answer, please choose how it should work. You can change this at any time by typing "${CHANGE}". The guide, with what to type and what you'll see: ${GUIDE_URL}`;
 
 /** The first chat after install: the box comes before anything else. `say`: Claude writes WELCOME_SAY first. */
 export function firstRunNote(box, { say = false } = {}) {
