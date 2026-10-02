@@ -478,13 +478,15 @@ export function buildPackets(plan, opts) {
     const isTest = phase === "tests";
     const n = ++counters[isTest ? "tests" : "codegen"];
     const id = `tp_${isTest ? "tests" : "codegen"}_${String(n).padStart(3, "0")}`;
+    // The plan is the run's record, read by every packet: "stable" in a slice's reason puts it in the cached system
+    // block (BuiltinAnthropicAdapter isStableInput), as orchestrator.md rule 6 marks a stable input.
     const inputs = [
-      { path: planPath, section: u.heading, reason: "unit spec" },
+      { path: planPath, section: u.heading, reason: "unit spec (stable run record)" },
     ];
-    if (plan.houseStyle) inputs.push({ path: planPath, section: HOUSE_STYLE, reason: "house style" });
+    if (plan.houseStyle) inputs.push({ path: planPath, section: HOUSE_STYLE, reason: "house style (stable run record)" });
     for (const d of depends.slice(0, MAX_DEP_SECTIONS)) {
       const dep = plan.units.find((x) => x.id === d);
-      if (dep && dep.id !== u.id) inputs.push({ path: planPath, section: dep.heading, reason: "dependency spec (its path and Exports)" });
+      if (dep && dep.id !== u.id) inputs.push({ path: planPath, section: dep.heading, reason: "dependency spec, its path and Exports (stable run record)" });
     }
 
     const errorsBefore = errors.length;

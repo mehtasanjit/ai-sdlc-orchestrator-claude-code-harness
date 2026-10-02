@@ -412,3 +412,16 @@ test("T10 AntigravityWorkerAdapter: a wrong block is ignored with a warning; an 
   assert.equal(refused38.out.success, false);
   assert.match(refused38.out.error, /no price period for gemini-3\.8-flash on 2026-09-01/);
 });
+
+test("a leaf's reasoning tier reaches Gemini as thinkingLevel; typing jobs run with little thinking", async () => {
+  // With no thinking setting sent, the model's own reasoning tokens (billed at the output rate) make whole-test-file
+  // jobs take minutes and cost several cents each.
+  const door = { name: "AI Studio", env: { GEMINI_API_KEY: "unit-test-key" }, backend: "api-key" };
+  const base = { id: "flash-completion", adapter: "mcp:model-dispatch", model_name: "gemini-3.8-flash", pricing: { input: 0.75, input_cached: 0.075, output: 3.75 }, max_output_tokens_absolute: 32768 };
+  const low = await flashRun({ ...base, reasoning: { tier: "low" } }, door);
+  assert.deepEqual(low.calls[0].generationConfig.thinkingConfig, { thinkingLevel: "low" });
+  const high = await flashRun({ ...base, reasoning: { tier: "high" } }, door);
+  assert.deepEqual(high.calls[0].generationConfig.thinkingConfig, { thinkingLevel: "high" });
+  const none = await flashRun(base, door);
+  assert.equal(none.calls[0].generationConfig.thinkingConfig, undefined, "no setting: the vendor's default, as before");
+});

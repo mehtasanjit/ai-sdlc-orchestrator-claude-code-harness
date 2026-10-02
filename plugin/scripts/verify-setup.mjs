@@ -16,7 +16,7 @@
  *   ...--user                              machine-wide instead of this folder
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -201,11 +201,18 @@ export function hasGeminiCredentials({ env = {}, vertex = null } = {}) {
   return Boolean(env.GEMINI_API_KEY || vertex?.state === "credential");
 }
 
-/** The three paths that decide whether the MCP dispatch path is real. */
+/**
+ * The paths that decide whether the MCP dispatch path is real. The plugin ships its server and the code its scripts
+ * load as pre-built, committed bundles (bundle/server.mjs, bundle/lib.mjs: see
+ * mcp/model-dispatch/scripts/bundle.mjs), so a GitHub install needs nothing installed or built; dist/ and
+ * node_modules/ matter only to a copy without them (a damaged install, or a clone being developed).
+ */
 export function mcpPaths(pluginRoot) {
   const serverDir = join(pluginRoot, "mcp", "model-dispatch");
   return {
     serverDir,
+    bundleEntry: join(serverDir, "bundle", "server.mjs"),
+    bundleLib: join(serverDir, "bundle", "lib.mjs"),
     distEntry: join(serverDir, "dist", "server.js"),
     nodeModules: join(serverDir, "node_modules"),
   };
@@ -335,6 +342,8 @@ export function evaluate({
   hasClaudeCli,
   hasNodeModules,
   hasDist,
+  /** Both pre-built bundles are present: the server and its scripts' code need nothing installed or built. */
+  hasBundle = false,
   hasAdcFile = false,
   env = {},
   /** vertexCredentialState result, or null to infer from `hasAdcFile`. */
@@ -361,7 +370,7 @@ export function evaluate({
     problems.push({
       id: "claude-cli",
       severity: "blocking",
-      message: "Claude Code CLI not found on PATH.",
+      message: "Claude Code CLI not found (not on PATH, and no copy from the Claude app).",
       fix: "npm install -g @anthropic-ai/claude-code",
     });
   }
@@ -384,8 +393,9 @@ export function evaluate({
     }
   }
 
-  // The two artifacts a fresh install never carries. --fix repairs both.
-  if (!hasNodeModules) {
+  // The two artifacts a copy without the pre-built bundles lacks. --fix repairs both (npm ci, then the build, which
+  // also writes the bundles). With the bundles there is nothing to repair.
+  if (!hasBundle && !hasNodeModules) {
     problems.push({
       id: "mcp-dependencies",
       severity: "blocking",
@@ -394,14 +404,17 @@ export function evaluate({
     });
   }
 
-  if (!hasDist) {
+  // The plugin manifest starts bundle/server.mjs, so a copy with only dist/ still cannot dispatch.
+  if (!hasBundle) {
     problems.push({
       id: "mcp-build",
       severity: "blocking",
       message:
-        "The bundled MCP server is not built — the plugin manifest points at dist/server.js, which does not exist. " +
-        "Model dispatch would fail partway through a run.",
-      fix: "Re-run this script with --fix (runs `npm run build` in the server directory).",
+        "The plugin's pre-built server (bundle/server.mjs and bundle/lib.mjs) is missing, so model dispatch would fail " +
+        "partway through a run, and the run-start check and hand-offs cannot load.",
+      fix:
+        "A plugin installed from its marketplace always has it: reinstall the plugin. In a clone, re-run this script " +
+        "with --fix (runs `npm ci` and `npm run build`, which writes the bundle).",
     });
   }
 
@@ -580,9 +593,29 @@ function onPath(cmd) {
   return spawnSync("which", [cmd], { encoding: "utf8" }).status === 0;
 }
 
+/**
+ * The `claude` program the model server runs (src/claudeCommand.ts findClaude, the same rule): the first on PATH, else
+ * the Claude app's newest copy on macOS, else null, so on a Mac with only the Claude app this check finds the copy the
+ * server runs. tools/test/zero-touch-readiness.test.mjs runs the three rules side by side.
+ */
+export function findClaude(env = process.env, platform = process.platform) {
+  const executable = (file) => { try { accessSync(file, constants.X_OK); return true; } catch { return false; } };
+  for (const dir of String(env.PATH ?? "").split(platform === "win32" ? ";" : ":")) if (dir && executable(join(dir, "claude"))) return join(dir, "claude");
+  if (platform !== "darwin") return null;
+  const base = join(env.HOME?.trim() || homedir(), "Library", "Application Support", "Claude", "claude-code");
+  let versions = [];
+  try { versions = readdirSync(base).filter((v) => /^\d+(\.\d+)*$/.test(v)); } catch { return null; }
+  versions.sort((a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (y[i] ?? 0) - (x[i] ?? 0); return 0; });
+  for (const v of versions) {
+    const file = join(base, v, "claude.app", "Contents", "MacOS", "claude");
+    if (executable(file)) return file;
+  }
+  return null;
+}
+
 /** `claude --help`, read as the server reads it (its standard output, a zero exit), for evaluate's claudeHelp. */
-function readClaudeHelp() {
-  const r = spawnSync("claude", ["--help"], { encoding: "utf8", timeout: 30_000 });
+function readClaudeHelp(claude = "claude") {
+  const r = spawnSync(claude, ["--help"], { encoding: "utf8", timeout: 30_000 });
   if (r.error) return { error: r.error.message };
   if (r.status !== 0) return { error: `exit ${r.status ?? r.signal}${r.stderr?.trim() ? `: ${r.stderr.trim().split("\n").pop()}` : ""}` };
   return { text: r.stdout ?? "" };
@@ -612,19 +645,21 @@ function observeAgentWorker(pluginRoot, env) {
  * wrote (settings files aren't read until the next Claude Code session).
  */
 function observe(pluginRoot, env = process.env) {
-  const { nodeModules, distEntry } = mcpPaths(pluginRoot);
+  const { nodeModules, distEntry, bundleEntry, bundleLib } = mcpPaths(pluginRoot);
   // Credential files are opened and read, not merely stat-ed — a truncated
   // key or a path to a deleted file passes existsSync and fails a real call.
   const realEnv = usableEnv(env);
   const adcFile = adcPath();
-  const hasClaudeCli = onPath("claude");
+  const claude = findClaude(env);
+  const hasClaudeCli = Boolean(claude);
   return {
     nodeMajor: nodeMajorFrom(process.versions.node),
     hasClaudeCli,
-    claudeHelp: hasClaudeCli ? readClaudeHelp() : null,
+    claudeHelp: claude ? readClaudeHelp(claude) : null,
     hasGcloud: onPath("gcloud"),
     hasNodeModules: existsSync(nodeModules),
     hasDist: existsSync(distEntry),
+    hasBundle: existsSync(bundleEntry) && existsSync(bundleLib),
     hasAdcFile: existsSync(adcFile),
     vertex: vertexCredentialState({
       env: realEnv,
@@ -828,7 +863,8 @@ export function withAgentSelection(settings, enabled) {
  */
 export function isBundledServerEntry(server) {
   const argv = Array.isArray(server?.args) ? server.args.join(" ") : "";
-  return argv.includes(join("model-dispatch", "dist", "server.js"));
+  // The pre-built bundle, or the compiled dist/ entry an existing .mcp.json may name.
+  return argv.includes(join("model-dispatch", "bundle", "server.mjs")) || argv.includes(join("model-dispatch", "dist", "server.js"));
 }
 
 /**

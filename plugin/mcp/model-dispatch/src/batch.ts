@@ -46,6 +46,8 @@ export interface BatchDeps {
   /** Runs one packet to its receipt; throws on a dispatch error the loop did not catch. */
   run: (packet: TaskPacket) => Promise<{ status: string; cost_usd?: number; attempts?: unknown[] } & Record<string, unknown>>;
   log: (level: "info" | "warn", event: string, fields: Record<string, unknown>) => void;
+  /** The request's own cancel signal: once the person stops the call, no packet starts and the waiting ones end "stopped". */
+  signal?: AbortSignal;
 }
 
 export function validateBatch(packets: TaskPacket[]): void {
@@ -69,7 +71,7 @@ export function validateBatch(packets: TaskPacket[]): void {
 }
 
 export async function runBatch(deps: BatchDeps): Promise<BatchResult> {
-  const { packets, maxParallel, run, log } = deps;
+  const { packets, maxParallel, run, log, signal } = deps;
   validateBatch(packets);
   const started = Date.now();
   const byId = new Map(packets.map((p) => [p.id, p]));
@@ -86,6 +88,12 @@ export async function runBatch(deps: BatchDeps): Promise<BatchResult> {
 
   await new Promise<void>((resolve, reject) => {
     const tick = () => {
+      if (signal?.aborted) {
+        for (const p of pending.splice(0)) {
+          done.set(p.id, { id: p.id, status: "stopped", artifact_path: p.artifact_path, cost_usd: 0, attempts: 0 });
+          log("info", "batch.stopped", { packet_id: p.id });
+        }
+      }
       // Settle packets whose dependency already failed.
       for (const p of [...pending]) {
         const b = blockedBy(p);

@@ -13,8 +13,11 @@ const tools = (name) =>
   new Set(readFileSync(join(AGENTS, `${name}.md`), "utf-8").match(/^tools:\s*(.*)$/m)[1].split(",").map((t) => t.trim()));
 
 const NEEDED = {
-  orchestrator: ["execute_stage", "finalize_spec", "execute_batch"],
+  orchestrator: ["execute_stage", "finalize_spec"],
   architect: ["submit_spec_section", "finalize_spec"],
+  // The copies brownfield feature runs use (tools/build-agent-copies.mjs): the originals' tools, and the batch.
+  "brownfield-orchestrator": ["execute_stage", "finalize_spec", "execute_batch"],
+  "brownfield-architect": ["submit_spec_section", "finalize_spec"],
 };
 
 for (const [agent, names] of Object.entries(NEEDED)) {
@@ -27,3 +30,8 @@ for (const [agent, names] of Object.entries(NEEDED)) {
     }
   });
 }
+
+test("greenfield's orchestrator is not given the brownfield batch tool: only the feature-run copy has it", () => {
+  const have = tools("orchestrator");
+  for (const prefix of ["mcp__model-dispatch__", "mcp__plugin_mmo_model-dispatch__"]) assert.ok(!have.has(prefix + "execute_batch"), prefix);
+});

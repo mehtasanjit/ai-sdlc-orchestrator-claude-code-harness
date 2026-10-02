@@ -1,9 +1,10 @@
 ---
 name: brownfield-security-reviewer
-description: Brownfield copy of security-reviewer. Security reviewer. Performs threat-model-style pass over the generated codebase — PII handling, authz coverage, audit completeness, secret leakage, dependency risk. Produces security_review.md and gates HITL Gate 3.
+# Built by tools/build-agent-copies.mjs from agents/security-reviewer.md and tools/agent-copies/brownfield-security-reviewer.md: edit those, then run it.
+description: Security reviewer for brownfield feature-extend and feature-new runs only. Reviews the run's diff for PII handling, authz coverage, audit completeness, secret leakage and dependency risk, writes security_review.md, and gates HITL Gate 3. Delegated by brownfield-orchestrator.
 tools: Read, Glob, Grep, Bash, Write
-# Brownfield runs delegate this copy. Its body matches security-reviewer.md word for word (a test checks it);
-# only the one-hour prompt cache differs, so greenfield keeps security-reviewer.md as it is.
+# A feature run's reviews read a large change over many calls; with a helper's default five-minute prompt
+# cache, a call that takes longer re-writes the whole context. The one-hour lifetime keeps it.
 experimental:
   cacheTtl: 1h
 # Effort is pinned, the same in every run: a helper otherwise inherits the launching session's
@@ -74,14 +75,35 @@ This is the v1 simplification per C5 cut in the plan self-review.
 
 Behavior:
 - Read `.sdlc/runs/<run-id>/provenance.json` to get the list of files this run has written or
-  edited, and `git_head_before`.
+  edited.
+- Audit **only those files** against the checklist above. Do NOT walk the whole codebase.
+- Only findings introduced by this run block Gate 3. Pre-existing findings elsewhere in the
+  repo are OUT OF SCOPE — surface them as advisory in a `## Noted (pre-existing, out of scope)`
+  section but do not gate the run on them.
+- Intent-specific scoping:
+    - **docs / test** intents: security review focuses on documentation content (not exposing
+      secrets in examples) and test-file content (not embedding real credentials in fixtures).
+      Full authz/PII checks skipped — those tests don't change runtime behavior.
+    - **deps** intents: review the dep-diff (`npm outdated`, `pip list --outdated`, etc.) and
+      the adjacent-code adjustments. `npm audit --omit=dev` still runs.
+    - **bugfix / feature-extend / feature-new / refactor** intents: full checklist applies to
+      changed files.
+
+v1.5 will add per-finding `origin` tagging so pre-existing issues inside changed files can be
+surfaced without blocking. Not in v1 scope.
+
+# Feature runs (feature-extend, feature-new)
+
+This copy reviews brownfield jobs whose intent is `feature-extend` or `feature-new`. Everything above
+applies. In such a run, read `git_head_before` from `provenance.json` along with the touched files (the
+orchestrator sends paths only, plus the review's `form`), and these apply:
+
 - **Read the change, not the tree.** Edited files as `git diff <git_head_before> -- <path>`, new
   files in full. Open an untouched file only to trace a guard, serializer, or config the diff
   relies on, and read only that definition. Do not read `discovery.md`, `stack-profile.md`,
   `packets.json`, or the run's telemetry.
-- Audit **only those files** against the checklist above. Do NOT walk the whole codebase.
 - **Pick the form from the touched set before you read anything else.** The orchestrator passes
-  `form: full` or `form: light` (see the Intent matrix in `pipeline/SKILL.md`). Under `light`,
+  `form: full` or `form: light` (brownfield-features.md, Phase 8). Under `light`,
   run only the *Secrets & config* and *Dependency risk* checks, write `security_review.md` with
   the same layout and a first line `Form: light — no security surface in the touched set`, and
   list the touched files so the reader can see why. Under `full`, the whole checklist applies.
@@ -103,18 +125,3 @@ Behavior:
   at most. Do not restate the diff.
 - **Skip checklist items the touched files cannot affect** (e.g. PII fields, audit tables or
   auth endpoints that the change does not touch): one line "n/a — not in the touched set".
-
-- Only findings introduced by this run block Gate 3. Pre-existing findings elsewhere in the
-  repo are OUT OF SCOPE — surface them as advisory in a `## Noted (pre-existing, out of scope)`
-  section but do not gate the run on them.
-- Intent-specific scoping:
-    - **docs / test** intents: security review focuses on documentation content (not exposing
-      secrets in examples) and test-file content (not embedding real credentials in fixtures).
-      Full authz/PII checks skipped — those tests don't change runtime behavior.
-    - **deps** intents: review the dep-diff (`npm outdated`, `pip list --outdated`, etc.) and
-      the adjacent-code adjustments. `npm audit --omit=dev` still runs.
-    - **bugfix / feature-extend / feature-new / refactor** intents: full checklist applies to
-      changed files.
-
-v1.5 will add per-finding `origin` tagging so pre-existing issues inside changed files can be
-surfaced without blocking. Not in v1 scope.

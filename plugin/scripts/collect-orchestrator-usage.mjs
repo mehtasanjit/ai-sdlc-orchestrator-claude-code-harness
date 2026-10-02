@@ -296,9 +296,9 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { deriveDriverModel, IN_SESSION_ADAPTERS } from "./driver-model-check.mjs";
+import { loadServerLib } from "./lib/server-lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DIST = join(HERE, "..", "mcp", "model-dispatch", "dist");
 
 /**
  * Slack for the APPROXIMATE anchors only (header, fact 5): a fallback start
@@ -1056,11 +1056,7 @@ export const manifestPolicyName = (manifest, events = []) =>
   manifest.policy_name ??
   dispatchedOnly(events).find((ev) => ev?.routing?.policy_name)?.routing?.policy_name;
 export const manifestPassId = (manifest, events = []) =>
-  manifest.run_id ??
-  manifest.pass ??
-  // Dispatched lines carry `pass`; lines the orchestrator logs by hand (single-model path) carry the
-  // TaskPacket spelling `pass_id`. Either names the run.
-  dispatchedOnly(events).map((ev) => ev?.pass ?? ev?.pass_id).find(Boolean);
+  manifest.run_id ?? manifest.pass ?? dispatchedOnly(events).find((ev) => ev?.pass)?.pass;
 
 function parseArgs(argv) {
   const args = {
@@ -1097,22 +1093,17 @@ function parseArgs(argv) {
 }
 
 async function loadDist() {
+  // The server's own modules, from the bundle the plugin ships (lib/server-lib.mjs: dist/ is not in a
+  // GitHub install). The dated price list and the override rule dispatch bills by come with them, so the
+  // orchestrator's messages are priced exactly as dispatched work is.
   try {
-    const policyMod = await import(pathToFileURL(join(DIST, "policy.js")).href);
-    const routingMod = await import(pathToFileURL(join(DIST, "routing.js")).href);
-    const pricingMod = await import(pathToFileURL(join(DIST, "pricing.js")).href);
-    const telemetryMod = await import(pathToFileURL(join(DIST, "telemetry.js")).href);
-    // The dated price list and the override rule dispatch bills by, so the
-    // orchestrator's messages are priced exactly as dispatched work is.
-    const pricesMod = await import(pathToFileURL(join(DIST, "prices.js")).href);
-    const effectiveMod = await import(pathToFileURL(join(DIST, "effectivePrice.js")).href);
-    return { policyMod, routingMod, pricingMod, telemetryMod, pricesMod, effectiveMod };
+    const lib = await loadServerLib();
+    return {
+      policyMod: lib.policy, routingMod: lib.routing, pricingMod: lib.pricing, telemetryMod: lib.telemetry,
+      pricesMod: lib.prices, effectiveMod: lib.effectivePrice,
+    };
   } catch (err) {
-    throw new Error(
-      `could not load the dispatch server's compiled modules from ${DIST} — the MCP ` +
-        `server is not built. Fix: node "${join(HERE, "verify-setup.mjs")}" --fix ` +
-        `--project-root "$(pwd)"  (original error: ${err.message})`
-    );
+    throw new Error(`could not load the dispatch server's modules: ${err.message}`);
   }
 }
 
@@ -1738,17 +1729,12 @@ export async function main(argv = process.argv.slice(2)) {
   const passDir = resolve(args.passDir);
   const manifestPath = join(passDir, "manifest.json");
   const telemetryPath = join(passDir, "telemetry.jsonl");
-  // A run whose work all happened in-session (single-model, auth_mode estimated)
-  // never calls the server, so nothing writes manifest.json (Run 29). Its
-  // telemetry.jsonl still carries every event, so start from an empty manifest
-  // and let the rebuild below derive the window from that call log.
-  const hadManifest = existsSync(manifestPath);
-  if (!hadManifest && !existsSync(telemetryPath)) {
-    throw new Error(`no manifest.json or telemetry.jsonl in ${passDir} — is this a run's pass directory?`);
+  if (!existsSync(manifestPath)) {
+    throw new Error(`no manifest.json in ${passDir} — is this a run's pass directory?`);
   }
   // First, and independent of the cost figures below: SUMMARY.md gets the acceptance stage's own table.
   if (!args.dryRun && writeAcceptanceSummary(passDir)) console.log("acceptance: SUMMARY.md carries the table the acceptance stage wrote (acceptance.md)");
-  const modelWritten = hadManifest ? JSON.parse(readFileSync(manifestPath, "utf-8")) : {};
+  const modelWritten = JSON.parse(readFileSync(manifestPath, "utf-8"));
   // The call log: machine-written, one line per dispatched call.
   const logEvents = readTelemetry(telemetryPath);
   const { policyMod, routingMod, pricingMod, telemetryMod, pricesMod, effectiveMod } = await loadDist();
@@ -1791,12 +1777,6 @@ export async function main(argv = process.argv.slice(2)) {
   // second (they each carry `pass` and `routing.policy_name`).
   const passIdRaw = manifestPassId(modelWritten, logEvents);
   const policyNameRaw = manifestPolicyName(modelWritten, logEvents);
-  if (!hadManifest) {
-    // Record the run's identity in the file this script creates; the rest is only the figures it books.
-    if (passIdRaw !== undefined && passIdRaw !== null && passIdRaw !== "") modelWritten.run_id = String(passIdRaw);
-    if (policyNameRaw !== undefined && policyNameRaw !== null && policyNameRaw !== "") modelWritten.policy = String(policyNameRaw);
-    console.log(`  no manifest.json — creating one from telemetry.jsonl (single-model / in-session run)`);
-  }
   if (windowUnreadable()) {
     if (passIdRaw === undefined || passIdRaw === null || passIdRaw === "") {
       throw new Error(

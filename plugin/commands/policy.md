@@ -7,7 +7,7 @@ Show or change the project's active model policy.
 
 **Arguments:** $ARGUMENTS
 
-Three shapes, one script (`plugin/scripts/setup-policy.mjs`) does all three:
+Three shapes, one script (`${CLAUDE_PLUGIN_ROOT}/scripts/setup-policy.mjs`) does all three:
 
 # Shape 1 — no args: print the current policy
 
@@ -49,7 +49,7 @@ and STOP. Do not proceed to 2b.
 node "${CLAUDE_PLUGIN_ROOT}/scripts/setup-policy.mjs" --list-json --project-root "$(pwd)"
 ```
 
-Parse the JSON — one entry per policy in `plugin/config/policies/`. Malformed YAMLs surface
+Parse the JSON — one entry per policy in `${CLAUDE_PLUGIN_ROOT}/config/policies/`. Malformed YAMLs surface
 as `{ name, error }` and should still appear in the picker (user can skip past them).
 
 ## 2c — Ask which policy
@@ -115,10 +115,10 @@ Parse the JSON.
 node "${CLAUDE_PLUGIN_ROOT}/scripts/setup-policy.mjs" --policy=<name> --project-root "$(pwd)"
 ```
 
-No browser. The script validates `<name>` against files in `plugin/config/policies/`, writes it to
+No browser. The script validates `<name>` against files in `${CLAUDE_PLUGIN_ROOT}/config/policies/`, writes it to
 `.sdlc/project.json.default_policy`, and exits. Fails if `<name>` doesn't exist on disk — offer
 `/mmo:policy change` to author it, or list the shipped presets (the `.yaml` filenames under
-`plugin/config/policies/` — read the directory rather than reciting names, so the list can
+`${CLAUDE_PLUGIN_ROOT}/config/policies/` — read the directory rather than reciting names, so the list can
 never go stale).
 
 # Notes

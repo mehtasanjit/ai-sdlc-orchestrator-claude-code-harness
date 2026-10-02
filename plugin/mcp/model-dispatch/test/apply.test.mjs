@@ -27,8 +27,12 @@ const {
   extractFileContent,
   provenanceScriptPath,
   runApplyLoop,
+  applyModelConfig,
+  readsSlicesFromDisk,
+  markRunRecordStable,
   spliceEdits,
   extractEdits,
+  hasActiveWriteContract,
 } = await import(join(DIST, "apply.js"));
 const offLimits = await import(join(HERE, "..", "..", "..", "scripts", "lib", "off-limits.mjs"));
 
@@ -107,14 +111,32 @@ test("checkWriteContract: hardcoded off-limits always apply; no contract otherwi
   rmSync(root, { recursive: true, force: true });
 });
 
-test("checkWriteContract: the run's own folder is writable under an active contract that bans .sdlc/**, other runs are not", () => {
+test("checkWriteContract: the contract's own run folder is writable under a contract that bans .sdlc/**; no other run's, whoever asks", () => {
+  // As the write-contract hook decides (plugin/scripts/write-contract-check.mjs): the run folder that may be written
+  // is the one named by the active contract's run_id, never one the caller names, so a packet cannot overwrite
+  // another run's provenance.json or report.
   const root = tmpRoot();
   mkdirSync(join(root, ".sdlc", "local"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "local", "write-contract.json"), JSON.stringify({ schema_version: 1, active: true, run_id: "r1", strict: true, allowlist: ["src/**"], off_limits: [".sdlc/**"] }));
+  assert.equal(checkWriteContract(root, ".sdlc/runs/r1/report.json").allowed, true);
+  assert.equal(checkWriteContract(root, ".sdlc/runs/r2/report.json").allowed, false);
+  assert.equal(checkWriteContract(root, ".sdlc/runs/r2/provenance.json", { runId: "r2" }).allowed, false, "a caller's own run id opens nothing");
+  assert.equal(checkWriteContract(root, ".sdlc/runs/r1/../../local/write-contract.json").allowed, false);
+  // A contract that names no run opens no run folder.
   writeFileSync(join(root, ".sdlc", "local", "write-contract.json"), JSON.stringify({ schema_version: 1, active: true, strict: true, allowlist: ["src/**"], off_limits: [".sdlc/**"] }));
-  assert.equal(checkWriteContract(root, ".sdlc/runs/r1/report.json").allowed, false);
-  assert.equal(checkWriteContract(root, ".sdlc/runs/r1/report.json", { runId: "r1" }).allowed, true);
-  assert.equal(checkWriteContract(root, ".sdlc/runs/r2/report.json", { runId: "r1" }).allowed, false);
-  assert.equal(checkWriteContract(root, ".sdlc/runs/r1/../../local/write-contract.json", { runId: "r1" }).allowed, false);
+  assert.equal(checkWriteContract(root, ".sdlc/runs/r1/report.json", { runId: "r1" }).allowed, false);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("checkWriteContract: a contract with strict false lets an off-limits or unlisted path through, as the hook does (--strict-write=off)", () => {
+  const root = tmpRoot();
+  mkdirSync(join(root, ".sdlc", "local"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "local", "write-contract.json"), JSON.stringify({ schema_version: 1, active: true, run_id: "r", strict: false, allowlist: ["src/**"], off_limits: ["dist/**"] }));
+  const off = checkWriteContract(root, "dist/x.js");
+  assert.equal(off.allowed, true);
+  assert.match(off.reason, /off-limits.*strict false/);
+  assert.equal(checkWriteContract(root, "docs/x.md").allowed, true);
+  assert.equal(checkWriteContract(root, ".env").allowed, false, "the always-off-limits list still applies");
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -133,6 +155,67 @@ test("checkWriteContract: an active strict contract enforces its allowlist and o
   assert.equal(checkWriteContract(root, "dist/x.js").allowed, false);
   writeFileSync(join(root, ".sdlc", "local", "write-contract.json"), JSON.stringify(contract(false)));
   assert.equal(checkWriteContract(root, "apps/web/src/x.ts").allowed, true);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// The hook's run-end rules (plugin/scripts/write-contract-check.mjs, lib/run-log.mjs), which the server's writer
+// follows: a contract binds its run only while the run is live by its own log, and a live run may not write its own
+// contract or log. The server keeps its own copy of the end rule (src/runLog.ts); these tests keep it the hook's.
+const hookRunLog = await import(join(HERE, "..", "..", "..", "scripts", "lib", "run-log.mjs"));
+const { formatLine } = await import(join(HERE, "..", "..", "..", "scripts", "lib", "log.mjs"));
+const RUN = "20261002-120000-feature-new-x";
+const LIVE_CONTRACT = { schema_version: 1, active: true, mode: "brownfield", run_id: RUN, strict: true, allowlist: ["src/**"], off_limits: [".env", ".sdlc/**"] };
+function contractedRoot(contract, events) {
+  const root = tmpRoot();
+  mkdirSync(join(root, ".sdlc", "local"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "local", "write-contract.json"), JSON.stringify(contract));
+  if (events) {
+    mkdirSync(join(root, ".sdlc", "runs", RUN), { recursive: true });
+    writeFileSync(join(root, ".sdlc", "runs", RUN, "orchestrator.log"), events.map(([e, f]) => formatLine("info", e, { run_id: RUN, ...f })).join("\n") + "\n");
+  }
+  return root;
+}
+const RUN_LOGS = [
+  ["no log", null, false],
+  ["Gate 4 accepted", [["run.start", {}], ["run.end", { outcome: "completed" }], ["gate.resolved", { gate: "gate-4", response: "approved" }]], true],
+  ["Gate 4 accept", [["run.start", {}], ["run.end", { outcome: "completed" }], ["gate.resolved", { gate: "gate-4", response: "accept" }]], true],
+  ["aborted at a gate", [["run.start", {}], ["gate.resolved", { gate: "gate-2", response: "abort" }]], true],
+  ["run.end failed", [["run.start", {}], ["run.end", { outcome: "failed" }]], true],
+  ["run.end aborted", [["run.start", {}], ["run.end", { outcome: "aborted" }]], true],
+  ["completed, Gate 4 open", [["run.start", {}], ["run.end", { outcome: "completed" }]], false],
+  ["Gate 4 sent back", [["run.start", {}], ["run.end", { outcome: "completed" }], ["gate.resolved", { gate: "gate-4", response: "Revise: tests" }]], false],
+  ["abort with no gate", [["run.start", {}], ["gate.resolved", { response: "abort" }]], false],
+  ["empty outcome", [["run.start", {}], ["run.end", { outcome: "" }], ["gate.resolved", { gate: "gate-4", response: "approved" }]], false],
+  ["ended, then started again", [["run.start", {}], ["gate.resolved", { gate: "gate-2", response: "abort" }], ["run.start", {}]], false],
+];
+
+for (const [name, events, ended] of RUN_LOGS) {
+  test(`checkWriteContract: a run whose log shows "${name}" ${ended ? "has ended: its contract binds nothing" : "is live: its contract binds"}, as the hook decides`, () => {
+    const root = contractedRoot(LIVE_CONTRACT, events);
+    assert.equal(hookRunLog.runEnded(root, RUN), ended, "the hook's rule");
+    assert.equal(checkWriteContract(root, "lib/other.ts").allowed, ended, "outside the allowlist");
+    assert.equal(checkWriteContract(root, "src/a.ts").allowed, true, "inside the allowlist either way");
+    rmSync(root, { recursive: true, force: true });
+  });
+}
+
+test("hasActiveWriteContract: a contract is in force only while its run is live, so the apply form is refused after the run has ended", () => {
+  const live = contractedRoot(LIVE_CONTRACT, [["run.start", {}]]);
+  const ended = contractedRoot(LIVE_CONTRACT, [["run.start", {}], ["run.end", { outcome: "completed" }], ["gate.resolved", { gate: "gate-4", response: "approved" }]]);
+  assert.equal(hasActiveWriteContract(live), true);
+  assert.equal(hasActiveWriteContract(ended), false, "an ended run's contract is not in force");
+  rmSync(live, { recursive: true, force: true }); rmSync(ended, { recursive: true, force: true });
+});
+
+test("checkWriteContract: a live run may not write its own contract or log, whatever its allowlist and off-limits say", () => {
+  const wide = { ...LIVE_CONTRACT, allowlist: ["**"], off_limits: [".env"] };
+  const root = contractedRoot(wide, [["run.start", {}]]);
+  for (const path of [".sdlc/local/write-contract.json", `.sdlc/runs/${RUN}/orchestrator.log`, `.sdlc/runs/${RUN}/orchestrator.log.1`, `.SDLC/runs/${RUN.toUpperCase()}/orchestrator.log`]) {
+    assert.equal(checkWriteContract(root, path).allowed, false, path);
+  }
+  assert.equal(checkWriteContract(root, `.sdlc/runs/${RUN}/report.md`).allowed, true, "the rest of the run's own folder");
+  writeFileSync(join(root, ".sdlc", "local", "write-contract.json"), JSON.stringify({ ...wide, strict: false }));
+  assert.equal(checkWriteContract(root, ".sdlc/local/write-contract.json").allowed, true, "strict false lets it through, as the hook does");
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -231,6 +314,50 @@ function stubModel(replies) {
 const flashUntil = (n) => (p) => ({ modelId: (p.retry_count ?? 0) >= n ? "opus" : "flash", reason: "policy", ruleIndex: 1 });
 const silent = () => {};
 
+test("applyModelConfig: an apply-form packet's Flash completion call thinks at low unless the policy's leaf sets a tier; nothing else changes", async () => {
+  const flash = { id: "flash-completion", adapter: "mcp:model-dispatch", model_name: "gemini-3.8-flash" };
+  assert.deepEqual(applyModelConfig(flash), { ...flash, reasoning: { tier: "low" } });
+  const { LEGACY_GEMINI_ADAPTER_ID } = await import(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "adapters", "index.js"));
+  assert.deepEqual(applyModelConfig({ ...flash, adapter: LEGACY_GEMINI_ADAPTER_ID }).reasoning, { tier: "low" }, "the legacy id builds the same adapter");
+  const set = { ...flash, reasoning: { tier: "medium" } };
+  assert.equal(applyModelConfig(set), set, "a tier the policy sets is kept");
+  const opus = { id: "opus", adapter: "builtin:anthropic", model_name: "claude-opus-5" };
+  assert.equal(applyModelConfig(opus), opus, "other models are left as the policy writes them");
+  const agent = { id: "flash-agsdk-worker", adapter: "antigravity-worker", model_name: "gemini-3.8-flash" };
+  assert.equal(applyModelConfig(agent), agent, "the agent door keeps its own setting");
+});
+
+test("readsSlicesFromDisk: a content-less slice is read from disk for a brownfield packet only; any other packet goes as develop sends it", () => {
+  const root = tmpRoot();
+  const slice = { path: "a.md", reason: "spec" };
+  const pk = (over = {}) => ({ id: "p", inputs: [slice], ...over });
+  assert.equal(readsSlicesFromDisk(pk({ intent: "feature-extend" }), null, root), true, "a packet naming its brownfield intent");
+  assert.equal(readsSlicesFromDisk(pk(), { write: true }, root), true, "an apply-form packet");
+  assert.equal(readsSlicesFromDisk(pk(), null, root), false, "a greenfield packet (no intent, no contract): as develop");
+  assert.equal(readsSlicesFromDisk(pk(), null, undefined), false, "and with no project folder at all");
+  assert.equal(readsSlicesFromDisk(pk({ intent: "bugfix", inputs: [{ ...slice, content: "x" }] }), null, root), false, "every slice has content: nothing to read");
+  mkdirSync(join(root, ".sdlc", "local"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "local", "write-contract.json"), JSON.stringify({ active: true, run_id: "r" }));
+  assert.equal(readsSlicesFromDisk(pk(), null, root), true, "a project whose brownfield write contract is active");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("markRunRecordStable: an apply-form packet's slices of the run's record files ride in the cached system block; nothing else changes", async () => {
+  const { isStableInput } = await import(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "adapters", "BuiltinAnthropicAdapter.js"));
+  const packet = { id: "p", inputs: [
+    { path: ".sdlc/runs/r1/intent_brief.md", reason: "brief" },
+    { path: ".sdlc/runs/r1/discovery.md", section: "Stack", reason: "repo facts" },
+    { path: ".sdlc/runs/r1/change_plan.md", reason: "unit spec (stable run record)" },
+    { path: ".sdlc/baseline/stack-profile.md", reason: "stack" },
+    { path: "src/a.ts", reason: "mirror" },
+  ] };
+  const out = markRunRecordStable(packet);
+  assert.deepEqual(out.inputs.map((s) => isStableInput(s)), [true, true, true, true, false]);
+  assert.equal(out.inputs[2].reason, "unit spec (stable run record)", "a slice already marked keeps its reason");
+  assert.equal(out.inputs[4].reason, "mirror");
+  assert.equal(packet.inputs[0].reason, "brief", "the packet it was given is not changed");
+});
+
 test("runApplyLoop: a verify failure is retried on the same model with the failure appended, then applied", async () => {
   const root = tmpRoot();
   const model = stubModel([{ path: "src/out.ts", content: "bad\n" }, { path: "src/out.ts", content: "good\n" }]);
@@ -249,6 +376,46 @@ test("runApplyLoop: a verify failure is retried on the same model with the failu
   assert.equal(out.events.length, 2, "events ride in the outcome when there is no telemetry file");
   assert.equal(out.events_written, 0);
   assert.ok(!JSON.stringify(out).includes("good\\n"), "the outcome never carries the file content");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("runApplyLoop: stopped by the person (the request's cancel signal): no attempt starts after the stop, and an answer that arrives after it is never written", async () => {
+  const root = tmpRoot();
+  const before = new AbortController();
+  before.abort();
+  const m1 = stubModel([{ path: "src/out.ts", content: "x\n" }]);
+  const o1 = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(2), dispatch: m1.dispatch, log: silent, signal: before.signal });
+  assert.equal(o1.status, "stopped");
+  assert.equal(m1.calls.length, 0, "nothing is dispatched after the stop");
+  const during = new AbortController();
+  const m2 = stubModel([{ path: "src/out.ts", content: "late\n" }]);
+  const o2 = await runApplyLoop({
+    packet: basePacket(), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(2), log: silent, signal: during.signal,
+    dispatch: async (p) => { const r = await m2.dispatch(p); during.abort(); return r; },
+  });
+  assert.equal(o2.status, "stopped");
+  assert.equal(m2.calls.length, 1);
+  assert.ok(!existsSync(join(root, "src", "out.ts")), "the answer that came back after the stop is not written");
+  assert.equal(o2.cost_usd, 0.001, "the attempt that ran is still counted");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("runApplyLoop: a packet that ends without its write leaves a provenance record that matches the file on disk, so /mmo:revert sees no change", async () => {
+  const root = tmpRoot();
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "out.ts"), "line1\nline2\n");
+  const record = () => JSON.parse(readFileSync(join(root, ".sdlc", "runs", "run-1", "provenance.json"), "utf8")).files_touched.find((f) => f.path === "src/out.ts");
+  // Edits mode: written, verify fails, the server puts the original back.
+  const edits = stubModel([{ edits: [{ line: 1, anchor: "line1", position: "replace", text: "bad" }] }]);
+  const o1 = await runApplyLoop({ packet: basePacket({ outputSchema: undefined }), apply: normalizeApply({ write: true, mode: "edits", verify: ["false"], max_retries: 0 }), projectRoot: root, runId: "run-1", keepEvents: true, route: flashUntil(5), dispatch: edits.dispatch, log: silent });
+  assert.equal(o1.status, "verify_failed");
+  assert.equal(readFileSync(join(root, "src", "out.ts"), "utf8"), "line1\nline2\n", "the original is back");
+  assert.equal(record().sha_after, record().sha_before, "the record says the file is as it was");
+  // A failed dispatch: nothing written.
+  const failed = stubModel([{ fail: true }]);
+  const o2 = await runApplyLoop({ packet: basePacket({ id: "tp_codegen_002" }), apply: normalizeApply({ write: true }), projectRoot: root, runId: "run-1", keepEvents: true, route: flashUntil(5), dispatch: failed.dispatch, log: silent });
+  assert.equal(o2.status, "dispatch_failed");
+  assert.equal(record().sha_after, record().sha_before);
   rmSync(root, { recursive: true, force: true });
 });
 

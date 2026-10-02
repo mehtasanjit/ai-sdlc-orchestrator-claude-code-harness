@@ -10,8 +10,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename, dirname, join } from "node:path";
 
 import type {
   AttemptRecord,
@@ -43,11 +42,12 @@ import {
   takeInventory,
 } from "../delegation/evidence.js";
 import { log } from "../log.js";
+import { WORKER_DIR } from "../paths.js";
 
 // Module-location relative, not cwd — the server runs in the user's project.
 // dist/adapters/ → package root two levels up.
-const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const WORKER_DIR = join(PACKAGE_ROOT, "worker");
+// The worker folder comes from the package root (paths.ts): in the single-file bundle this module's own location
+// does not say where the package is.
 const WORKER_SCRIPT = join(WORKER_DIR, "gemini_worker.py");
 
 // Tail (exception is at the bottom of the traceback) kept when the worker fails.

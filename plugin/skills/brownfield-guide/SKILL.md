@@ -15,7 +15,7 @@ setup is one-time per machine and happens separately.
 
 - `intent: <id>` present — the job type is already chosen. Skip step 4a's question entirely;
   Gate 0 still re-confirms it. `<id>` must be one of the ids in
-  [plugin/config/intents.json](/plugin/config/intents.json).
+  `${CLAUDE_PLUGIN_ROOT}/config/intents.json`.
 - `seed_description:` present and non-empty — the user's own words for the job, typed after the
   command. Step 4b treats this as the answer to the interview's first question and asks only the
   remaining ones.
@@ -42,7 +42,7 @@ Read the JSON. Three cases:
 - **`resume.pending: true` with `kind: "run"`** — a previous task run was interrupted at phase
   &lt;phase&gt;. Print *"A previous &lt;intent&gt; run (`&lt;run_id&gt;`) was interrupted at phase &lt;phase&gt;.
   Would you like to resume it, or start fresh?"* Accept `resume`, `discard`, or `abort`. If
-  `resume`, follow the resume path in [plugin/skills/pipeline/SKILL.md](/plugin/skills/pipeline/SKILL.md).
+  `resume`, follow the resume path in `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md`.
   If `discard`, clear `.sdlc/local/state.json` and continue to step 2.
 
 - **`resume.pending: null`** — normal flow. Print the one-line `marker` from the hydrate
@@ -66,7 +66,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/pre-check.mjs" --run
 
 Agent-side steps (1 = discovery smoke, 3 = dispatch smoke) — you run yourself:
 
-1. **Discovery smoke.** Invoke the `discovery` subagent (see [plugin/agents/discovery.md](/plugin/agents/discovery.md))
+1. **Discovery smoke.** Invoke the `discovery` subagent (see `${CLAUDE_PLUGIN_ROOT}/agents/discovery.md`)
    with `mode: first-time` (or `refresh` if a baseline exists). Watch for a non-git-repo refusal
    or any hard error. On pass, record it:
    ```bash
@@ -91,7 +91,7 @@ fixes.
 If not already done during step 2's smoke:
 
 Invoke the `discovery` subagent. It reads the repo (git state, stack manifests, off-limits, monorepo
-signals, submodules, LFS, competing AI configs — see [plugin/agents/discovery.md](/plugin/agents/discovery.md)
+signals, submodules, LFS, competing AI configs — see `${CLAUDE_PLUGIN_ROOT}/agents/discovery.md`
 for the full read order) and writes:
 - `.sdlc/runs/<run-id>/discovery.md` (per-run human-readable)
 - `.sdlc/runs/<run-id>/baseline.json` (per-run pointer snapshot)
@@ -111,7 +111,7 @@ Two things to collect from the user. Both go into `.sdlc/runs/<run-id>/intent_br
 
 - **Handover carries `intent: <id>`** — already chosen. Skip the question; read `title`,
   `summary`, and `interview` for `<id>` from
-  [plugin/config/intents.json](/plugin/config/intents.json) and continue to step 4b.
+  `${CLAUDE_PLUGIN_ROOT}/config/intents.json` and continue to step 4b.
 - **No handover** — ask which job type. Show the seven options with one-line examples, drawn
   from `intents.json`'s `title` and `example` fields, so the choice is meaningful:
 
@@ -161,8 +161,8 @@ instead of inferring it from context. A policy can then route `doc_update` diffe
 Fill in "Files in scope" and "Files off-limits" with your best guess based on discovery + intent
 + the user's description. These are proposals; Gate 0 lets the user adjust before commit.
 
-Include the **companion files** a change of this kind needs to be complete, not only the files that
-carry the feature. When the job adds or changes a public API endpoint, look in discovery for, and
+For `feature-extend` and `feature-new` only: include the **companion files** a change of this kind needs to be
+complete, not only the files that carry the feature. When the job adds or changes a public API endpoint, look in discovery for, and
 list when they exist: the generated API spec (e.g. `openapi.json` and the script that exports it),
 and every catalogue that lists the surface being extended (e.g. an MCP tool list in the docs or a
 package README). Left out, they become review findings the run cannot act on.
@@ -171,7 +171,7 @@ package README). Left out, they become review findings the run cannot act on.
 
 The one confirmation moment before real work begins. Fires unconditionally — even when the
 handover pre-set `intent` and `seed_description`, nothing below is skipped. Print the gate
-template from [plugin/skills/pipeline/SKILL.md](/plugin/skills/pipeline/SKILL.md) (search for
+template from `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md` (search for
 "Gate 0"), filling in:
 
 - **Stack** — top-detected from `baseline.stacks`. Ask if it's right; accept overrides.
@@ -187,8 +187,8 @@ template from [plugin/skills/pipeline/SKILL.md](/plugin/skills/pipeline/SKILL.md
 - **Policy** — read `payload.project.default_policy` from the session-hydrate output already
   captured in step 1 of this command. This is what setup wrote to `.sdlc/project.json`. If
   it is null, setup was not completed for this project — abort Gate 0 and tell the user to
-  run setup first (see [SETUP.md](/SETUP.md) §5b — the one setup step that opens a browser
-  for the policy console). Do not silently default and do not launch the console from here.
+  pick a policy first with `/mmo:setup` (its policy step) or `/mmo:policy`. Do not silently
+  default and do not launch the console from here.
   Otherwise show the resolved name; accept, or accept an on-disk policy name for this run only
   (e.g. `opus-only`) — a per-run override does not overwrite the project default.
 - **Existing AI setup** — verbatim list from `baseline.ai_configs_detected`. Default is
@@ -212,7 +212,7 @@ extra confirmation lines with the plugin's default behavior. Example:
 On `approved`:
 1. Freeze the confirmed allowlist + off-limits into `.sdlc/local/write-contract.json`
    ({ schema_version:1, active:true, mode:"brownfield", run_id, strict:true, allowlist,
-   off_limits }). The PreToolUse hook (plugin/scripts/write-contract-check.mjs) reads this file
+   off_limits }). The PreToolUse hook (${CLAUDE_PLUGIN_ROOT}/scripts/write-contract-check.mjs) reads this file
    before every Write/Edit and refuses off-limits or not-in-allowlist paths at the tool
    boundary.
 2. Update `.sdlc/runs/<run-id>/intent_brief.md` with the final scope.
@@ -225,7 +225,9 @@ run directory (leave it as a partial record), and stop.
 
 # 6. Run the pipeline
 
-Delegate to the `orchestrator` subagent per [plugin/skills/pipeline/SKILL.md](/plugin/skills/pipeline/SKILL.md).
+Delegate to the `orchestrator` subagent per `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md`; for intent
+`feature-extend` or `feature-new`, delegate `brownfield-orchestrator` instead (the same orchestrator with the
+feature-run packet flow in `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/brownfield-features.md`).
 Pass:
 - `mode: brownfield`
 - `intent: <from Gate 0>`
@@ -234,7 +236,7 @@ Pass:
 - `baseline_path: .sdlc/baseline/current.json`
 - `policy: <as configured by setup — see the Policy bullet of Gate 0>`
 - `auth_mode: <from the Auth mode bullet of Gate 0>` — required; see
-  [plugin/agents/orchestrator.md](/plugin/agents/orchestrator.md) rule 6. Without it the
+  `${CLAUDE_PLUGIN_ROOT}/agents/orchestrator.md` rule 6. Without it the
   orchestrator aborts rather than guessing which transport bills the run.
 - `code_dir: <the project's working directory — the repo root, since edits land across the
   existing tree, not into one generated folder>`
@@ -248,7 +250,7 @@ not answer on their behalf.
 
 # 7. Close out
 
-After the orchestrator emits the final report:
+After the orchestrator emits the final report and Gate 4 is accepted (its answer logged):
 
 1. Append a row to `.sdlc/ledger.md` (human-readable) and `.sdlc/ledger.json` (machine mirror).
 2. Update `.sdlc/CLAUDE-SDLC.md` with the latest project fingerprint + a link to the ledger.
@@ -274,4 +276,4 @@ Do not propose a follow-up run.
 --refresh-profile                              (force stack-profile re-scan)
 ```
 
-See [plugin/commands/pass.md](/plugin/commands/pass.md) for the full flag contract.
+See `${CLAUDE_PLUGIN_ROOT}/commands/pass.md` for the full flag contract.

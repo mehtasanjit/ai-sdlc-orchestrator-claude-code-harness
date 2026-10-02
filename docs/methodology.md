@@ -189,12 +189,13 @@ The list gives each model one or more periods (`from`, `to`, the five token rate
 | `resolveModel(name)` | The list id for an exact id, an id plus `-YYYYMMDD`, or either followed by one bracketed option such as `[1m]`. `null` for anything else. The longest id wins, so `claude-fable-5-1` never reads as `claude-fable-5`. |
 | `lookupPrice(name, date, {speed, service_tier, inference_geo})` | The period's rates, with fast mode (Opus 5 and Opus 4.8) or US-only inference (×1.1, Claude 4.6 and later) applied. Otherwise `unpriced` with the reason: an unknown model, no period for the date, or a modifier value the list has no price for. A rate is never borrowed from a similar model. It also returns the period's fee per web search, `web_search_per_request` ($0.01 on every Claude period; `null` where the list has none, so searches there are unpriced). |
 
-The Claude rows were verified on 2026-09-14 against [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing). The list carries every model on that page except Mythos, which has limited availability. Each Claude model has one period, from 2026-01-01 with no end date. Rates are USD per 1M tokens: a 5-minute cache write is 1.25× input, a 1-hour cache write is 2× input, and a cache read is 0.1× input (0.025× on Fable 5.1).
+The Claude rows were verified on 2026-09-14 against [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing), except Opus 5.5, which carries its own verified date. The list carries every model on that page except Mythos, which has limited availability. Each Claude model has one period, from 2026-01-01 with no end date. Rates are USD per 1M tokens: a 5-minute cache write is 1.25× input, a 1-hour cache write is 2× input, and a cache read is 0.1× input (0.025× on Fable 5.1, 0.05× on Opus 5.5).
 
 | Model | Input | Cache read | Cache write, 5 min | Cache write, 1 h | Output | Fast mode (input / output) | US-only inference ×1.1 |
 |---|---|---|---|---|---|---|---|
 | `claude-fable-5-1` | 10.00 | 0.25 | 12.50 | 20.00 | 50.00 | — | yes |
 | `claude-fable-5` | 10.00 | 1.00 | 12.50 | 20.00 | 50.00 | — | yes |
+| `claude-opus-5-5` | 4.00 | 0.20 | 5.00 | 8.00 | 20.00 | 8.00 / 40.00 | yes |
 | `claude-opus-5` | 5.00 | 0.50 | 6.25 | 10.00 | 25.00 | 10.00 / 50.00 | yes |
 | `claude-opus-4-8` | 5.00 | 0.50 | 6.25 | 10.00 | 25.00 | 10.00 / 50.00 | yes |
 | `claude-opus-4-7` | 5.00 | 0.50 | 6.25 | 10.00 | 25.00 | — | yes |
@@ -209,7 +210,7 @@ The Claude rows were verified on 2026-09-14 against [Anthropic's pricing page](h
 | `claude-haiku-4-5` | 1.00 | 0.10 | 1.25 | 2.00 | 5.00 | — | — |
 | `claude-3-5-haiku` | 0.80 | 0.08 | 1.00 | 1.60 | 4.00 | — | — |
 
-Fast mode (`usage.speed: "fast"`) is priced on Opus 5 and Opus 4.8 only, with the cache rates scaled by the same ratio; a fast message on any other model is unpriced. US-only inference (`inference_geo: "us"`) multiplies every token rate by 1.1 on the models marked. Web search bills $10 per 1,000 searches on every Claude model, on top of tokens. Before v0.7.3 the shipped Sonnet 5 card said 3.00 / 0.30 / 15.00; the list price is 2.00 / 0.20 / 10.00.
+Fast mode (`usage.speed: "fast"`) is priced on Opus 5.5, Opus 5 and Opus 4.8 only, with the cache rates scaled by the same ratio; a fast message on any other model is unpriced. US-only inference (`inference_geo: "us"`) multiplies every token rate by 1.1 on the models marked. Web search bills $10 per 1,000 searches on every Claude model, on top of tokens. Before v0.7.3 the shipped Sonnet 5 card said 3.00 / 0.30 / 15.00; the list price is 2.00 / 0.20 / 10.00.
 
 The Gemini periods on the list were verified on 2026-09-14 against both of Google's pages, the [AI Studio](https://ai.google.dev/gemini-api/docs/pricing) Standard paid tier and the [Vertex AI](https://cloud.google.com/vertex-ai/generative-ai/pricing) Global rows, which agree on every rate. Each model's first period starts on its GA day in the [Gemini API changelog](https://ai.google.dev/gemini-api/docs/changelog). Rates are USD per 1M tokens. Gemini has no cache-write premium, so cache writes bill at the input rate.
 
@@ -249,92 +250,93 @@ What each plugin version changed about how the numbers are produced. A dispatche
 
 ### v0.9.1
 
-Brownfield single-model runs only. Multi-model brownfield runs (`opus-plus-flash` and the others) and greenfield are unchanged.
+Brownfield cost work for `feature-extend` and `feature-new`, on top of v0.8.7. Greenfield, and the brownfield jobs bugfix, docs, test, refactor and deps, run as before: their agents and pipeline text are unchanged.
 
-| Area | v0.9.0 | v0.9.1 |
+| Area | What changed |
+|---|---|
+| Feature runs | A brownfield job whose intent is `feature-extend` or `feature-new` delegates `brownfield-orchestrator` (from the brownfield guide, and from `/mmo:pass` with those intents). It reads `skills/pipeline/brownfield-features.md` (plan lint, derived packets, batched apply, packet workers, lean reviews) and delegates `brownfield-architect`, `brownfield-senior-reviewer`, `brownfield-security-reviewer` and, under a single-model policy, `packet-worker`. Each copy is its original agent plus that run's rules, built by `tools/build-agent-copies.mjs`. |
+| Helper prompt cache | The orchestrator and architect copies keep their originals' one-hour cache; the reviewer copies add it. Greenfield's reviewers keep Claude Code's default. |
+| Apply form | `execute_with_model` and `execute_batch` refuse an apply-form packet unless `.sdlc/local/write-contract.json` is active, so only a brownfield run past Gate 0 writes through it. The server's writer follows the write-contract hook's rules (its own run folder only, `strict: false` reported, a contract binding only while its run is live, the run's own contract and log refused), and a call the person stops writes nothing more. |
+| Flash thinking | A Flash completion call of an apply-form packet thinks at `low` unless the policy's leaf sets a tier (`apply.ts` `applyModelConfig`). The shipped policies are unchanged. |
+| Provenance | One snapshot per file per run: a later write keeps the first backup, so `/mmo:revert` restores the file as it was before the run, in every brownfield job. |
+| Input slices | An `inputs[]` slice without `content` is read from disk under `project_root`, in every run that sends one; it was sent as the text `undefined`. |
+| Zero-touch | `execute_batch` carries the person's policy like the other server tools that take one; `plan-lint.mjs`, `plan-to-packets.mjs` and `packet-groups.mjs` are workflow steps, and a feature run's own agents may wrap a step call over lines or join steps with `&&`; a call whose packets would run a check or format command the person's Claude settings forbid is refused, and one whose commands cannot be checked keeps Claude Code's prompt. |
+
+#### Brownfield changes
+
+| Area | Before | Now |
 |---|---|---|
 | Who writes a single-model run's packets | The orchestrator wrote every packet in its own conversation, so each file re-read the whole run's context (Large2-J, `opus-only-v5`, 28 files: 119 orchestrator turns, 20.6M cached tokens, ≈ $13.50 of ≈ $20.19). | `packet-groups.mjs` splits the derived packets into groups of at most six in dependency order, with tooling steps where a later packet needs them, and the orchestrator delegates each group to the new `packet-worker` agent. A worker starts with an empty context, writes, formats, verifies, records provenance and telemetry, and returns one receipt line per packet. Workers use the default five-minute prompt cache. |
-| Format before verify | Single-model packets carried `apply.format`, but nothing ran it in-session, so a formatting-only miss cost a fix-up turn (Large2-J: 3). | The worker runs `apply.format` before `apply.verify`, and provenance `--after` after the format. |
-
-### v0.9.0
-
-Brownfield cost work, on top of v0.7.12. Greenfield is unchanged from v0.7.12. The work was built on a separate branch in the steps below, newest first.
-
-| Area | v0.9.0 |
-|---|---|
-| Helper prompt cache | The run-start `cache-ttl-check.mjs` step and the policies' `subagent_cache_ttl` key are gone; nothing writes `.claude/settings.local.json`. Brownfield keeps one hour on every helper through agent frontmatter: the orchestrator and architect (as in v0.7.12), discovery, and the brownfield reviewer copies `brownfield-senior-reviewer` and `brownfield-security-reviewer`. Greenfield's reviewers are unchanged. |
-| Apply form | `execute_with_model` and `execute_batch` refuse an apply-form packet unless `.sdlc/local/write-contract.json` is active, so only a brownfield run past Gate 0 writes through it. |
-| Repo scout | Removed from every policy and from the pipeline. |
-| Policies | `sonnet-plus-flash` is not shipped. |
-
-#### Brownfield step 0.8.12
-
-| Area | Before | From v0.8.12 |
-|---|---|---|
+| Format before verify (single-model runs) | Single-model packets carried `apply.format`, but nothing ran it in-session, so a formatting-only miss cost a fix-up turn (Large2-J: 3). | The worker runs `apply.format` before `apply.verify`, and provenance `--after` after the format. |
 | Verify on Markdown, MDX and YAML files | `plan-to-packets` passed a unit's `biome check <file>.mdx` through as its verify. Biome does not process those files and exits 1 on any content, so Large2-C spent 6 worker attempts and 2 hand-written refinement packets on two docs pages that were already correct. | Biome check / format / lint commands are dropped for `.md`, `.mdx`, `.yml` and `.yaml` targets. Any other Verify command on the unit stays, and no warning is raised. |
 | `apply.format` on hand-written packets | Only packets from `plan-to-packets` carried `format`. Debug and refinement packets the orchestrator wrote by hand left it out, so a Biome spacing difference failed verify and escalated to Opus (Large2-C: 2 escalations). | When `format` is absent, the server derives it from the verify commands with the same rule `plan-to-packets` uses (`biome check X` → `biome check --write X`, `prettier --check` → `--write`). An explicit `format` still wins. |
 | Gate 0 file scope | The proposed allowlist covered the files that carry the feature. Large2-D's senior reviewer raised two major findings the run could not act on: the API spec and the MCP tool catalogues were outside the allowlist. | Step 4b proposes the companion files a change needs to be complete as well: the generated API spec and every catalogue of the surface being extended, when discovery finds them. You still edit the list at Gate 0. |
-
-#### Brownfield step 0.8.11
-
-| Area | Before | From v0.8.11 |
-|---|---|---|
 | Plan length | The architect trimmed a written plan toward the ≈ 400-line soft target (Large2-A: 34 turns, ≈ $3.86). | The line target applies to the one Write only; `long_plan` is informational. |
 | Biome on CRLF files | `biome check` failed on edit targets with CRLF endings before any edit, and the architect rewrote verify lines by hand (Large2-A: 21 turns, ≈ $2.07). | `plan-to-packets` adds `--line-ending=crlf` to biome verify and format for CRLF edit targets. |
-
-#### Brownfield step 0.8.10
-
-| Area | Before | From v0.8.10 |
-|---|---|---|
-| Subagent cache TTL | Multi-model policies declared `subagent_cache_ttl: 1h`; `opus-only` and `opus-only-v5` declared `5m`, `flash-agsdk-only` declared nothing, and preflight warned when a single-model policy asked for 1h. The study's opus-only runs (Runs 22–35) were all measured at 1h through a local policy copy, so a new user's opus-only run did not match the published numbers. | Every shipped policy declares `1h` and the warning is gone. Since 0.8.8 the orchestrator waits for reviewers and test suites inside its turn, so single-model runs wait too; the one 5m opus-only run on 0.8.x (Run 21, $17.43) cost more than every 1h opus-only run after it. `cache-ttl-check --fix` still writes the value and asks for one relaunch when it changes. |
-
-#### Brownfield step 0.8.9
-
-| Area | Before | From v0.8.9 |
-|---|---|---|
+| Subagent cache TTL | Multi-model policies declared `subagent_cache_ttl: 1h`; `opus-only` and `opus-only-v5` declared `5m`, `flash-agsdk-only` declared nothing, and preflight warned when a single-model policy asked for 1h. The study's opus-only runs (Runs 22–35) were all measured at 1h through a local policy copy, so a new user's opus-only run did not match the published numbers. | Every shipped policy declares `1h` and the warning is gone. The orchestrator waits for reviewers and test suites inside its turn, so single-model runs wait too; the one 5m opus-only run on 0.8.x (Run 21, $17.43) cost more than every 1h opus-only run after it. `cache-ttl-check --fix` still writes the value and asks for one relaunch when it changes. |
 | Edit lists (`apply.mode: "edits"`) | Positions were `after` / `before` / `replace`, and `replace` covered exactly one line, so a deletion could not be expressed. Run 30's one refinement (an 8-line block cut to 3) ran as a hand splice by the orchestrator instead of a Flash packet. | `position: "delete"` (no `text` needed) and an optional `count` on `replace` / `delete` cover a run of lines from the anchor down. Overlapping spans and spans past the end of the file are refused with a reason the retry carries. The architect writes `×N` after the quoted anchor text for a multi-line site. |
 | Action word in the plan | `plan-to-packets` accepted only `new_file` / `edit` / `tooling`; Run 31's orchestrator told the architect `create`, 10 units failed derivation and the plan was edited and re-derived. | Unambiguous synonyms (`create` / `new` / `add` → `new_file`; `modify` / `update` / `change` → `edit`) are mapped, with a warning naming the unit. |
 | Collector run id on the single-model path | The run id was read only from a dispatched line's `pass`; hand-logged in-session lines carry `pass_id`, so Run 31's collector stopped with "no run id" until the orchestrator added a `pass` field. | `pass_id` is read as well. |
-
-#### Brownfield step 0.8.8
-
-| Area | Before | From v0.8.8 |
-|---|---|---|
 | Waiting on subagents and long tests | The orchestrator sometimes ended its turn and was resumed by a completion notification; each resume missed the prompt cache and re-wrote the whole context (Run 28: three resumes, 408k cache-write tokens, ≈ $4.1) | The orchestrator waits inside its turn (a Bash until-loop on the output file). Rates and telemetry fields are unchanged; the saving shows as fewer 1h cache-write tokens. |
 | `execute_batch` input and receipt | The orchestrator read `packets.json` (~15k tokens) and typed every packet back as tool input; the receipt restated routing and token counts for every applied packet (~8k tokens) | `packets_path` (+ optional `packet_ids`) lets the server read the file; tooling packets are skipped and listed. The receipt is one line, and an applied, verified packet keeps only path, lines, cost, attempts, verify and any non-routine field. Telemetry still records every figure. |
-
-#### Brownfield step 0.8.7
-
-| Area | Before | From v0.8.7 |
-|---|---|---|
 | Brownfield reviewers | The senior and security reviewers opened touched files one `Read` at a time, re-ran tests, typecheck, route generators and `pnpm audit`, and read library source to prove findings (Run 28: 49 + 30 tool uses). Every tool use re-reads the whole context, which is most of an Opus run's cost | Same two phases, same checklists. Each reviewer loads the whole change in one Bash call, keeps to a tool-call budget (senior about 12, at most 20; security about 10, at most 15), does not re-run commands the orchestrator already ran (it passes a one-line-per-suite summary), and runs the dependency check only when a manifest or lockfile changed. |
 | Collector without `manifest.json` | A single-model run handled in-session never calls the server, so no manifest was written and `collect-orchestrator-usage.mjs` exited 1 (Run 29) | The collector rebuilds the window from `telemetry.jsonl` and writes a manifest carrying the run id, policy and booked figures. Rates and telemetry fields are unchanged. |
-
-#### Brownfield step 0.8.6
-
-| Area | Before | From v0.8.6 |
-|---|---|---|
 | Wrapped `- **File**` bullet in `plan-to-packets` | Only the bullet's first physical line was parsed, so a bullet soft-wrapped before `**Depends on**` gave `depends_on: []` with exit 0 (Run 27b: 10 of 15 units) | Indented continuation lines are joined before parsing, and a unit with no `Depends on` anywhere gets a warning. Rates, telemetry fields and the collector are unchanged. |
-
-#### Brownfield step 0.8.5
-
-| Area | Before | From v0.8.5 |
-|---|---|---|
 | Repo scout under `opus-plus-flash-v38` | Flash scouted candidate files for the architect; its anchors were mostly wrong four rows running, so the architect re-read every slice | The preset has no `repo_scout` rule, so the scout is skipped and the architect reads the repo itself, as under opus-only. Other multi-model presets keep the scout. |
 | Cross-unit imports | The worker guessed a sibling unit's module path; the error surfaced only at the deferred typecheck and was debugged by the premium model (Run 25: three of four debug rounds) | The multi-model plan carries an `- **Imports**` bullet with each statement as written; each worker packet also receives the sections of the units it depends on; and under `--multi-model` every JS/TS packet's verify starts with `check-imports.mjs`, so an unresolvable import or a missing default/named export fails on the mechanical tier and the worker retries with the files that do exist. Rates, telemetry fields and the collector are unchanged. |
-
-#### Brownfield step 0.8.4
-
-| Area | Before | From v0.8.4 |
-|---|---|---|
 | Edit sites in `plan-to-packets` | Read only a `- **Edit anchor**` bullet (or a `### Edits` heading) with `` `:N` `` / `L<n>` / "line N" references. A `- **Edit**` bullet with `` `after :280 -> rule` `` items found no sites, so edit units fell back to whole-file packets (Run 24: 5 of 5) | `- **Edit**` / `- **Edits**` bullets are read like `- **Edit anchor**`, and `after` / `before` / `replace` / `insert` / `delete` followed by `:N` is an edit site. Run 24's plan now derives 8 edit lists instead of 0. Rates, telemetry fields and the collector are unchanged. |
-
-#### Brownfield step 0.8.1
-
-| Area | Before | From v0.8.1 |
-|---|---|---|
 | Batched dispatch under a multi-model policy | `execute_batch` was missing from the orchestrator's `tools:` list, so the orchestrator handed each batch to a helper subagent, whose transcript counted toward `orchestrator_overhead` | The orchestrator calls `execute_batch` itself. Rates, telemetry fields and the collector are unchanged. |
 | Architect tools and plan form | `Read, Write` only: files were found by guessing paths, and any fix rewrote the whole plan; the multi-model plan carried the full per-unit form | `Edit` and read-only search added. The plan is written once and fixed section by section; both policies use the brief form, and multi-model adds only verbatim anchor text and import specifiers. Architecture-phase cost per run is expected to fall; the pricing rules are unchanged. |
+
+### v0.8.7
+
+0.8.7 changes no number. A brownfield write contract now binds only its own run, while that run is live by its own log: once the log shows an abort, a failure, or Gate 4 accepted, it binds nothing ([brownfield-write-contract.md](brownfield-write-contract.md)). While the run is live, its contract and its log are refused to `Write` and `Edit`. Before, the close-out could not switch the contract off, so after a normal finish it kept refusing every edit outside that run's allowlist in the project, the next run's included. Zero-touch changes only its first chat's welcome, which now gives the address of the [zero-touch guide](zero-touch-guide.md).
+
+### v0.8.6
+
+0.8.6 adds **zero-touch** ([ambient-mode.md](ambient-mode.md)). A typed `/mmo:` command changes only in the rows under **What changes for a typed run**. No dispatched event is priced differently.
+
+Zero-touch is switched by its own plugin, `zero-touch`, listed beside `mmo` in the same marketplace. That plugin holds the settings box and the chat's start, in five hooks of its own. The person chooses the mode (Workflows, Hand-off or Off) and the models in Claude Code's own question box, in the chat, in the desktop app and the terminal alike: no file to edit, no command to type. The choices are kept in the plugin's own data folder (`${CLAUDE_PLUGIN_DATA}/settings.json`, deleted with the plugin). At each new chat's start (a new chat, `/clear`, a fork) the start hook marks the chat with them, and the chat keeps them for its whole life; a change reaches new chats. Everything else zero-touch does is sixteen more hooks the zero-touch plugin registers, whose code sits in `mmo`'s folder (`plugin/scripts/ambient/`) behind one shell shim, which returns before `node` starts in a chat the zero-touch plugin did not mark; without the zero-touch plugin none of them exists.
+
+**The two modes**
+
+| | Workflow mode (the default) | Hand-off mode |
+|---|---|---|
+| What it does | A chat message that fixed rules recognise as one of the eight `/mmo:` jobs starts that job's workflow, as typing the command would. Any other message is an ordinary Claude Code chat: nothing is added to what the model reads and no tool call is refused or rewritten. | The chat's own model does the development. New docs, specs and plans, new tests, and one change repeated across files go to the model the policy routes that work to, through four server tools: `write_document`, `write_tests_from_cases`, `repeat_edit_across_files`, `undo_hand_off`. Plain words start no workflow; a typed `/mmo:` command runs as in any chat. |
+| What decides | Fixed patterns, no model call, so recognition costs $0. A request the rules cannot place but that reads as one is left to the chat's own Claude, whose start is checked like any other (the folder rule, the models, one workflow per folder); anything else is an ordinary chat, with no offer. | The chat's model fills in a tool's form (a brief, never the finished text). Code checks the form, then the answer; tests and a repeated change are also run in a scratch copy of the project. Only a checked answer reaches the project. |
+| What it costs, and where that is written | Nothing of its own. A routed workflow is billed and reported exactly as a typed one, in its own run folder. | Each typist call is billed at the dated price list's rate for its model, the way an executor typist call is, failed calls included. One line per call goes to `~/.mmo-ambient/sessions/<id>/handoff-telemetry.jsonl`, in the shape of a workflow's telemetry. It is the chat's file and belongs to no run. The chat's own model is billed by Claude Code and recorded nowhere by the plugin. |
+| Which models | The policy chosen in the settings box, one of four shipped ones: `opus-plus-flash-v38` (the standard), `fable51-plus-flash-v38` (the same with Fable 5.1 planning), `opus-plus-sonnet`, `opus-only-v5`. The start carries it as a tag at the front of the command's arguments, `[zero-touch policy=<name> auth=<vendor\|estimated>]`, which Claude reads as this run's choice from zero-touch's note given beside the command when it loads (mmo's command texts are unchanged), and the hook stamps it as an explicit policy file (`policy_path`) on every model-server call of that run, helpers' calls included. A project's `routing-policy.yaml` and its saved choice in `.sdlc/project.json` are not used for it (the start lines say so in every chat in a folder that has such a file). | The chat is kept on the chat model chosen in the box (`claude-opus-5`, the standard, or `claude-sonnet-5`; a switch away is refused). Each kind of work has its own typist: new documents, specs and plans; new tests; one change repeated across files. The choices are Flash 3.8 (the matching `docs`, `tests` or `codegen` stage of `opus-plus-flash-v38`), Sonnet 5 (the same stage of `opus-plus-sonnet`), or kept in the chat, whose tool is then refused and the chat's own model does the work. A typist that fails twice is replaced by the chat's own model, through the Claude command line, as the executor replaces one with the policy's Claude model. A Claude typist is paid for the way `routing_defaults.auth` says (default `estimated`, the subscription login). All of it is read once, at the chat's start. |
+
+**No saving is claimed for either mode.** Workflow mode changes which command runs, never what a run costs. For hand-off mode there is no measured number, and no report reads `handoff-telemetry.jsonl`. Each hand-off's cost is on its receipt and in the one line the person sees.
+
+**What changes for a typed run** (with the zero-touch plugin enabled or not)
+
+| Area | How it works |
+|---|---|
+| The five driver agents' files (orchestrator, architect, discovery, two reviewers) | Name no model: under `--auth=estimated` they run on the person's `CLAUDE_CODE_SUBAGENT_MODEL`. A run zero-touch starts uses them unchanged: there, with no setting, they follow the chat's model, which zero-touch checks first (see the next table) |
+| Where the commands, the brownfield manual and the orchestrator's instructions point the model | The installed copy's own path, `${CLAUDE_PLUGIN_ROOT}/…`, which Claude Code fills in for commands, skills and agents; a repository path (`/plugin/skills/…`) exists only in a clone, so a model that followed one on an installed plugin would find nothing. Links to the repository's `SETUP.md` and `docs/`, which an installed plugin does not carry, name `/mmo:setup` or `/mmo:policy` instead. What the files say is otherwise unchanged (`tools/test/plugin-paths.test.mjs`) |
+| How the plugin installs from GitHub | The model server and the code five of the plugin's scripts load ship pre-built as two committed single-file bundles (`plugin/mcp/model-dispatch/bundle/`), because a copy installed from GitHub carries only committed files; nothing is built on the machine. No change to what runs |
+| Where the `claude` program is found (a new-app run's last attempt at every step, a Claude typist) | PATH first; else the Claude app's own newest copy (`src/claudeCommand.ts`), so a Mac with only the Claude app does not stop a new-app run at pre-flight |
+| The brownfield write contract in a project reached through a linked folder (macOS `/tmp` and `/var`, a linked code folder) | Judged as written first, then with links resolved on both sides, so a write inside the project is not refused as "outside the contracted repo" when the session folder and the write's path take different forms. The second look never refuses a write the first allows |
+| The four hooks that run a script with node (write contract, foreground helpers, executor guard) on a computer without Node.js | Quiet, with no hook error on a file write, edit or helper launch (`plugin/hooks/node.sh` exits 0 without node; with node, output and exit code pass through unchanged) |
+| git where there is no git project, or no real git (macOS without the developer tools) | Not run (`lib/git.mjs`, `src/git.ts`), so such a Mac never opens Apple's install dialog: the run card leaves the plugin commit empty, as for a copy that is not a clone |
+| The price list | `claude-opus-5-5` is on it (the table above), so the collector can price a session whose chat is on the desktop app's default model. No other row changes |
+| The server's tool list | The pipeline's and the executor's tools, plus the four hand-off tools only where a Hand-off chat can use them: zero-touch installed and switched on, its saved mode Hand-off or not chosen yet (a settings file zero-touch cannot use counts as its last good save, else Off), and listed when Claude Code's record of installed plugins cannot be read. A person without zero-touch, or with Workflows or Off saved, carries none of their text. A call is refused unless the hook stamped it in a hand-off chat; inside a workflow run it is always refused |
+| The plugin's hooks | The pipeline's own and the executor guard, unchanged and with no timeout of their own (the three that run node go through `node.sh`, row above). Zero-touch's sixteen hooks (5 s each, the turn's end 30 s) are registered by the zero-touch plugin, not by `mmo`: without it none exists; with it, a typed run in a chat without zero-touch meets none of them past the shim's first check, and the one that rewrites model-server calls stamps only a run zero-touch started |
+
+**What changes in a zero-touch chat only**
+
+| Area | Without zero-touch | In a zero-touch chat |
+|---|---|---|
+| A `/mmo:` workflow the chat's model starts by itself | Allowed | Workflow mode: only the workflow the rules recognised in the person's message. Hand-off mode: none. A typed command always runs |
+| A new job while the chat runs a workflow | A typed command runs over the running workflow | A job asked for in plain words is queued at once and said; one the rules cannot place is left to Claude's judgement, and only a clearly separate job is queued. A typed command is held, and the person chooses "Queue it" or "Replace it" (the running one is stopped as its own abort stops it). A queued job starts by itself when the running workflow finishes, never after one that was aborted, failed or stopped, which drops the queue and says so; a typed command starts exactly as typed, with its own questions and rules, every time it is pushed. A message typed while a gate is open, or while the workflow waits for its first answers, is the workflow's answer |
+| Two chats in one project | Both can run a workflow and read each other's run | One workflow at a time per project, decided from the owning chat's record and its workflow's own log |
+| The first two setup questions of a routed workflow | Asked | Answered from the start's tag, which zero-touch's note beside the unchanged command explains: the policy from the settings box and the cost-recording mode (`routing_defaults.auth`). Nothing is written into the project. For a new app, the person's message is the brief. A command the person types asks them |
+| The model the workflow's helpers run on (a routed workflow, estimated mode) | The person's `CLAUDE_CODE_SUBAGENT_MODEL`, which the run-start check requires | The same when the person has the setting. Without it the helpers follow the chat's model: zero-touch starts a workflow only when that is the policy's planning model (Opus 5 for all three choices), says so in the start lines and in the line when it does not start, tells the run-start check that model, and refuses a switch of the chat's model while the run lasts |
+| The end of a new-app workflow zero-touch started | The new app is left without git | Saved with git (one starting commit, dependencies and secrets left out), so the next change job can run there; the end line says so. A typed run is left without git |
+| A workflow left running when the person types `/clear` | Its run folder has no end | Recorded as stopped (the same abort "Replace it" uses, reason `cleared`), and the project is free for the next workflow. Only the run the chat claimed is stopped (the run id in its orchestrator's own logging calls), never a run found by time, which may be another chat's. An exit, or `/resume` to another chat, keeps it: that chat can be reopened and carry on |
+| Whether a chat has zero-touch, and what it did with a message | Nothing | The start lines (a summary of the settings once per save, then only what needs action, in every chat; Off says nothing), and a line after a message zero-touch acted on, shown to the person and never to the model. When the chosen models need Google and this computer is not connected, the start lines say so in every chat; the check is `mmo`'s own setup rule, plus one real request (`gcloud auth application-default print-access-token`, at most 3 seconds) when Flash is chosen in the box |
+| A new document or test file the chat's model types by hand (hand-off mode) | Written | Refused and pointed at the hand-off tool; an edit to a file that exists always passes |
 
 ### v0.7.12
 

@@ -179,9 +179,7 @@ export class GeminiFlashAdapter implements ModelAdapter {
         temperature: 0.2,
         maxOutputTokens: ceiling,
         ...(wantsJson ? { responseMimeType: "application/json" } : {}),
-        ...(this.modelConfig.reasoning?.enabled === false
-          ? { thinkingConfig: { thinkingBudget: 0 } }
-          : thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
+        ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
         ...(this.requestTimeoutMs ? { httpOptions: { timeout: this.requestTimeoutMs } } : {}),
       };
       if (wantsJson) generationConfig.responseSchema = packet.outputSchema;

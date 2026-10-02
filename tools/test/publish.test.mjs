@@ -156,6 +156,9 @@ test("no personal contact details are embedded in shipped files", () => {
   for (const file of textFiles()) {
     const rel = relative(ROOT, file);
     if (rel === "package-lock.json") continue; // registry metadata, not authored
+    // The server's pre-built bundles end with the bundled libraries' licence notices, which their licences require us
+    // to keep as written, author addresses included. Not authored here.
+    if (rel.startsWith(join("plugin", "mcp", "model-dispatch", "bundle"))) continue;
     for (const [address] of readFileSync(file, "utf8").matchAll(email)) {
       found.push(`${rel}: ${address}`);
     }

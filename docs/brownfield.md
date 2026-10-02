@@ -125,7 +125,7 @@ The plugin's per-project state. Split into committed (team-shared) and gitignore
 └── local/                — gitignored: personal per-developer state
     ├── state.json        — live state machine
     ├── setup-status.json — shepherd resume state
-    ├── write-contract.json — active run's allowlist/off-limits
+    ├── write-contract.json — the run's allowlist/off-limits; binds only while that run is live
     ├── user-policy.yaml  — personal policy override
     ├── cache/            — per-run backup copies for /mmo:revert
     └── debug.log

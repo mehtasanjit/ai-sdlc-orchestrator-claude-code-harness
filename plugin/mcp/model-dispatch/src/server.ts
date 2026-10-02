@@ -16,9 +16,8 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, unwatchFile, watchFile } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { loadPolicy, loadPolicyFromPath, getModel } from "./policy.js";
 import {
@@ -49,14 +48,20 @@ import {
   hydrateInputs,
   normalizeApply,
   runApplyLoop,
+  applyModelConfig,
+  readsSlicesFromDisk,
+  markRunRecordStable,
 } from "./apply.js";
 import { runBatch, batchPacketsFromArgs, compactBatchReceipt } from "./batch.js";
 import { resolveProjectRoot } from "./project-root.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
 // Typed-spec executor tools (greenfield runs): listed below, handled in executor/tools.ts.
 import { EXECUTOR_TOOLS, EXECUTOR_TOOL_NAMES, executorClaudeLeaves, executorPolicyNotes, handleExecutorTool, type RunState } from "./executor/tools.js";
+import { HANDOFF_TOOLS, HANDOFF_TOOL_NAMES, handleHandoffTool } from "./handoff/tools.js";
+import { handoffListing } from "./handoff/listing.js";
 import { leanOpusCliProblem } from "./executor/typists.js";
 import { runCard } from "./runCard.js";
+import { PLUGIN_ROOT } from "./paths.js";
 
 /**
  * Cheap up-front schema validation for TaskPacket inputs to execute_with_model.
@@ -171,22 +176,26 @@ function legacySelectValue(): string | undefined {
   return value;
 }
 
-function adapterFor(policy: Policy, modelId: string) {
-  const cacheHit = adapterCache.has(modelId);
+function adapterFor(policy: Policy, modelId: string, forApply = false) {
+  // An apply-form packet's model settings (apply.ts applyModelConfig) can differ from the policy's leaf, so its
+  // adapter is kept under its own key.
+  const key = forApply ? `${modelId}|apply` : modelId;
+  const cacheHit = adapterCache.has(key);
   if (cacheHit) {
-    const cached = adapterCache.get(modelId)!;
+    const cached = adapterCache.get(key)!;
     log("debug", "adapter.construct", { model_id: modelId, adapter: getModel(policy, modelId).adapter, cache_hit: true });
     return cached;
   }
-  const model = getModel(policy, modelId);
+  const leaf = getModel(policy, modelId);
+  const model = forApply ? applyModelConfig(leaf) : leaf;
   const adapter = createAdapter(model);
-  adapterCache.set(modelId, adapter);
+  adapterCache.set(key, adapter);
   log("debug", "adapter.construct", { model_id: modelId, adapter: model.adapter, cache_hit: false });
   return adapter;
 }
 
-/** The plugin's directory (dist/ → model-dispatch/ → mcp/ → plugin/) and its version, for the run card. */
-const PLUGIN_DIR = fileURLToPath(new URL("../../../", import.meta.url));
+/** The plugin's directory and its version, for the run card (from paths.ts, so the bundle finds it too). */
+const PLUGIN_DIR = PLUGIN_ROOT;
 function pluginVersion(): string {
   try { return JSON.parse(readFileSync(join(PLUGIN_DIR, ".claude-plugin", "plugin.json"), "utf8")).version ?? "unknown"; } catch { return "unknown"; }
 }
@@ -337,7 +346,7 @@ interface DispatchOnce {
 }
 
 /** Route one packet, run it, log it, append its telemetry. Same behaviour as before the apply loop existed. */
-async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any): Promise<DispatchOnce> {
+async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, forApply = false): Promise<DispatchOnce> {
   const decision = pickModel(
     {
       phase: packet.phase,
@@ -363,7 +372,7 @@ async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any): Promise
     select_overridden: decision.selection?.overridden,
   });
 
-  const adapter = adapterFor(policy, decision.modelId);
+  const adapter = adapterFor(policy, decision.modelId, forApply);
   const dispatchStarted = Date.now();
   log("info", "dispatch.start", {
     packet_id: packet.id,
@@ -504,13 +513,14 @@ async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any): Promise
  * `apply`, write / verify / retry (runApplyLoop). Shared by execute_with_model
  * and execute_batch so a batched packet behaves exactly like a single one.
  */
-async function runPacket(raw: unknown, a: any): Promise<unknown> {
+async function runPacket(raw: unknown, a: any, signal?: AbortSignal): Promise<unknown> {
   const packet0 = validateTaskPacket(raw);
   const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
   const apply = normalizeApply(packet0.apply);
   const projectRoot: string | undefined = a.project_root ?? resolveProjectRoot(undefined);
 
-  const needsDisk = apply !== null || packet0.inputs.some((s) => typeof s.content !== "string");
+  // Content-less slices are read from disk for brownfield packets only (apply.ts readsSlicesFromDisk).
+  const needsDisk = readsSlicesFromDisk(packet0, apply, projectRoot);
   if (needsDisk && !projectRoot) {
     throw new Error(
       "execute_with_model: project_root is required when a packet uses apply or an inputs[] slice without content.",
@@ -530,6 +540,8 @@ async function runPacket(raw: unknown, a: any): Promise<unknown> {
         ".sdlc/local/write-contract.json; no active write contract under project_root.",
     );
   }
+  // A brownfield feature packet's slices of the run's record files ride in the cached system block (apply.ts).
+  if (apply) packet = markRunRecordStable(packet);
   if (apply) {
     // An Antigravity worker edits the project folder itself, outside the write contract and the
     // per-file before/after snapshots, and parallel sessions would see each other's edits.
@@ -567,17 +579,45 @@ async function runPacket(raw: unknown, a: any): Promise<unknown> {
         selectOverrides(),
       ),
     dispatch: async (p) => {
-      const one = await dispatchOnce(p, policy, a);
+      const one = await dispatchOnce(p, policy, a, true);
       return { decision: one.decision, result: one.result, events: one.events };
     },
     log: (level, event, fields) => log(level, event, fields),
+    signal,
   });
 }
 
 const server = new Server(
   { name: SERVER_NAME, version: SERVER_VERSION },
-  { capabilities: { tools: {} } }
+  // listChanged: the hand-off tools can be added while the server runs (handoff/listing.ts).
+  { capabilities: { tools: { listChanged: true } } }
 );
+
+// Zero-touch's four hand-off tools are listed only where a Hand-off chat can use them (handoff/listing.ts says
+// exactly when; when in doubt they are listed). When they are left out only because of zero-touch's saved settings
+// (not Hand-off, or Hand-off with every kind of work kept in the chat, which lists the undo alone), that settings file
+// is watched: once it hands work off the tools are added and Claude Code is told, so a first chat or a cleared one
+// that becomes a Hand-off chat has them. They are never taken away while the server runs.
+let handoffListed = handoffListing(process.env);
+log("info", "handoff.listing", { listed: handoffListed.list, only: handoffListed.only, reason: handoffListed.reason });
+/** The hand-off tools listed now: all four, only the undo (every kind kept in the chat), or none. */
+const handoffToolsNow = () => (!handoffListed.list ? [] : handoffListed.only ? HANDOFF_TOOLS.filter((t) => handoffListed.only!.includes(t.name)) : HANDOFF_TOOLS);
+if ((!handoffListed.list || handoffListed.only) && handoffListed.watch.length) {
+  const watched = handoffListed.watch;
+  // Tools are only ever added: none → the undo alone → all four (every kind kept, then one handed off).
+  const recheck = () => {
+    if (handoffListed.list && !handoffListed.only) return;
+    const now = handoffListing(process.env);
+    if (!now.list || (handoffListed.list && now.only)) return;
+    handoffListed = now;
+    if (!now.only) for (const file of watched) unwatchFile(file);
+    log("info", "handoff.listing", { listed: true, only: now.only, reason: now.reason, changed: true });
+    server.sendToolListChanged().catch(() => { /* the client is gone */ });
+  };
+  // Polled, not event-based: the file is replaced by a rename when saved, which some watchers miss. Never keeps the
+  // server alive by itself.
+  for (const file of watched) watchFile(file, { interval: 2000, persistent: false }, recheck);
+}
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -589,22 +629,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object",
         properties: {
-          packet: {
-            type: "object",
-            description:
-              "TaskPacket (see types.ts). An inputs[] slice without `content` is read from disk under " +
-              "project_root (narrow it with `lines: [from, to]` or `section: '<heading>'`). " +
-              "`apply: { write: true, format?: ['cmd {path}'], verify?: ['cmd {path}', ...], max_retries? }` makes the server write the " +
-              "returned content to artifact_path (write contract + provenance), run the verify commands, retry on " +
-              "the same model with the failure appended, and return a receipt instead of the file. It returns " +
-              "status 'escalate' the moment the policy would route the next attempt to a different model.",
-          },
+          // The definition every orchestrator sees, greenfield's included, is develop's. A brownfield feature run's
+          // packets also carry `apply` and pass `run_id` beside them (the input is not closed to other fields); the
+          // feature run's own instructions and execute_batch's definition describe both.
+          packet: { type: "object", description: "TaskPacket (see types.ts)" },
           policy_name: { type: "string" },
           project_root: { type: "string" },
-          run_id: {
-            type: "string",
-            description: "Brownfield run id — with apply, the server records provenance for the write under .sdlc/runs/<run_id>/ so /mmo:revert still works.",
-          },
           policy_path: { type: "string" },
           work_dir: {
             type: "string",
@@ -637,7 +667,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object",
         properties: {
-          packets: { type: "array", items: { type: "object" }, description: "TaskPackets, each with an apply block (plan-to-packets output). Omit when packets_path is given." },
+          packets: { type: "array", items: { type: "object" }, description: "TaskPackets, each with an apply block (plan-to-packets output). Omit when packets_path is given. `apply: { write: true, format?: ['cmd {path}'], verify?: ['cmd {path}', ...], max_retries? }` makes the server write the returned content to artifact_path (write contract + provenance), run the format and verify commands, retry on the same model with the failure appended, and return a receipt instead of the file; status 'escalate' the moment the policy would route the next attempt to a different model. An inputs[] slice without `content` is read from disk under project_root (narrow it with `lines: [from, to]` or `section: '<heading>'`)." },
           packets_path: { type: "string", description: "Path to packets.json (plan-to-packets output); the server reads it so the packets never pass through the caller's context. Packets without an apply block (tooling) are skipped and listed in the receipt." },
           packet_ids: { type: "array", items: { type: "string" }, description: "With packets_path: run only these ids." },
           policy_name: { type: "string" },
@@ -755,6 +785,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     ...EXECUTOR_TOOLS,
+    // Zero-touch's four hand-off tools (handoff/tools.ts), the only tools zero-touch adds: its workflow routing
+    // needs none. Listed only where a Hand-off chat can use them (above); a call is refused unless the plugin's hook
+    // stamped it in a hand-off chat (test/toolList.test.mjs).
+    ...handoffToolsNow(),
   ],
 }));
 
@@ -789,10 +823,23 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         progress: { token, send: (params) => extra.sendNotification({ method: "notifications/progress", params } as any) },
       });
     }
+    // Zero-touch's hand-off tools: the chat, its policy and its models come from the hook's stamp and the chat's own
+    // records, never from pre-flight (a hand-off chat runs no workflow).
+    if (HANDOFF_TOOL_NAMES.has(name)) {
+      const token = (req.params as any)._meta?.progressToken;
+      return await handleHandoffTool(name, a0, {
+        overrides: selectOverrides(),
+        progress: { token, send: (params) => extra.sendNotification({ method: "notifications/progress", params } as any) },
+        // The request's own cancel signal: Claude Code cancels the call when the person presses
+        // Stop, and a hand-off then ends without writing anything into the project.
+        signal: extra.signal,
+      });
+    }
     switch (name) {
       case "execute_with_model": {
         const a = args as any;
-        const out = await runPacket(a.packet, a);
+        // The request's own cancel signal: a call the person stops writes nothing more (apply.ts runApplyLoop).
+        const out = await runPacket(a.packet, a, extra.signal);
         return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
       }
       case "execute_batch": {
@@ -807,7 +854,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const result = await runBatch({
           packets,
           maxParallel,
-          run: (p) => runPacket(p, a) as Promise<any>,
+          run: (p) => runPacket(p, a, extra.signal) as Promise<any>,
+          signal: extra.signal,
           log: (level, event, fields) => log(level, event, fields),
         });
         log("info", "batch.done", { packets: packets.length, status: result.status, counts: JSON.stringify(result.counts), cost_usd: result.cost_usd, duration_ms: result.duration_ms });

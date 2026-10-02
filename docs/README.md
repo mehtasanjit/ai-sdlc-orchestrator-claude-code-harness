@@ -33,6 +33,8 @@ Look things up. Exact answers, exhaustive.
 | [Brownfield setup issues (17 known)](brownfield-setup-issues.md) | Every install-time issue that has hit real users and how the plugin handles each. |
 | [Understanding output](understanding-output.md) | Reading `telemetry.jsonl`, `manifest.json`, `provenance.json`, and the cost report. |
 | [Logging](logging.md) | The `MMO:` log stream — format, levels, taxonomy, enablement, redaction. |
+| [Zero-touch guide](zero-touch-guide.md) | Zero-touch in plain words, for anyone: install, settings, both modes, five scenarios to try, and what runs at each step. |
+| [Zero-touch](ambient-mode.md) | The separate `zero-touch` plugin and its two modes, chosen in the chat in Claude's question box. Workflow mode: a plain-words request starts its `/mmo:` workflow with no command typed, on the person's chosen models. Hand-off mode: the chat's own model develops, and new docs, specs, plans, tests and repeated edits go to the model the person chose for each kind of work, through four tools that check the result. The settings box, how requests are recognised, the hooks, what is stored, how to turn it on and off. |
 
 ## Concepts
 

@@ -38,5 +38,12 @@ jobs:
         run: npm ci
         working-directory: plugin/mcp/model-dispatch
 
+      # Some root tests import the server's compiled code (plugin/mcp/model-dispatch/dist/), which is not committed.
+      # tsc builds it. The committed bundle/ is left as it is, so tools/test/server-bundle.test.mjs still catches a
+      # bundle that no longer matches the source.
+      - name: Build MCP server (compiled code only)
+        run: npx tsc
+        working-directory: plugin/mcp/model-dispatch
+
       - name: Run tests
         run: npm test

@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/write-contract-check.mjs\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/node.sh\" write-contract-check.mjs"
           }
         ]
       },
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/foreground-helpers.mjs\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/node.sh\" foreground-helpers.mjs"
           }
         ]
       },
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/executor-guard.mjs\" pre"
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/node.sh\" executor-guard.mjs pre"
           }
         ]
       }
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/executor-guard.mjs\" post"
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/node.sh\" executor-guard.mjs post"
           }
         ]
       }

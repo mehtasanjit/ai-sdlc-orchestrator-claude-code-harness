@@ -60,7 +60,7 @@ test("the validator is wired into the execute_with_model handler", () => {
   const runPacketIdx = src.indexOf("async function runPacket(");
   assert.ok(runPacketIdx > 0 && validateIdx > runPacketIdx, "validator call must be inside runPacket");
   const handlerIdx = src.indexOf('case "execute_with_model"');
-  assert.ok(src.indexOf("runPacket(a.packet, a)", handlerIdx) > handlerIdx, "execute_with_model must hand args.packet to runPacket");
+  assert.ok(src.indexOf("runPacket(a.packet, a", handlerIdx) > handlerIdx, "execute_with_model must hand args.packet to runPacket (with the request's cancel signal)");
   const batchIdx = src.indexOf('case "execute_batch"');
   assert.ok(src.indexOf("validateTaskPacket(p)", batchIdx) > batchIdx, "execute_batch must validate every packet");
 });

@@ -9,7 +9,7 @@ Invoke the `orchestrator` subagent to execute one full SDLC run.
 
 **Argument parsing (the orchestrator must do this):**
 - `--auth=<vendor|estimated>` — **required**. Picks the telemetry mode for the whole run. `vendor` dispatches every LLM call via the MCP server so telemetry carries real vendor-reported tokens; `estimated` uses a char-count heuristic for direct-tier calls. If the flag is missing or carries any other value, abort — see rule 6 in the orchestrator's system prompt for the exact abort text.
-- `--policy=<name>` — routing policy name. When absent, resolves to the current project's `default_policy` field from `.sdlc/project.json` (written by the setup-time policy console — see [SETUP.md](../../SETUP.md) §5b), or `opus-plus-flash` if no project default is set.
+- `--policy=<name>` — routing policy name. When absent, resolves to the current project's `default_policy` field from `.sdlc/project.json` (written by `/mmo:setup`'s policy step or by `/mmo:policy`), or `opus-plus-flash` if no project default is set.
 - `--study=<study-id>` — case-study identifier. Defaults to `workforce-ops`. Set this to a project-specific id when running against a brief other than the shipped `examples/workforce-ops/brief.md`, so telemetry and packets stay grouped by project.
 - `--run-id=<run-id>` — run identifier within the study. Defaults to `pass1`.
 - Executor mode — always on for a greenfield brief: the typed-spec executor flow (the pipeline skill's **Executor mode**; `/mmo:greenfield` always runs it). The architect hands over a typed spec, and the `execute_stage` tool types, checks and writes every file by code, each with the typist the policy routes it to, and types review and test fixes the same way (the policy's `debug` rule, exact edits); the orchestrator never re-types a file. The same flow for every policy, so a solo policy and a multi-model policy differ only in who types. Ignored in brownfield.
@@ -41,7 +41,7 @@ for:
    `policy_name: <resolved default>` plus `project_root: $(pwd)`; the loader prefers the project
    file whenever it exists. Omitting `project_root` is the historical bug: the run silently fell
    back to the shipped preset while the project's own policy sat unread.
-3. **Otherwise the named preset** `plugin/config/policies/<name>.yaml` loads — the project's
+3. **Otherwise the named preset** `${CLAUDE_PLUGIN_ROOT}/config/policies/<name>.yaml` loads — the project's
    `default_policy` from `.sdlc/project.json`, or `opus-plus-flash` when none is set.
 
 Pass the same policy arguments on **every** call, `simulate_policy` included — a what-if priced
@@ -64,14 +64,15 @@ When invoked headlessly (e.g. via `claude --print "/mmo:pass ..." --output-forma
 ## Brownfield-mode flags (added in v1)
 
 When `--mode=brownfield` is set, the pipeline uses the brownfield entry (equivalent to
-`/mmo:brownfield` but flag-driven for scripted / CI use). Additional required + optional
+`/mmo:brownfield` but flag-driven for scripted / CI use). With `--intent=feature-extend` or
+`--intent=feature-new`, invoke `brownfield-orchestrator` instead of `orchestrator`. Additional required + optional
 flags:
 
 | Flag | Purpose |
 |---|---|
 | `--mode=brownfield` | Switch to brownfield mode. Default is greenfield. |
 | `--intent=<docs\|bugfix\|feature-extend\|feature-new\|refactor\|test\|deps>` | Required in brownfield. The job type. Adds a `Gate 0` before Gate 1. |
-| `--brief=<path>` | Optional: pre-written intent brief (replaces the interview). Any markdown file with the section layout in [docs/brownfield.md](../../docs/brownfield.md) works. |
+| `--brief=<path>` | Optional: pre-written intent brief (replaces the interview). Any markdown file with the heading layout of section 4 ("Intent brief") in `${CLAUDE_PLUGIN_ROOT}/skills/brownfield-guide/SKILL.md` works. |
 | `--gates=<prompt\|auto-approve\|auto-abort>` | Gate behavior. `prompt` (default) is interactive; `auto-approve` accepts every gate (headless friendly); `auto-abort` **v1.5** — approves only when the run's fingerprint matches `.sdlc/project.json`, aborts otherwise. Recommended for CI so drift never silently proceeds. |
 | `--from-config=<path>` | **v1.5** — read gate answers from a committed team config file. Combined with `--gates=auto-abort`, this is the CI-safe flow. |
 | `--policy=<name>` | Same as greenfield. Overrides the setup-time project default (`.sdlc/project.json.default_policy`) and, if present, any repo-local `routing-policy.yaml` — the flag is passed to the MCP server as an explicit `policy_path`, which outranks the loader's project-override search (see **Policy resolution** above). |
@@ -97,7 +98,7 @@ flags:
 - The pipeline pre-check (§7.4) must have passed or been skipped-with-user-consent for this
   run's inputs.
 
-See [plugin/commands/brownfield.md](brownfield.md) for the interactive equivalent
+See `${CLAUDE_PLUGIN_ROOT}/commands/brownfield.md` for the interactive equivalent
 of these flags (the 7-step operating manual Claude follows in the interactive flow).
 
 Begin now.

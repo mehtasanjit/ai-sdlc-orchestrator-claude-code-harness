@@ -44,30 +44,57 @@ Behavior:
 2. The hook reads `.sdlc/local/write-contract.json` from an ancestor of the current directory.
 3. If the file is missing or `active:false` → allow (greenfield mode or no active run — the
    hook silently no-ops so `/mmo:greenfield` in an empty folder is unaffected).
-4. If active:
+4. A contract binds its own run only, and only while that run is live. If the run has ended by its
+   own log (`.sdlc/runs/<run-id>/orchestrator.log`, written by `mmo-log.mjs`; see
+   [`lib/run-log.mjs`](../plugin/scripts/lib/run-log.mjs)) → allow, exactly as for `active:false`.
+   Ended means: a gate answered abort, a `run.end` recorded as aborted or failed, or a completed run
+   whose Gate 4 is answered accept (or approved). Any other Gate 4 answer (revise, reject) keeps the
+   run, and its contract, live. The brownfield guide's close-out comes after Gate 4 is accepted, so
+   its records (`.sdlc/ledger.md`, `.sdlc/ledger.json`, `.sdlc/CLAUDE-SDLC.md`) and its switch-off
+   (`active:false`) go through.
+5. If active and the run is live:
+   - The contract file and the run's own log are refused to `Write` and `Edit`, whatever the allowlist
+     says: a live run may not widen its own contract, switch it off, or log its own end by hand.
+   - The run's own output directory `.sdlc/runs/<run-id>/` is allowed.
    - Check the target path against `off_limits` patterns — deny with reason if hit.
    - Check against `allowlist` patterns — allow if hit.
    - Otherwise (not in allowlist, not off-limits) — deny.
-5. `contract.strict = false` (equivalent to `--strict-write=off`) downgrades every enforcement
+6. `contract.strict = false` (equivalent to `--strict-write=off`) downgrades every enforcement
    to a warning; the file is written but a warning is logged.
+7. A write outside the project that holds the session's active contract is refused as a
+   cross-project write. "Inside" is judged on the paths as written first; only when that says
+   "outside" is it judged again with links resolved on both sides. So a project reached through a
+   linked folder (macOS's `/tmp` and `/var`, a linked code folder) is judged the same whichever form
+   a path takes: the session's folder always reads with links resolved, while a write's path
+   arrives as written. The second look can only find a path inside, so it never refuses a write the
+   first look allows.
 
 Fail-safe: any bug in the hook (parse failures, missing fields, resolvable path issues) → allow.
 Better to permit a write than to wedge user work on a plugin bug. Denials only happen when the
-contract parses cleanly AND is active AND the path fails the check.
+contract parses cleanly AND is active AND its run has not ended AND the path fails the check.
+
+Why step 4 exists: the close-out writes under `.sdlc/`, which the contract puts off-limits, so a run
+could never switch its own contract off. After a normal finish the contract went on refusing every
+edit outside that run's allowlist, in every chat in the project, the next run's Gate 0 included. Now
+the run's own log ends the contract. `Bash` is not matched by this hook, so the contract governs the
+`Write` and `Edit` tools only.
 
 ## The server's writer (apply form and `execute_batch`)
 
 A packet with an `apply` block is written by the MCP server, not by a `Write` or `Edit` tool call, so
 the hook above never sees it. The server runs the same check itself
-([`checkWriteContract`](../plugin/mcp/model-dispatch/src/apply.ts)) before every write.
+([`checkWriteContract`](../plugin/mcp/model-dispatch/src/apply.ts)) before every write, with its own copy of the
+run-end rule ([`runLog.ts`](../plugin/mcp/model-dispatch/src/runLog.ts), kept equal to the hook's by
+`test/apply.test.mjs`).
 
 | Case | What the server does |
 |---|---|
-| No `.sdlc/local/write-contract.json`, or `active:false` | Refuses the packet before any model call. The apply form exists only inside a brownfield run, after Gate 0. |
+| No `.sdlc/local/write-contract.json`, `active:false`, or a contract whose run has ended by its own log | Refuses the packet before any model call. The apply form exists only inside a live brownfield run, after Gate 0. |
 | Packet routed to an `antigravity-worker` leaf | Refuses the packet. An agent-door worker edits the folder itself, outside this check. |
 | Path in the hardcoded off-limits list | Refuses the write (`apply.refused`). |
 | Path in the contract's `off_limits` | Refuses the write. |
 | Strict contract, path not in the `allowlist` | Refuses the write. |
+| The contract file, or the run's own `orchestrator.log` | Refuses the write, whatever the allowlist says (`strict: false` reports instead): a live run may not change its own contract or log its own end. |
 | `.sdlc/runs/<run-id>/` of the packet's own run | Allows: the run's own record. |
 | Otherwise | Writes, takes the run's provenance snapshot of the file once (before the first dispatch), formats, then verifies. |
 

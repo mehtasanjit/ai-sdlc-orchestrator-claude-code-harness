@@ -67,6 +67,13 @@ test("inside the plugin's own orchestrator a bare helper name is the pipeline's 
   assert.ok(denied(decide(launch("architect", true, "Agent", fromAgent("orchestrator")), project)), "the clone route's orchestrator");
   // The hook reads the project folder from the payload's cwd when it is not handed one.
   assert.ok(denied(decide({ ...launch("architect", true, "Agent", fromAgent("orchestrator")), cwd: project })), "project from the payload's cwd");
+  // A feature run's orchestrator is the plugin's copy brownfield-orchestrator: its helpers stay in the foreground too,
+  // under the plugin's name and on the clone route.
+  for (const t of ["brownfield-architect", "brownfield-senior-reviewer", "packet-worker"]) {
+    assert.ok(denied(decide(launch(t, true, "Agent", fromAgent("mmo:brownfield-orchestrator")), project)), `mmo:brownfield-orchestrator launching ${t}`);
+  }
+  copyFileSync(join(ROOT, "plugin", "agents", "brownfield-orchestrator.md"), join(project, ".claude", "agents", "brownfield-orchestrator.md"));
+  assert.ok(denied(decide(launch("brownfield-architect", true, "Agent", fromAgent("brownfield-orchestrator")), project)), "the clone route's brownfield-orchestrator");
 });
 
 test("the list of pipeline helpers matches the plugin's agent files", () => {
@@ -86,7 +93,8 @@ test("the script speaks the hook protocol: deny JSON on stdout for a refused lau
   const hooks = JSON.parse(readFileSync(join(ROOT, "plugin", "hooks", "hooks.json"), "utf8"));
   const entry = hooks.hooks.PreToolUse.find((h) => h.matcher === "Agent|Task");
   assert.ok(entry, "registered in hooks.json");
-  assert.match(entry.hooks[0].command, /scripts\/foreground-helpers\.mjs/);
+  // Run through hooks/node.sh: it leaves quietly on a computer without Node.js.
+  assert.match(entry.hooks[0].command, /^sh "\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/node\.sh" foreground-helpers\.mjs$/);
 });
 
 

@@ -11,20 +11,20 @@
   "mcpServers": {
     "model-dispatch": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/model-dispatch/dist/server.js"],
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/model-dispatch/bundle/server.mjs"],
       "env": {
-        "GEMINI_API_KEY": "${GEMINI_API_KEY}",
-        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
-        "GOOGLE_APPLICATION_CREDENTIALS": "${GOOGLE_APPLICATION_CREDENTIALS}",
-        "GOOGLE_CLOUD_PROJECT": "${GOOGLE_CLOUD_PROJECT}",
-        "GOOGLE_CLOUD_LOCATION": "${GOOGLE_CLOUD_LOCATION}",
-        "GEMINI_BACKEND": "${GEMINI_BACKEND}",
-        "MMO_SELECT": "${MMO_SELECT}",
-        "SDLC_SELECT": "${SDLC_SELECT}",
-        "GEMINI_WORKER_PYTHON": "${GEMINI_WORKER_PYTHON}",
-        "MMO_LOG_LEVEL": "${MMO_LOG_LEVEL}",
-        "MMO_VERBOSE": "${MMO_VERBOSE}",
-        "MMO_LOG_PREFIX": "${MMO_LOG_PREFIX}"
+        "GEMINI_API_KEY": "${GEMINI_API_KEY:-}",
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
+        "GOOGLE_APPLICATION_CREDENTIALS": "${GOOGLE_APPLICATION_CREDENTIALS:-}",
+        "GOOGLE_CLOUD_PROJECT": "${GOOGLE_CLOUD_PROJECT:-}",
+        "GOOGLE_CLOUD_LOCATION": "${GOOGLE_CLOUD_LOCATION:-}",
+        "GEMINI_BACKEND": "${GEMINI_BACKEND:-}",
+        "MMO_SELECT": "${MMO_SELECT:-}",
+        "SDLC_SELECT": "${SDLC_SELECT:-}",
+        "GEMINI_WORKER_PYTHON": "${GEMINI_WORKER_PYTHON:-}",
+        "MMO_LOG_LEVEL": "${MMO_LOG_LEVEL:-}",
+        "MMO_VERBOSE": "${MMO_VERBOSE:-}",
+        "MMO_LOG_PREFIX": "${MMO_LOG_PREFIX:-}"
       }
     }
   }

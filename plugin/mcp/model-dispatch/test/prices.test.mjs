@@ -30,6 +30,8 @@ const POLICY_DIR = join(HERE, "..", "..", "..", "config", "policies");
 const ANTHROPIC_URL = "https://platform.claude.com/docs/en/about-claude/pricing";
 const GEMINI_URL = "https://ai.google.dev/gemini-api/docs/pricing";
 const DAY = "2026-09-14";
+// Opus 5.5's row, from the same page, has its own verified date; the rest of the list keeps DAY.
+const OPUS_5_5_DAY = "2026-09-26";
 const STD = { speed: "standard", service_tier: "standard", inference_geo: "not_available" };
 
 /** Build the pricing object from the page's column order: base input, 5m write, 1h write, cache read, output. */
@@ -111,6 +113,7 @@ const CLAUDE_PAGE = {
   // model id:          base in, 5m write, 1h write, cache read, output  (per MTok, 2026-09-14)
   "claude-fable-5-1":   card(10, 12.5, 20, 0.25, 50),
   "claude-fable-5":     card(10, 12.5, 20, 1, 50),
+  "claude-opus-5-5":    card(4, 5, 8, 0.2, 20),  // verified on OPUS_5_5_DAY; cache read is 0.05x input on this model
   "claude-opus-5":      card(5, 6.25, 10, 0.5, 25),
   "claude-opus-4-8":    card(5, 6.25, 10, 0.5, 25),
   "claude-opus-4-7":    card(5, 6.25, 10, 0.5, 25),
@@ -139,13 +142,14 @@ test("T2 every Claude rate equals Anthropic's price page as verified 2026-09-14 
     assert.deepEqual(r.pricing, expected, id);
     assert.deepEqual(r.model, { id, tag: null, snapshotDate: null });
     assert.equal(r.period.source_url, ANTHROPIC_URL, id);
-    assert.equal(r.period.verified, DAY, id);
+    assert.equal(r.period.verified, id === "claude-opus-5-5" ? OPUS_5_5_DAY : DAY, id);
     assert.equal(r.period.to, null, `${id}: no end date is published`);
     assert.deepEqual(r.applied_modifiers, { speed: "standard", service_tier: "standard", inference_geo: "not_available", multiplier: 1, defaulted: [] });
   }
   // The names Claude Code actually writes price identically to the bare id.
   assert.deepEqual(priced("claude-opus-5[1m]").pricing, CLAUDE_PAGE["claude-opus-5"]);
   assert.deepEqual(priced("claude-haiku-4-5-20251001").pricing, CLAUDE_PAGE["claude-haiku-4-5"]);
+  assert.deepEqual(priced("claude-opus-5-5[1m]").pricing, CLAUDE_PAGE["claude-opus-5-5"], "the desktop app's default model, as Claude Code writes it");
 });
 
 test("T2 fast mode: Opus 5 and Opus 4.8 only, $10/$50 with the cache multipliers on top", () => {
@@ -154,6 +158,10 @@ test("T2 fast mode: Opus 5 and Opus 4.8 only, $10/$50 with the cache multipliers
     assert.deepEqual(r.pricing, card(10, 12.5, 20, 1, 50), id);
     assert.equal(r.applied_modifiers.speed, "fast");
   }
+  // Opus 5.5's fast mode is $8 / $40; its cache rates scale by its own ratios (read 0.05x input).
+  const fast55 = priced("claude-opus-5-5", DAY, { ...STD, speed: "fast" });
+  assert.deepEqual(fast55.pricing, card(8, 10, 16, 0.4, 40));
+  assert.equal(fast55.applied_modifiers.speed, "fast");
   for (const id of ["claude-opus-4-7", "claude-opus-4-6", "claude-fable-5-1", "claude-sonnet-5", "claude-haiku-4-5"]) {
     const r = unpriced(id, DAY, { ...STD, speed: "fast" });
     assert.match(r.reason, /fast/, id);
@@ -165,6 +173,7 @@ test("T2 US-only inference: x1.1 on every token class for Claude 4.6 and later; 
   assert.deepEqual(priced("claude-opus-5", DAY, us).pricing, card(5.5, 6.875, 11, 0.55, 27.5));
   assert.deepEqual(priced("claude-fable-5-1", DAY, us).pricing, card(11, 13.75, 22, 0.275, 55));
   assert.deepEqual(priced("claude-sonnet-5", DAY, us).pricing, card(2.2, 2.75, 4.4, 0.22, 11));
+  assert.deepEqual(priced("claude-opus-5-5", DAY, us).pricing, card(4.4, 5.5, 8.8, 0.22, 22));
   assert.equal(priced("claude-opus-5", DAY, us).applied_modifiers.multiplier, 1.1);
   for (const id of ["claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]) {
     assert.equal(priced(id, DAY, us).applied_modifiers.inference_geo, "us", id);

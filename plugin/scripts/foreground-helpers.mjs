@@ -21,7 +21,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** The plugin's own agents (plugin/agents/*.md). */
-export const PIPELINE_AGENTS = new Set(["orchestrator", "architect", "senior-reviewer", "security-reviewer", "brownfield-senior-reviewer", "brownfield-security-reviewer", "discovery", "packet-worker"]);
+export const PIPELINE_AGENTS = new Set(["orchestrator", "architect", "senior-reviewer", "security-reviewer", "discovery", "brownfield-orchestrator", "brownfield-architect", "brownfield-senior-reviewer", "brownfield-security-reviewer", "packet-worker"]);
+
+/** The plugin's orchestrators: every run's, and the copy brownfield feature runs use (tools/build-agent-copies.mjs). */
+const ORCHESTRATORS = new Set(["orchestrator", "brownfield-orchestrator"]);
 
 // Claude Code looks an agent up by its exact name, then by the name with case, spaces, dashes and
 // underscores ignored, so `mmo:Architect` still starts the plugin's architect. Names compare the same way.
@@ -39,19 +42,19 @@ export function pipelineAgent(type) {
 // The clone route copies the plugin's orchestrator into the project's .claude/agents, where it is
 // named `orchestrator`. The copy is told apart from a user's own orchestrator by its grant of this
 // plugin's dispatch tools.
-function isPluginOrchestratorCopy(projectDir) {
+function isPluginOrchestratorCopy(projectDir, name = "orchestrator") {
   if (!projectDir) return false;
   try {
-    const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(join(projectDir, ".claude", "agents", "orchestrator.md"), "utf8"))?.[1] ?? "";
+    const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(join(projectDir, ".claude", "agents", `${name}.md`), "utf8"))?.[1] ?? "";
     return /\bmcp__(plugin_mmo_)?model-dispatch__/.test(front);
   } catch { return false; }
 }
 
-/** Whether the caller is this plugin's orchestrator: `mmo:orchestrator`, or the clone route's copy. */
+/** Whether the caller is one of this plugin's orchestrators: `mmo:orchestrator` or `mmo:brownfield-orchestrator`, or the clone route's copy. */
 function fromPluginOrchestrator(input, projectDir) {
   const caller = pipelineAgent(input.agent_type);
-  if (caller?.name !== "orchestrator") return false;
-  return caller.prefixed || isPluginOrchestratorCopy(projectDir);
+  if (!ORCHESTRATORS.has(caller?.name)) return false;
+  return caller.prefixed || isPluginOrchestratorCopy(projectDir, caller.name);
 }
 
 /** The hook's decision for one tool call: a PreToolUse deny object, or null to allow. */

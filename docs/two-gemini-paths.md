@@ -71,7 +71,7 @@ Then, in a new session:
 Pick Ping Service. It exercises every phase in minutes and costs roughly $0.84 on the model path. To reproduce the agent-path row, enable the agent before running:
 
 ```bash
-node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/verify-setup.mjs | tail -1)" --enable-agent
+node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/verify-setup.mjs" --enable-agent
 ```
 
 Verify it took effect with `probe-agent-worker.mjs` (~2¢).

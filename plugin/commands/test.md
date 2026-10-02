@@ -8,7 +8,7 @@ pre-selected. This command takes optional free text; finishing the sentence remo
 round-trip, but Gate 0 always fires and always re-confirms scope before anything is written.
 
 Follow the operating manual in
-[plugin/skills/brownfield-guide/SKILL.md](/plugin/skills/brownfield-guide/SKILL.md),
+`${CLAUDE_PLUGIN_ROOT}/skills/brownfield-guide/SKILL.md`,
 with this handover:
 
 - `intent: test` — already chosen. Skip step 4a; Gate 0 re-confirms it.

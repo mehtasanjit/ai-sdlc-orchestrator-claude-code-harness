@@ -25,6 +25,7 @@ import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveProjectRoot } from "./lib/env.mjs";
+import { loadServerLib } from "./lib/server-lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Keys the post-run collector writes into a manifest; kept across a rewrite while the dispatched total is unchanged. */
@@ -219,8 +220,9 @@ export async function writeManifest(a) {
   const events = existsSync(telemetryPath)
     ? readFileSync(telemetryPath, "utf8").split("\n").filter((l) => l.trim()).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)
     : [];
-  // A file URL, not a path: a '#' or '%' in the plugin's folder would otherwise be read as URL syntax.
-  const { buildManifest } = await import(pathToFileURL(join(HERE, "..", "mcp", "model-dispatch", "dist", "telemetry.js")).href);
+  // The server's own manifest builder, from the bundle the plugin ships (lib/server-lib.mjs: dist/ is not in a GitHub
+  // install).
+  const { telemetry: { buildManifest } } = await loadServerLib();
   const manifestPath = join(outDir, "manifest.json");
   let existing = {};
   try {

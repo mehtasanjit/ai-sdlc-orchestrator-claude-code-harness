@@ -31,6 +31,7 @@ const healthy = {
   hasClaudeCli: true,
   hasNodeModules: true,
   hasDist: true,
+  hasBundle: true,
   env: { ANTHROPIC_API_KEY: "x", GEMINI_API_KEY: "y" },
 };
 

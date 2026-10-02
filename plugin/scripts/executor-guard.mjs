@@ -28,6 +28,10 @@ import { basename, dirname, join, relative, resolve, isAbsolute, sep } from "nod
 import { pathToFileURL } from "node:url";
 import { pipelineAgent } from "./foreground-helpers.mjs";
 
+// A greenfield executor run's helpers. The foreground rule's list (foreground-helpers.mjs) also holds the brownfield
+// reviewers' copies, which a greenfield run never hires, so this guard keeps its own list.
+const EXECUTOR_HELPERS = new Set(["orchestrator", "architect", "senior-reviewer", "security-reviewer", "discovery"]);
+
 /** Where the executor-run orchestrators are recorded, relative to the project folder. */
 export const MARKER = join(".sdlc", "local", "executor-agents.json");
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
@@ -109,7 +113,7 @@ export function decide(input, projectDir) {
   const tool = String(input.tool_name ?? "");
   const ti = input.tool_input ?? {};
   if (tool === "Agent" || tool === "Task") {
-    if (pipelineAgent(ti.subagent_type)) return null;
+    if (EXECUTOR_HELPERS.has(pipelineAgent(ti.subagent_type)?.name)) return null;
     return deny(`In a greenfield executor run the orchestrator hires only the pipeline's own helpers. Read the failing check's output yourself, then send each file to change to execute_stage with stage "repair" (failures): the typist the run's policy routes fixes to changes it. Nothing was started.`);
   }
   if (WRITE_TOOLS.has(tool)) {

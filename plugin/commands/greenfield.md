@@ -138,8 +138,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/setup-policy.mjs" --print-only
 ```
 
 This prints the `default_policy` field setup wrote to `.sdlc/project.json`. If the output is
-empty, setup wasn't run for this project — stop and tell the user to run setup first
-([SETUP.md](../../SETUP.md), §5b). Do not proceed to spend anything without a policy the user
+empty, setup wasn't run for this project — stop and tell the user to pick a policy first with
+`/mmo:setup` (its policy step) or `/mmo:policy`. Do not proceed to spend anything without a policy the user
 has explicitly picked or explicitly kept as the shipped default.
 
 Resolve the policy through the `load_policy` MCP tool, passing `policy_name: <resolved-name>` and

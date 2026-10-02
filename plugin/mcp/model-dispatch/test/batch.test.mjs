@@ -39,6 +39,16 @@ test("independent packets run in parallel up to max_parallel; receipts come back
   assert.equal(out.items[0].attempts, 1);
 });
 
+test("stopped by the person mid-batch: no packet starts after the stop, the waiting ones are reported stopped, the running one ends", async () => {
+  const stop = new AbortController();
+  const r = runner({ delay: 20 });
+  const run = async (p) => { const out = await r.run(p); if (p.id === "a") stop.abort(); return out; };
+  const out = await runBatch({ packets: ["a", "b", "c"].map((id) => pk(id)), maxParallel: 1, run, log: silent, signal: stop.signal });
+  assert.deepEqual(out.items.map((i) => [i.id, i.status]), [["a", "applied"], ["b", "stopped"], ["c", "stopped"]]);
+  assert.ok(!r.events.includes("start:b") && !r.events.includes("start:c"), "nothing started after the stop");
+  assert.equal(out.status, "partial");
+});
+
 test("depends_on is honoured: a dependent starts only after its dependency applied", async () => {
   const r = runner({ delay: 30 });
   const packets = [pk("wire", { depends_on: ["ctrl", "svc"] }), pk("ctrl"), pk("svc"), pk("test", { depends_on: ["wire"] })];

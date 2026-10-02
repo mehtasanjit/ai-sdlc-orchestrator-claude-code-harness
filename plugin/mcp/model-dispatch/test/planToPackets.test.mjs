@@ -165,8 +165,8 @@ test("buildPackets: one packet per unit, apply form, edit lists with anchor cont
   assert.equal(a1.pass_id, "r1");
   assert.equal(a1.intent, "feature-extend");
   assert.deepEqual(a1.inputs, [
-    { path: ".sdlc/runs/r1/change_plan.md", section: "A1 — apps/api/src/user/controllers/get-public-profile.ts", reason: "unit spec" },
-    { path: ".sdlc/runs/r1/change_plan.md", section: "House style", reason: "house style" },
+    { path: ".sdlc/runs/r1/change_plan.md", section: "A1 — apps/api/src/user/controllers/get-public-profile.ts", reason: "unit spec (stable run record)" },
+    { path: ".sdlc/runs/r1/change_plan.md", section: "House style", reason: "house style (stable run record)" },
     { path: "apps/api/src/user/controllers/get-avatar.ts", lines: [1, 21], reason: "mirror" },
   ]);
   assert.deepEqual(a1.apply, { write: true, mode: "content", format: ["pnpm exec biome check --write {path}"], verify: ["pnpm exec biome check {path}"], max_retries: 2 });
@@ -427,13 +427,21 @@ test("editSites reads a `- **Edit**` bullet and parseAnchors reads `after :N -> 
   assert.equal(editSites(["- **Editor** x"]), null, "only an Edit / Edits / Edit anchor bullet counts");
 });
 
+test("buildPackets: every slice of the plan is marked stable, so the Anthropic adapter caches it in the system block", async () => {
+  const { isStableInput } = await import(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "adapters", "BuiltinAnthropicAdapter.js"));
+  for (const reason of ["unit spec (stable run record)", "house style (stable run record)", "dependency spec, its path and Exports (stable run record)"]) {
+    assert.equal(isStableInput({ path: ".sdlc/runs/r1/change_plan.md", reason }), true, reason);
+  }
+  assert.equal(isStableInput({ path: ".sdlc/runs/r1/change_plan.md", reason: "unit spec" }), false, "the file's name alone makes nothing stable");
+});
+
 test("buildPackets: a worker packet carries the sections of the units it depends on; --multi-model puts check-imports first in a JS/TS verify", () => {
   const root = repo();
   const plan = parsePlan(PLAN);
   const single = buildPackets(plan, { runId: "r1", planPath: "p.md", projectRoot: root });
   const a3 = single.packets.find((p) => p.unit === "A3");
   assert.deepEqual(a3.inputs.filter((i) => i.reason.startsWith("dependency")), [
-    { path: "p.md", section: "A1 — apps/api/src/user/controllers/get-public-profile.ts", reason: "dependency spec (its path and Exports)" },
+    { path: "p.md", section: "A1 — apps/api/src/user/controllers/get-public-profile.ts", reason: "dependency spec, its path and Exports (stable run record)" },
   ]);
   assert.ok(!single.packets.some((p) => p.apply?.verify.some((c) => c.includes("check-imports"))), "single-model packets are unchanged");
 

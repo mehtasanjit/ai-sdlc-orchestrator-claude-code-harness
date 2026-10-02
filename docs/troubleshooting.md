@@ -8,12 +8,12 @@ Symptom → cause → fix. If the fix is a command, it is copy-paste-runnable.
 
 | Command | What it tells you |
 |---|---|
-| `/mmo:setup` (inside Claude Code) | Re-verify and re-configure this project. Rebuilds the MCP server, re-checks credentials, prints one line per completed step, pauses only on missing credentials or when a decision is needed. The first command to reach for. |
+| `/mmo:setup` (inside Claude Code) | Re-verify and re-configure this project. Re-checks the install (the MCP server ships pre-built) and the credentials, prints one line per completed step, pauses only on missing credentials or when a decision is needed. The first command to reach for. |
 | `/mmo:policy` | Which policy this project uses and when it was set. `/mmo:policy change` opens the browser to change it. |
 | `/plugin` | Which plugins are installed and enabled. |
 | `claude --debug` | Prints the plugin's env pass-through, MCP handshake, and tool invocations. |
-| `node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/verify-setup.mjs \| tail -1)"` | Full offline check. Reports blocking (`✗`) and warning (`!`) findings, plus fix commands. `/mmo:setup` wraps this. |
-| `node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/probe-agent-worker.mjs \| tail -1)"` | One real Antigravity delegation, ~2¢. Only cheap way to confirm entitlement, region, and credential liveness. |
+| `node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/verify-setup.mjs"` | Full offline check. Reports blocking (`✗`) and warning (`!`) findings, plus fix commands. `/mmo:setup` wraps this. |
+| `node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/probe-agent-worker.mjs"` | One real Antigravity delegation, ~2¢. Only cheap way to confirm entitlement, region, and credential liveness. |
 
 From a clone:
 
@@ -27,7 +27,7 @@ npm run verify --prefix /path/to/ai-sdlc-orchestrator-claude-code-harness
 |---|---|---|
 | `claude: command not found` | Global npm bin not on `PATH`. | Add the output of `npm root -g`'s `../bin` to `PATH`, or install Node via `nvm`. |
 | `Node <n> — this repo needs Node 20 or newer` | Older Node on `PATH`. | `nvm install --lts`, or install from [nodejs.org](https://nodejs.org). |
-| `verify-setup.mjs`: `mcp-dependencies` or `mcp-build` (blocking) | `dist/` and `node_modules/` are not tracked in git; a fresh install carries source only. | Re-run with `--fix` — runs `npm ci` then `npm run build` in the server directory. |
+| `verify-setup.mjs`: `mcp-dependencies` or `mcp-build` (blocking) | This copy of the plugin is missing its pre-built server (`mcp/model-dispatch/bundle/`). The plugin ships it built, so only a damaged install or a clone being developed lacks it. | Reinstall the plugin. In a clone, re-run with `--fix` — runs `npm ci` then `npm run build` in the server directory, which writes the bundle. |
 | `/plugin marketplace add` reports the marketplace already exists | Cached from an earlier session. `add` is a no-op that leaves the cache stale. | `/plugin marketplace update tilicho-ai-labs`, then install again. |
 | `/mmo:greenfield` isn't in the slash-command menu | Commands register at session start; the install session doesn't have it. | Open a new session in the same folder. |
 | `/reload-plugins` returns "isn't available in this environment" | The command does not exist in the desktop app. | Open a new session instead. |
@@ -143,12 +143,12 @@ Recorded on the same brief: model path 43k / 34k tokens for $0.84 wall-clock 28 
 |---|---|---|
 | `/mmo:brownfield` refuses on a non-git folder | Brownfield requires a git repo — the write-contract and revert both need commit-level state. | `git init` first, or use `/mmo:greenfield` on an empty folder for greenfield. |
 | Gate 0 shows constant off-limits paths you did not add | Setup wrote `off_limits_default` (`.env*`, `.mcp.json`, `node_modules/**`, etc.) to `.sdlc/project.json`. Gate 0 merges them with per-run additions before showing you the full list. | Expected. Edit `.sdlc/project.json.off_limits_default` if the project-wide default itself is wrong. |
-| A write-contract PreToolUse hook blocked an expected write | A path outside the allowlist, or a path in off-limits. Hook is HARD-BLOCK by default. | Add the path at Gate 0's File-scope question, or re-run with `--strict-write=off` to downgrade to WARN (defeats the safety guarantee). |
+| A write-contract PreToolUse hook blocked an expected write | A path outside the allowlist, or a path in off-limits, while that contract's run is live (a finished run's contract binds nothing). Hook is HARD-BLOCK by default. | Add the path at Gate 0's File-scope question, or re-run with `--strict-write=off` to downgrade to WARN (defeats the safety guarantee). |
 | Want to undo the last brownfield run | Every brownfield run writes `provenance.json` under `.sdlc/runs/<run-id>/`. | `/mmo:revert` (interactive picker) or `/mmo:revert <run-id>`. |
 
 ## Repair after `/plugin update`
 
-An update re-copies the plugin from source, which removes the `dist/` and `node_modules/` produced by `--fix`. Re-run:
+The MCP server ships pre-built inside the plugin (`mcp/model-dispatch/bundle/`), so an update needs nothing rebuilt. If something looks wrong after an update, re-check the install:
 
 ```
 /mmo:setup
@@ -157,5 +157,5 @@ An update re-copies the plugin from source, which removes the `dist/` and `node_
 Or, from a script:
 
 ```bash
-node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/verify-setup.mjs | tail -1)" --fix
+node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/verify-setup.mjs"
 ```

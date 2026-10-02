@@ -18,6 +18,7 @@
  */
 
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { claudeCommand } from "../claudeCommand.js";
 
 import type { AttemptRecord, ExecutionResult, ModelConfig, TaskPacket } from "../types.js";
 import { estimateTokens } from "../pricing.js";
@@ -93,7 +94,7 @@ export class ClaudeCliAdapter implements ModelAdapter {
     const probe =
       options.probeBinary ??
       (() => {
-        execFileSync("claude", ["--version"], { stdio: "pipe" });
+        execFileSync(claudeCommand(), ["--version"], { stdio: "pipe" });
       });
     try {
       probe();
@@ -283,7 +284,7 @@ export class ClaudeCliAdapter implements ModelAdapter {
       let child: ChildProcess;
       try {
         child = this.spawnFn(
-          "claude",
+          claudeCommand(),
           ["-p", "--model", this.modelConfig.model_name, "--output-format", "json"],
           { stdio: ["pipe", "pipe", "pipe"] },
         );

@@ -20,7 +20,8 @@ import { writeManifest, gatesFromLog, countProduct } from "../../plugin/scripts/
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(HERE, "..", "..", "plugin", "scripts", "write-manifest.mjs");
-const DIST = resolve(HERE, "..", "..", "plugin", "mcp", "model-dispatch", "dist", "telemetry.js");
+// The server code write-manifest.mjs loads: the pre-built bundle the plugin ships.
+const DIST = resolve(HERE, "..", "..", "plugin", "mcp", "model-dispatch", "bundle", "lib.mjs");
 const AT = (hms) => `2026-09-29T${hms}.000Z`;
 const ev = (over) => JSON.stringify({ ts: AT("08:10:00"), pass: "r1", phase: "codegen", task_type: "codegen", task_id: "U01", module: "spec", model: "gemini-3.8-flash", routed_by: "orchestrator", provenance: "vendor", input_tokens: 100, input_tokens_cached: 0, output_tokens: 50, cost_usd: 0.5, latency_ms: 1, success: true, ...over });
 
@@ -88,7 +89,7 @@ test("gatesFromLog reads every gate.resolved line; countProduct skips installed 
   assert.deepEqual(countProduct(code), { files: 1, loc: 4 });
 });
 
-const HAS_DIST = !existsSync(DIST) && "server dist not built";
+const HAS_DIST = !existsSync(DIST) && "the server's pre-built bundle is missing";
 const asRoot = typeof process.getuid === "function" && process.getuid() === 0;
 /** What the awkward tree counts: its one source file, plus pgdata/PG_VERSION where chmod cannot hide it (root). */
 const AWKWARD = asRoot ? { files: 2, loc: 6 } : { files: 1, loc: 4 };
@@ -249,7 +250,7 @@ function placePlugin(base, dir) {
   copyFileSync(SCRIPT, join(plugin, "scripts", "write-manifest.mjs"));
   cpSync(join(dirname(SCRIPT), "lib"), join(plugin, "scripts", "lib"), { recursive: true });
   mkdirSync(join(plugin, "mcp", "model-dispatch"), { recursive: true });
-  symlinkSync(dirname(DIST), join(plugin, "mcp", "model-dispatch", "dist"));
+  symlinkSync(dirname(DIST), join(plugin, "mcp", "model-dispatch", "bundle"));
   return plugin;
 }
 

@@ -12,14 +12,14 @@ Claude Code loads the plugin from `plugin/.claude-plugin/plugin.json`. The manif
 |---|---|---|
 | `commands` | `./commands` | Slash commands the plugin registers when a session starts. |
 | `skills` | `./skills` | Skill files invocable via the `Skill` tool. |
-| `mcpServers.model-dispatch` | stdio server at `${CLAUDE_PLUGIN_ROOT}/mcp/model-dispatch/dist/server.js` | Owns every dispatch, credential probe, and telemetry write. |
+| `mcpServers.model-dispatch` | stdio server at `${CLAUDE_PLUGIN_ROOT}/mcp/model-dispatch/bundle/server.mjs` (pre-built and committed, so an install from GitHub needs no build) | Owns every dispatch, credential probe, and telemetry write. |
 | `mcpServers.model-dispatch.env` | 9 pass-through vars, incl. the deprecated `SDLC_SELECT` (MMO-D8 compat shim) | Values arrive as `${NAME}` placeholders when the host never set them. See §2. |
 
 Additional plugin content:
 
 | Path | Contents |
 |---|---|
-| [plugin/agents/](../plugin/agents/) | Subagents: `orchestrator`, `architect`, `senior-reviewer`, `security-reviewer`, `discovery` (brownfield only). |
+| [plugin/agents/](../plugin/agents/) | Subagents: `orchestrator`, `architect`, `senior-reviewer`, `security-reviewer`, `discovery` (brownfield only), `packet-worker` (brownfield feature runs, single-model). A brownfield job whose intent is `feature-extend` or `feature-new` delegates copies instead (`brownfield-orchestrator`, `brownfield-architect`, `brownfield-senior-reviewer`, `brownfield-security-reviewer`): each is its original plus that run's rules, built by `tools/build-agent-copies.mjs`, and the orchestrator copy reads `plugin/skills/pipeline/brownfield-features.md`. Every other run uses the originals and `pipeline/SKILL.md` alone. |
 | [plugin/commands/greenfield.md](../plugin/commands/greenfield.md) | Greenfield two-prompt-flow entry point. Takes no arguments; asks for what it needs. |
 | [plugin/commands/pass.md](../plugin/commands/pass.md) | Every setting as a flag; the form used for scripting and repeat runs. Covers both greenfield and brownfield via `--mode=`. |
 | [plugin/commands/brownfield.md](../plugin/commands/brownfield.md) | Brownfield two-prompt-flow entry point. Picks an intent, adds Gate 0. Thin caller into `brownfield-guide/SKILL.md` with no handover set. |
@@ -30,7 +30,8 @@ Additional plugin content:
 | [plugin/config/intents.json](../plugin/config/intents.json) | The seven-intent registry — id, title, example, argument hint, summary, interview questions. Single source for the job commands, the interview, and this table's own accuracy. |
 | [plugin/skills/pipeline/](../plugin/skills/pipeline/) | Skill body loaded by the orchestrator. |
 | [plugin/skills/brownfield-guide/](../plugin/skills/brownfield-guide/) | The shared seven-step brownfield manual. Every brownfield entry point (`brownfield.md` and the seven job commands) points here; step 4 branches on the `intent` / `seed_description` handover. |
-| [plugin/hooks/hooks.json](../plugin/hooks/hooks.json) | `PreToolUse`: the write-contract check, the foreground rule for the pipeline's own helpers, and the executor guard. `PostToolUse`: the telemetry heartbeat on `execute_with_model` and the executor guard's record of `execute_stage` callers, each matching the MCP tool name under both install routes. |
+| [plugin/hooks/hooks.json](../plugin/hooks/hooks.json) | `PreToolUse`: the write-contract check, the foreground rule for the pipeline's own helpers, and the executor guard. `PostToolUse`: the telemetry heartbeat on `execute_with_model` and the executor guard's record of `execute_stage` callers, each matching the MCP tool name under both install routes. The three that run a script with node go through [`plugin/hooks/node.sh`](../plugin/hooks/node.sh), which exits 0 quietly on a computer without Node.js and otherwise passes the script's output and exit code through. Nothing else: zero-touch's sixteen hooks are registered by the `zero-touch` plugin (`zero-touch/hooks/hooks.json`), which runs them in this folder through `plugin/hooks/ambient.sh`; they act only in a chat it marked. |
+| [plugin/scripts/ambient/](../plugin/scripts/ambient/) · [zero-touch/](../zero-touch/) | Zero-touch ([ambient-mode.md](ambient-mode.md)). `zero-touch/` is the switch plugin: the settings box (the person chooses the mode and the models in Claude's question box, in the chat) and the start hook that marks each new chat with them. `plugin/scripts/ambient/hook.mjs` handles every other moment. Workflow mode starts a `/mmo:` workflow from a plain-words request, on the person's chosen policy, stamped as an explicit `policy_path` on every model-server call of that run (a project's `routing-policy.yaml` is not used for it); hand-off mode leaves development to the chat's own model and hands docs, tests and repeated edits to the server's hand-off tools (§2b). |
 | [plugin/config/policies/](../plugin/config/policies/) | Shipped policy YAMLs. The directory listing is the authoritative preset set (`opus-plus-flash` is the default; the loader's not-found error prints the live list). |
 | [plugin/policy-console/](../plugin/policy-console/) | Single-page HTML console + tiny http server, used at setup to pick or author the per-project policy. |
 | `.sdlc/project.json` | Per-project state file. Fields: `default_policy` (name of the policy every run in this folder uses when `--policy` is not passed), `off_limits_default` (constant paths never touched by brownfield writes — merged with Gate 0 additions), `last_updated_at`, `schema_version: 2`. Written by `setup-policy.mjs` and consumed by every task command. |
@@ -39,11 +40,12 @@ The hook matcher is a regex because the plugin route namespaces MCP tools with t
 
 ## 2. MCP server
 
-The bundled server exposes eight tools over stdio: the five below, and the three of the typed-spec executor (§2a).
+The bundled server exposes thirteen tools over stdio: the six below, the three of the typed-spec executor (§2a), and zero-touch's four hand-off tools (§2b).
 
 | Tool | Purpose |
 |---|---|
 | `execute_with_model` | Dispatch a TaskPacket to the model the policy names; return result + tokens + cost. |
+| `execute_batch` | Brownfield: run several apply-form TaskPackets in one call (from `packets.json` by path, or inline), in `depends_on` order and in parallel, never two on one file at once; one receipt per packet plus totals. Same routing, apply, verify and telemetry as `execute_with_model` (one shared path per packet); like there, a packet that writes is refused unless the brownfield run's write contract is active. |
 | `simulate_policy` | Recompute cost from an existing telemetry stream against a different policy. No LLM call. |
 | `log_telemetry` | Append a TelemetryEvent the orchestrator emitted itself (direct-tier). Server stamps `ts` and nulls `latency_ms`. |
 | `preflight_dispatch` | Construct every adapter this run's auth mode will use, and price every model it can reach for today. Halts on an adapter that fails or a model with no price. No API call. Records the run's auth mode and policy for `execute_stage`; a new pre-flight opens a new run and is never refused for asking for other values. Takes `executor` (optional): `true` on a new-app run, whose Claude typing (the lean Opus last attempt included) runs through this machine's `claude` CLI, halts when that CLI is missing or its `--help` does not list `--tools`, `--append-system-prompt-file` and `--effort`; `false` (brownfield) skips the check; absent, the problem is a warning. The reply adds `executor` (`claude_typists`: the Claude models the executor would type with; `claude_cli`: `ok`, `not checked`, or what is wrong and how to fix it), `policy_notes` (how the executor reads the policy, below) and `run_card` (below; `settings_problems` lists a settings file that cannot be read or is not JSON, which never halts). |
@@ -98,6 +100,25 @@ The architect hands the build over as a typed spec, and code types, checks and w
 - The collector copies `acceptance.md` into SUMMARY.md between `<!-- acceptance:start -->` and `<!-- acceptance:end -->` on every run, so the report's acceptance table is code's.
 
 Code: [src/spec/](../plugin/mcp/model-dispatch/src/spec/) (schema, hand-over, rendering) and [src/executor/](../plugin/mcp/model-dispatch/src/executor/) (briefs, typists, checks, the stage runner, the acceptance stage, the tool handlers).
+
+### 2b. Zero-touch's hand-off tools (a chat in hand-off mode)
+
+In hand-off mode the chat's own model does the development and hands over only work that is mostly typing and that code can check. The four tools are listed only where a Hand-off chat can use them (zero-touch installed and switched on, its saved mode Hand-off or not chosen yet; listed when in doubt; added while the server runs if the mode becomes Hand-off: `handoff/listing.ts`); a call works only when zero-touch's hook stamped it (`_mmo`: the chat, the project folder, who pays for a Claude typist) in a hand-off chat, and never inside a workflow run. The typist for each kind of work and the chat's model come from the chat's own records, written once at its start from the person's settings, so nothing the model writes in a call can choose them. Work the person keeps in the chat is refused before it reaches the server. Full description: [ambient-mode.md](ambient-mode.md), "Hand-off mode".
+
+| Tool | Purpose |
+|---|---|
+| `write_document` | A new document, spec or plan, from a form: purpose, readers, sections, and facts each tied to a project file by a quote found in it word for word (or to the chat). The answer is refused when a listed section has no heading, a shell command is not among the facts, or a project path or relative link leads nowhere. |
+| `write_tests_from_cases` | A new test file, from named cases (`given`, `expect`) for functions of one target file. Every case must appear by name; the file is then run with the form's test command in a scratch copy of the project, and only a file whose tests pass is written. A case's expected result is never changed to make a test pass. |
+| `repeat_edit_across_files` | One change, already made by hand in an example file, repeated in the target files as exact edits. Each edit must apply exactly once and may remove only lines the change is about; the optional check command runs in the scratch copy before anything lands. |
+| `undo_hand_off` | Takes one landing back by its id: a changed file gets its earlier text, a created file is removed. A file changed since is left alone and named. |
+
+| What | Rule |
+|---|---|
+| Who types | The executor's typists and its ladder: two attempts by the typist the person chose for that kind of work (Flash 3.8 or Sonnet 5: the model the shipped policy `opus-plus-flash-v38` or `opus-plus-sonnet` routes that stage to, `docs`, `tests` or `codegen`), then one by the chat's own model through the Claude command line (the policy's Claude model when the chat has no one model). |
+| Where a command runs | A scratch copy of the project (`handoff/scratch.ts`): the project's own files copied as they are on disk, what git ignores linked in. A project that is not a git repository gets no copy, and the hand-off is refused. |
+| What is recorded | Under `~/.mmo-ambient/sessions/<id>/`: one telemetry line per typist call (`handoff-telemetry.jsonl`), every landing with what each file held before (`handoff_landings.json`, `handoff_undo/`), and the files a failed hand-off handed back to the chat's model (`handoff_released.json`). Nothing is written into a run folder: a hand-off belongs to the chat, not to a run. |
+
+Code: `plugin/mcp/model-dispatch/src/handoff/`. Tests: `test/handoffDocument.test.mjs`, `test/handoffScratch.test.mjs`, `test/handoffTestsAndEdits.test.mjs`, `test/toolList.test.mjs`.
 
 ## 3. Routing
 
@@ -223,7 +244,7 @@ Two ways in. Both end up running the same MCP server.
 
 | Route | Entry | What arrives |
 |---|---|---|
-| Plugin (default) | Two-prompt flow → [SETUP.md](../SETUP.md) → `/plugin install` → `verify-setup.mjs --fix` | `plugin/` under `~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/`. The MCP server's `dist/` and `node_modules/` are not tracked in git; `--fix` builds them. |
+| Plugin (default) | Two-prompt flow → [SETUP.md](../SETUP.md) → `/plugin install` → `verify-setup.mjs` | `plugin/` under `~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/`. The MCP server ships pre-built (`mcp/model-dispatch/bundle/server.mjs` and `bundle/lib.mjs`, tracked in git); its `dist/` and `node_modules/` are only for developing it, and `--fix` builds them in a clone. |
 | Clone | `git clone` → [tools/setup.mjs](../tools/setup.mjs) | The full repo, plus a project-level `.mcp.json` that registers the built server directly. |
 
 `.mcp.json` on the clone route holds an exhaustive `env` block, because a stdio MCP server inherits nothing from its parent. `verify-setup.mjs --enable-agent` writes the `MMO_SELECT` selection into both `.claude/settings.local.json` (read by Claude Code) and `.mcp.json` (read by the server); a settings-only write would be dropped at the server boundary.

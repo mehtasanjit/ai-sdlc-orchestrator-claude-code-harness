@@ -27,6 +27,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { gitInstalled, gitRoot } from "./git.js";
 
 const OVERRIDE_ENV = ["FORCE_PROMPT_CACHING_5M", "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL"];
 const OVERRIDE_ENV_PREFIX = "DISABLE_PROMPT_CACHING";
@@ -96,7 +97,9 @@ function pluginCheckout(pluginDir: string, exec: (cmd: string, args: string[]) =
 }
 
 export function runCard(opts: { pluginDir: string; pluginVersion: string; env: Record<string, string | undefined>; projectRoot?: string; exec?: (cmd: string, args: string[]) => string | null }): RunCard {
-  const exec = opts.exec ?? run;
+  // git runs only for a plugin folder inside a git checkout and with a real git installed (src/git.ts):
+  // an installed copy is no checkout, and on a Mac without the developer tools the git stub opens a dialog.
+  const exec = opts.exec ?? ((cmd: string, args: string[]) => (cmd === "git" && (!gitInstalled() || !gitRoot(opts.pluginDir)) ? null : run(cmd, args)));
   const files = settingsFiles(opts.env, opts.projectRoot).filter((f) => existsSync(f));
   const settings: { source: string; json: any }[] = [];
   const problems: string[] = [];

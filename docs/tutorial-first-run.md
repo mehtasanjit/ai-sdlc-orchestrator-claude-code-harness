@@ -63,7 +63,7 @@ At each gate, the artifact prints on screen. Read it, then approve to continue o
 The output lives under `.sdlc/` (telemetry, manifest, cost report) and `./src/` (the generated application code). Read the cost report:
 
 ```bash
-node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/../tools/report.mjs 2>/dev/null | tail -1)" .sdlc
+node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/../tools/report.mjs" .sdlc
 ```
 
 Or, if you cloned the repo:

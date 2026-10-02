@@ -230,27 +230,13 @@ Read `<brief.md>` (passed in $ARGUMENTS) and produce `<output_dir>/requirements.
 
 The orchestrator invokes the `architect` subagent passing `<output_dir>/requirements.md`. Architect writes `<output_dir>/design.md` (see architect.md for content spec).
 
-**Brownfield: lint the plan before Gate 2.** `change_plan.md` is a spec the worker implements, not a
-listing it copies (architect.md, "Per-unit sections"). When the architect returns, run
-
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/plan-lint.mjs" "<output_dir>/change_plan.md"
-```
-
-Exit 0: open Gate 2. Exit 1: re-delegate the architect **once** with the printed violation list
-("Edit these sections in place to Exports / Behavior / Mirror; do not rewrite the file"), lint again, and open Gate 2 whatever the
-second result — but log `phase.end` with `plan_lint=failed` and say so in the gate prompt and in
-SUMMARY.md, because the run's cost will show it. Never edit the plan yourself to pass the lint: the
-sections are the worker's inputs, and a hand edit here is Opus re-typing the program, which is the
-cost this gate exists to remove.
-
 ### Phase 4 — plan_task_packets
 
 From `design.md`, emit `<output_dir>/packets.json` — a list of TaskPackets, one per file-sized unit of work.
 
 Suggested packet types and one packet per. The task type describes the packet in reports and
 briefs only: the shipped policies route code by phase alone, whatever the file's language or type
-(`plugin/mcp/model-dispatch/test/stageRouting.test.mjs`).
+(`${CLAUDE_PLUGIN_ROOT}/mcp/model-dispatch/test/stageRouting.test.mjs`).
 
 | task_type | What |
 |---|---|
@@ -275,50 +261,9 @@ briefs only: the shipped policies route code by phase alone, whatever the file's
 
 When the app uses a validating `ConfigModule` (or Joi / Zod / envalid equivalent), packets for `env_docs` and `env_test_fixture` are **required** — omitting either is a senior-reviewer blocker. The two files must be internally consistent: every key listed in `.env.example` must appear in `.env.test` with a schema-valid value.
 
-**Brownfield: derive the packets, do not write them.** After the plan passes the lint (Phase 2), run
-
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/plan-to-packets.mjs" "<output_dir>/change_plan.md" \
-  --run-id <run-id> --intent <intent> --project-root "$(pwd)" [--multi-model]
-```
-
-Pass `--multi-model` when the loaded policy names more than one model. Then an `edit` unit with no edit
-sites is an error (exit 1, narrow architect Edit) instead of a silent whole-file packet. The flag catches whatever it
-still cannot read. Every packet whose verify runs `biome check` / `prettier --check` on its file also
-carries `apply.format` (the `--write` form); the server runs it after the write and before verify, so a
-formatting-only miss is not a retry.
-
-It writes `<output_dir>/packets.json` from the plan's unit sections with no model call: one packet per
-`## An — <path>` unit in plan order, `new_file` → apply packet returning the file, `edit` → apply packet in
-`edits` mode with the Edit-anchor windows as inputs, `tooling` → a shell step, test paths → the `tests`
-phase; `task_type` from the path (override with a `- **Packet** task_type=…, module=…` bullet in the
-unit); `inputs` = unit section + `House style` + Mirror slices; `verify` from the Verify bullet;
-`depends_on` from Depends on. It also checks the plan against the repo: a mirror file that does not exist
-or a line past its end is a **warning** on stderr, an edit to a missing file or a mirror outside the repo
-is an **error** (exit 1). On exit 1 the plan is wrong, not the script — re-delegate the architect with
-the error lines and the unit ids they name, as for a lint failure: "Edit these units in place; do not
-rewrite the file". A fresh delegation that rewrote the whole plan
-for a one-line fix cost ≈ 7.7k output tokens on the run this comes from. On exit 0, read the summary line and the warnings; adjust a
-packet only when a warning names it (a dropped mirror the worker needs) and log the `plan_task_packets` event with the tokens you actually spent — on the run
-this comes from, hand-writing the same 17 packets cost $1.03 and 9 turns. Greenfield does not use
-packets; it runs in executor mode from the typed spec.
-
-Two more things the derived packets carry: an edit with more than five anchor sites is split into
-chunk packets (`tp_codegen_004-a`, `-b`, …) chained by `depends_on` — dispatch them in order, they
-edit the same file; and a package-wide verify command (`typecheck`, the full suite) is on the packet
-as `verify_deferred`, not in `apply.verify`. **Run every `verify_deferred` command once, after the
-last packet of the phase**, and treat a failure as a debug packet against the file whose error it
-reports — a per-packet package check fails on other packets' unfinished work (measured: a
-route-tree edit was retried twice for another packet's import errors). Under `--multi-model` every JS/TS packet's
-`apply.verify` also starts with `check-imports.mjs '{path}'`: an import that does not resolve, or a
-default/named import the target does not export, fails the packet on the mechanical tier and the
-worker retries with the list of files that do exist — so a guessed sibling path is fixed there, not
-in a debug round at the deferred typecheck. Declare every import edge in **Depends on**: the batch
-writes dependencies first, and an import of a file not yet written fails the check.
-
 ### Brownfield-mode task types (v1)
 
-The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`plugin/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance.
+The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`${CLAUDE_PLUGIN_ROOT}/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance.
 
 | task_type | Purpose | Common `subtype` values |
 |---|---|---|
@@ -356,8 +301,8 @@ non-docs intent, and `docs` runs from before this existed — infer as before.
 
 Set `budget.maxOutputTokens` per phase type. The adapter automatically doubles this ceiling on any attempt that terminates with the vendor's max-tokens stop reason (Anthropic `stop_reason: "max_tokens"`, Gemini `finishReason: "MAX_TOKENS"`), up to 3 doublings or the model's absolute output limit declared in the policy YAML (`max_output_tokens_absolute`), whichever comes first. Cached input keeps retry cost low.
 
-- **Codegen and test packets:** `6000` (services, controllers, DTOs, React components, test files). A ceiling is a cap, not a spend — an unused ceiling costs nothing, while every doubling re-bills the whole attempt and returns a second full copy into your context. At `3000`, one feature-extend run doubled 4 of 14 codegen packets; at `6000` none of them would have.
-- **Premium packets (design, senior_code_review, security_review):** `8000`. Design and review artifacts are the ones that historically hit the ceiling.
+- **Codegen packets:** `3000` (services, controllers, DTOs, tests). Most files fit first-shot; a few large service files double once or twice.
+- **Premium packets (design, senior_code_review, security_review):** `5000`. Design and review artifacts are the ones that historically hit the ceiling.
 - **Docs, ADR, README:** `3000`. Same doubling behavior.
 - **Debug packets:** inherit from the packet they refine.
 
@@ -372,114 +317,15 @@ every dispatch inside the loop below already logs itself via the MCP server (`ro
 
 For each packet, in dependency order:
 
-**Direct-tier work (subagent handles it, no MCP dispatch):** the orchestrator (Opus) writes the file directly — except a brownfield single-model run's packets, which go to packet workers (below). Estimate tokens via `chars/3.8` heuristic for both inputs and outputs; take pricing constants from this model's `effective_price.rates` in the `load_policy` result (the dated price list's card for the day, or the policy's block only under `pricing_override: true`: the price the server and the post-run collector bill at; see orchestrator rule 6); log a TelemetryEvent via `log_telemetry`.
+**Direct-tier work (subagent handles it, no MCP dispatch):** the orchestrator (Opus) writes the file directly. Estimate tokens via `chars/3.8` heuristic for both inputs and outputs; take pricing constants from this model's `effective_price.rates` in the `load_policy` result (the dated price list's card for the day, or the policy's block only under `pricing_override: true`: the price the server and the post-run collector bill at; see orchestrator rule 6); log a TelemetryEvent via `log_telemetry`.
 
 **Mechanical-tier work (routed to another model):** call `execute_with_model` with the packet, `policy_name`, `project_root: $(pwd)`, and `cache_context`. The server routes per policy. Pass `project_root` on every dispatch, exactly as pre-flight received it: it is what lets the loader prefer a repo-local `routing-policy.yaml` over the shipped preset, and omitting it is the historical bug — the preview named the user's policy while the billed calls quietly routed under a different one. Validate the returned structured output against the schema; if invalid, construct a *refined* packet (new id, `retry_count+1`, with the validation error appended to instruction) and re-dispatch. After 2 mechanical-tier retries fail, the policy escalates to the subagent's own tier automatically (rule with `retry_count: { gte: 2 }`).
 
-Write the returned file content to disk at the packet's stated `artifact_path` — **only for packets without `apply`**. Every brownfield codegen, tests, docs and debug packet that produces a file uses the apply form below instead.
-
-**Wait inside your turn — never end it to wait (every mode, every policy).** When a subagent or a
-long test run is in flight, block on it with a Bash until-loop on its output file
-(`until [ -s <file> ]; do sleep 15; done`, `timeout: 600000`, repeated if it needs longer), or
-delegate the subagent in the foreground. Do not end your turn and rely on a completion
-notification to resume you: a resumed turn misses the prompt cache and re-writes the whole
-context. In brownfield, the two reviewers can run in parallel: delegate both, then wait on both
-output files in one loop. Greenfield keeps its own order: senior review, repair, checks, then
-security review.
-
-**Batch the phase (brownfield, multi-model policies).** Do not dispatch the derived packets one call at
-a time. When the run's mechanical tier is an Antigravity worker (`antigravity-worker`, chosen as the agent
-door), the server refuses apply-form and batched packets: dispatch those packets one at a time without
-`apply` instead. One `execute_batch` call carries every apply-form packet of the phase: pass
-`packets_path: <output_dir>/packets.json` (plus `packet_ids` when only some should run — e.g. the
-ones after a tooling step, or refinement packets you wrote to a second file) with the same
-`policy_name`, `project_root`, `run_id`, `telemetry_path` and `cache_context` you would pass to
-`execute_with_model`. **Do not `Read` packets.json and do not paste packets inline** — the server
-reads the file, skips `tooling` packets (listed as `skipped_no_apply`), and returns a compact
-receipt: full detail only for packets that did not apply and verify. Reading the file and typing it
-back put ~15k tokens into every later turn. To check one packet, `jq` that one id. The server runs them in
-parallel (`max_parallel`, default 4) in `depends_on` order, never two on one `artifact_path` at once,
-and returns one receipt per packet plus totals — one turn for the phase instead of one per packet. Read the batch result:
-
-| `items[].status` | What you do |
-|---|---|
-| `applied` | Nothing (STOP ON PASS) |
-| `escalate` / `verify_failed` / `no_content` | As for a single packet (table below), one at a time, after the batch returns |
-| `blocked` | Its dependency did not apply (`blocked_by`); resolve the dependency first, then re-dispatch the blocked packets in a second batch |
-| `error` | The dispatch threw (`error` says why); re-dispatch after fixing the cause, or escalate |
-
-`tooling` packets (no model) run as shell steps between batches where their `depends_on` puts them:
-batch everything before the tooling step, run it, batch the rest. Then run every `verify_deferred`
-command once. Under a single-model policy nothing is dispatched and this paragraph does not apply.
-
-**Hand the phase to packet workers (brownfield, single-model policies).** Do not write the derived
-packets in your own conversation: each file written here re-reads the whole run's context (measured:
-119 turns and 20.6M cached tokens, two thirds of an opus-only run's cost). Group them instead:
-
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/packet-groups.mjs" "<output_dir>/packets.json"
-```
-
-It prints `steps` in dependency order: `{kind: "worker", packet_ids}` groups of at most six packets,
-and `{kind: "tooling", packet_id}` shell steps placed where a later packet needs them. Walk the steps
-in order. For a worker step, delegate the `packet-worker` agent in the foreground with exactly:
-`run_id`, `intent`, `packets_path`, `packet_ids`, `project_root`, `plugin_root` (the value of
-`CLAUDE_PLUGIN_ROOT`), `telemetry_path`, `policy_name`, `model` and the model's
-`effective_price.rates` from `load_policy`. Nothing else: no packet bodies, no plan text, no file
-contents. The worker writes, formats, verifies, records provenance and telemetry, and returns one
-receipt line per packet. Its receipt is the record — do not read its files back. A tooling step
-runs as a shell step, as above.
-
-Read each receipt: `applied` needs nothing; `verify_failed` or `blocked` go to the next worker step
-as the first packets (or to one more worker after the last step) with the receipt's failure appended
-to the packet's `instruction` in a second packets file; handle a packet in your own conversation only
-after a worker failed it twice. Then run every `verify_deferred` command once and send a failure to
-one packet-worker as a debug packet. Refinement packets from the reviewers go to a packet-worker the
-same way: write them to `<output_dir>/refinement-packets.json` and pass that file as `packets_path`.
-
-**Format before verify (single-model).** A packet's `apply.format` (the `--write` form of its
-formatter) runs after the write and before `apply.verify` — the server already does this for a
-dispatched packet; under a single-model policy the worker does it, and so do you for a
-single-model packet you write yourself. A formatting-only miss is then never a retry. Record provenance `--after` once the format
-has run, so the recorded hash is the file on disk.
-
-**Apply form (brownfield, every file-producing mechanical packet).** The server writes the file, runs the verify commands, retries on the mechanical tier with the failure appended, and returns a receipt. Your side of the contract:
-
-| Field | Value |
-|---|---|
-| `inputs[]` | Paths only — no `content`. Narrow with `section: "<heading>"` (a `change_plan.md` section such as `"A1"`) or `lines: [from, to]`. The server reads them; you never paste file text into a packet. **The standard set for a codegen / test packet is three:** the unit section (`change_plan.md` § `An — …`), the plan's `House style` section, and the unit's **Mirror** slice (`path` + `lines` from the section — the existing file whose shape the new one copies). Add the **Edit anchor** lines for an edit, and the section of each unit it **Depends on** (≤ 4; their path and Exports are what its imports must match — `plan-to-packets.mjs` adds them). Nothing else: the worker does not need the whole plan, the requirements, or the repo facts. |
-| `instruction` | Names the section and says *implement*, not *reproduce*: "Implement `<artifact_path>` from change_plan section `An`: satisfy every Exports signature and Behavior rule; copy the shape of the Mirror input for imports, errors and structure; follow House style. Return JSON {path, content}." Do not restate the section's content in the instruction — the section is the input. |
-| `outputSchema` | Omit it. The server supplies `{path, content}`. |
-| `apply` | `{ "write": true, "mode": "content" | "edits", "format"?: [<commands>], "verify": [<commands>], "max_retries": 2 }`. `mode: "edits"` (edits to an existing file): the worker returns `{edits: [{line, anchor, position: "after" | "before" | "replace" | "delete", text, count?}]}` (`count` = lines a replace/delete removes from the anchor down, default 1) instead of the file and the server splices them in — an anchor that is not found, or matches more than one line without a `line`, is a retry with that reason; the file must exist. `plan-to-packets.mjs` picks the mode from the unit's Action. Verify commands come from `baseline.json` (the package's lint / typecheck / test commands), scoped to the file where the tool allows it: `{path}` is replaced by `artifact_path`. Typical: `["npx biome check {path}"]` for a source file, `["npx biome check {path}", "npx vitest run {path}"]` for a test file. Leave `verify` out only when no cheap check exists. |
-| `run_id` (tool argument, beside `packet`) | The run id, so the server records provenance for the write under `.sdlc/runs/<run_id>/` and `/mmo:revert` still works. Do not run `write-provenance.mjs --before/--after` yourself for an applied packet. |
-
-Read the receipt's `status`:
-
-| `status` | What happened | What you do |
-|---|---|---|
-| `applied` | Written, verify passed (or no verify) | **STOP ON PASS.** Nothing. Do not `cat` the file, do not re-run the verify command, do not read the packet result back. Move to the next packet. `apply.path`, `apply.sha16`, `apply.lines` are the record. |
-| `escalate` | Verify failed `escalate.retry_count` times on the mechanical tier and the policy routes the next attempt to `escalate.model_id` | Handle the retry exactly as an escalated packet today: under `estimated` in your own conversation with `provenance: "estimated"`, under `vendor` via `execute_with_model` with `retry_count: escalate.retry_count`. `escalate.failure` is the last verify output. In `content` mode the last attempt is on disk at `artifact_path`; in `edits` mode the file is back to its pre-packet state (every attempt splices into the original, and a failed one is undone), so the escalated packet redoes the edit. |
-| `verify_failed` | `max_retries` spent and the policy never re-routed | Same as `escalate`: the failure is in `attempts[].failure`. |
-| `refused` | `artifact_path` is outside the write contract | Planner bug. Fix the packet's `artifact_path` or the allowlist decision; never work around it. |
-| `dispatch_failed` | The vendor call failed (network, no price, cap) | As today for a failed dispatch. |
-| `no_content` | The model never returned a `content` string within `max_retries` | Rewrite the instruction to demand JSON `{path, content}`; re-dispatch. |
-
-The receipt is small by design (≤ 2 kB; verify output tailed to 1,500 characters). One `execute_with_model` call per file is the whole cost of a mechanical packet in your context: the packet (paths + instruction, ~150 tokens) and the receipt (~80 tokens). On the run this contract comes from, the previous form put ≈ 62k tokens of file text through the orchestrator's context for 24 packets, against 8k when the same files were written inline.
-
-`telemetry.jsonl` gets one event per attempt as before (`events_written` says how many); the events are not echoed in the receipt when `telemetry_path` is set.
+Write the returned file content to disk at the packet's stated `artifact_path`.
 
 ### Phase 6 — senior_code_review
 
-Invoke `senior-reviewer` subagent for each module (brownfield: `brownfield-senior-reviewer`). Collect refinement packets. Re-dispatch them via Phase 5 mechanics.
-
-In brownfield the delegation carries paths only — `change_plan.md` (or `requirements.md`) and
-`provenance.json` — per orchestrator.md rule 9; the reviewer reads diffs against
-`git_head_before`, not whole files.
-
-Also in brownfield, pass a one-line-per-suite summary of the tests, typecheck and verify results
-you already have (counts and pass/fail, no logs), so the reviewer does not re-run them. The same
-summary goes to the security reviewer in Phase 8. Both brownfield reviewers follow their "Lean
-review" budget.
+Invoke `senior-reviewer` subagent for each module. Collect refinement packets. Re-dispatch them via Phase 5 mechanics.
 
 ### Phase 7 — test_run
 
@@ -511,29 +357,13 @@ The test command in brownfield is `baseline.test_command` (confirmed at Gate 0),
 
 On failure:
 - If the error is `Config validation error: "X" is required` or equivalent → the codegen phase missed keys. In greenfield build a debug TaskPacket routed to codegen to add the missing keys with schema-valid values. In brownfield, ask the user via the mini-gate above; do NOT patch `.env` from the plugin.
-- Any other failure → parse the output, build a `debug` TaskPacket with the failing test name + error + relevant source slice (as `inputs[]` paths with `lines`, not pasted text). Route via policy. In brownfield use the apply form with `verify` set to the failing test command scoped to the file, so the mechanical-tier retries and the check happen in the server; you see the receipt. Retry up to 2 cost-efficient tier attempts; escalate to Opus.
+- Any other failure → parse the output, build a `debug` TaskPacket with the failing test name + error + relevant source slice. Route via policy. Retry up to 2 cost-efficient tier attempts; escalate to Opus.
 
 **Test-command probe (optional Phase 0.5 in brownfield).** The pipeline pre-check (§7.4) already ran the discovered test command with `--collect-only` / `--dry-run` at prompt 1 to prove deps are installed. If pre-check step 2 failed for this run, Phase 7 halts with the recorded error rather than attempting the real run.
 
 ### Phase 8 — security_review
 
-Invoke `security-reviewer` subagent (brownfield: `brownfield-security-reviewer`). Writes `<output_dir>/security_review.md`.
-
-**Brownfield: pick `form: full` or `form: light` from the touched set, then delegate.** Read the
-`files` list in `provenance.json` and match each path against the security surface below. Any
-match → `full`. No match → `light`, and the reviewer runs only the secrets and dependency checks.
-Log the phase with `--form=<full|light>` so the report shows which one ran.
-
-| Surface | Path or content signal |
-|---|---|
-| Auth and authz | path contains `auth`, `guard`, `session`, `permission`, `role`, `middleware`, `policy` |
-| Route registration | new or edited controller, router, `urls.py`, `routes/`, `index.ts` that registers handlers, `include_router` |
-| Data layer | `migration`, `schema`, `prisma`, `models.py`, `entity`, `repository`, `db/` |
-| Serialization of user data | `dto`, `serializer`, `interceptor`, `transform`, `mask` |
-| Config and secrets | `.env*`, `config/`, `settings.py`, `package.json`, lockfiles, `Dockerfile`, CI workflow files |
-| Audit | `audit`, `log` in a path under the API or server tree |
-
-A pure presentation change — a React component, a stylesheet, an i18n file, a docs page, a test file for existing code — matches none of these. A run that adds an unauthenticated endpoint matches *Route registration* and gets the full checklist. When in doubt, `full`; the light form is for the case where there is nothing for the checklist to find.
+Invoke `security-reviewer` subagent. Writes `<output_dir>/security_review.md`.
 
 ### Phase 9 — generate_final_report
 
@@ -569,7 +399,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/collect-orchestrator-usage.mjs" <output_dir>
   inputs: [ { path, content, reason } ],  // SLICED — never full files unless necessary
   outputSchema: { /* JSON schema */ },
   acceptance: ["<testable bullet>", ...],
-  budget: { maxInputTokens: 4000, maxOutputTokens: 6000 },  // codegen initial; adapter doubles on max_tokens truncation up to 3× (see below)
+  budget: { maxInputTokens: 4000, maxOutputTokens: 3000 },  // codegen initial; adapter doubles on max_tokens truncation up to 3× (see below)
   retry_count: 0,
   pass_id: "pass1" | "pass2",
   intent: "docs" | "bugfix" | "feature-extend" | "feature-new" | "refactor" | "test" | "deps"  // brownfield only — omit entirely on greenfield packets
@@ -597,12 +427,12 @@ phase) does NOT change per intent; that's fixed by the loaded policy (§11).
 
 | Intent | Phase 1 · requirements | Phase 2 · architecture | Phase 4 · packet plan | Phase 7 · tests | Phase 8 · security review |
 |---|---|---|---|---|---|
-| **docs** | scoped ("what docs?") | **SKIP** | `doc_addition` / `doc_update` packets | doc-lint only | changed files only, `light` unless the surface table matches |
+| **docs** | scoped ("what docs?") | **SKIP** | `doc_addition` / `doc_update` packets | doc-lint only | changed files only |
 | **bugfix** | reproduce + diagnose | **SKIP** unless design-affecting | `bug_reproduce` → `bug_diagnose` → `bug_fix_apply` → `test_add` | regression + focused suite | changed files only |
-| **feature-extend** | delta requirements | delta `change_plan.md` | mixed `existing_file_edit` + `new_file_add` | affected suites | changed files only; `full` or `light` per the Phase 8 surface table |
+| **feature-extend** | delta requirements | delta `change_plan.md` | mixed `existing_file_edit` + `new_file_add` | affected suites | changed files only |
 | **feature-new** | new-feature requirements | full subsystem design (`change_plan.md`) | full mix (`new_file_add`, `test_add`, `doc_addition`, wiring) | affected + new | changed files only |
-| **refactor** | delta (what to preserve) | delta refactor plan | `refactor_extract` + `patch_apply` | **full suite** (invariants) | changed files only; `full` or `light` per the Phase 8 surface table |
-| **test** | coverage target | **SKIP** | `test_backfill` / `test_add` | new tests + full suite | test files only, `light` |
+| **refactor** | delta (what to preserve) | delta refactor plan | `refactor_extract` + `patch_apply` | **full suite** (invariants) | changed files only |
+| **test** | coverage target | **SKIP** | `test_backfill` / `test_add` | new tests + full suite | test files only |
 | **deps** | upgrade target list | dep-swap plan | `dependency_add` + adjacent-code patches | full suite + smoke | dep-diff + advisory |
 
 **v1 specialization scope (per C6 cut).** Matrix cells are fully specified for the four "known"
@@ -672,7 +502,7 @@ off_limits}`). Build `off_limits` by concatenating `.sdlc/project.json.off_limit
 with the AI-configs from `baseline.ai_configs_detected` and any ticket-specific paths the user
 added at Gate 0. The PreToolUse hook and the packet validator both read the merged list — the
 UX shrinks (Gate 0 doesn't re-ask about constants each ticket), the enforcement is unchanged.
-See `plugin/scripts/write-contract-check.mjs` for the hook.
+See `${CLAUDE_PLUGIN_ROOT}/scripts/write-contract-check.mjs` for the hook.
 
 **Default the AI-coexistence answer to OFF-LIMITS.** A user who hits `approved` without reading
 must not accidentally authorize the plugin to rewrite their `.cursor/rules` or their custom

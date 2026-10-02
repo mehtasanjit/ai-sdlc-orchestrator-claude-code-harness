@@ -218,6 +218,8 @@ Both check the install, show which model each phase will run on, confirm the pla
 
 Thirteen commands, split by purpose. All are declared in [plugin/commands/](plugin/commands/) with the same descriptions shown here.
 
+[Zero-touch](docs/ambient-mode.md) is a separate, optional plugin in the same marketplace, with two modes and an Off setting, chosen in the chat: the first chat after install asks in Claude's question box, and `change zero-touch settings` opens the same box later (a choice applies to new chats). **Workflow mode** (the default) starts the right workflow from a plain request, with no command typed, on the models the person picked; any message that is not one of the eight jobs stays an ordinary chat. **Hand-off mode** leaves the development to the chat's own model and hands new docs, specs, plans, tests and one change repeated across files to the model the person picked for each kind of work, checked by code before anything reaches the project. A project's own `routing-policy.yaml` is not used by zero-touch. Install `zero-touch` to switch it on and disable it to switch it off; with it off, no zero-touch hook acts. New to it? Start with the [zero-touch guide](docs/zero-touch-guide.md): install, settings, both modes and five scenarios to try, in plain words.
+
 ### Run the pipeline
 
 | Command | What it does | When to use it |
@@ -244,7 +246,7 @@ Seven aliases into `/mmo:brownfield`, each with the job type pre-selected — on
 
 | Command | What it does | When to use it |
 |---|---|---|
-| [`/mmo:setup`](plugin/commands/setup.md) | Rebuilds the MCP server, re-checks credentials, opens the browser only when a human decision is genuinely needed (missing key, Gemini door choice, policy pick). Idempotent. | After `/plugin update`, a credential change, or an unexpected refusal. Also the everyday "did I set this up right?" check. |
+| [`/mmo:setup`](plugin/commands/setup.md) | Re-checks the install (the MCP server ships pre-built) and the credentials, opens the browser only when a human decision is genuinely needed (missing key, Gemini door choice, policy pick). Idempotent. | After a credential change, or an unexpected refusal. Also the everyday "did I set this up right?" check. |
 | [`/mmo:policy`](plugin/commands/policy.md) | Bare: prints the active policy for this project. `change`: opens the browser console to pick or author a new one. `--policy=<name>`: silent set, no browser. Per-project — writes `.sdlc/project.json.default_policy`. | Check or change which policy this project uses. |
 
 ### Undo
@@ -293,16 +295,16 @@ Step-by-step walkthrough of a real first run: [docs/tutorial-first-run.md](docs/
 
 ## Verify or repair the install
 
-Re-run the setup check any time. `/mmo:setup` rebuilds the MCP server, re-checks credentials, and pauses only when a human decision is needed:
+Re-run the setup check any time. `/mmo:setup` re-checks the install and the credentials, and pauses only when a human decision is needed. The MCP server ships pre-built inside the plugin, so an install or `/plugin update` needs nothing built:
 
 ```
 /mmo:setup
 ```
 
-Also the repair after `/plugin update`, which re-copies the plugin from source and removes the build. The raw script still works for scripted invocation:
+The raw script still works for scripted invocation. Its path comes from Claude Code's own record of the installed copy, so an older copy still in the cache is never picked (`--fix` repairs only a copy whose pre-built server is missing, such as a clone being developed):
 
 ```bash
-node "$(ls -d ~/.claude/plugins/cache/tilicho-ai-labs/mmo/*/scripts/verify-setup.mjs | tail -1)" --fix
+node "$(node -p 'require(require("os").homedir()+"/.claude/plugins/installed_plugins.json").plugins["mmo@tilicho-ai-labs"][0].installPath')/scripts/verify-setup.mjs"
 ```
 
 ## Clone route
@@ -328,6 +330,8 @@ node tools/setup.mjs
 - [docs/methodology.md](docs/methodology.md) — how tokens and costs are recorded
 - [docs/two-gemini-paths.md](docs/two-gemini-paths.md) — measured comparison of the two doors on the same brief
 - [docs/brownfield-routing.md](docs/brownfield-routing.md) — which model does which work
+- [docs/zero-touch-guide.md](docs/zero-touch-guide.md) — zero-touch in plain words, for anyone: install, settings, both modes, five scenarios to try, and what runs at each step
+- [docs/ambient-mode.md](docs/ambient-mode.md) — zero-touch (its own plugin, `zero-touch`: enable it to switch it on). Workflow mode: a plain-words request starts its `/mmo:` workflow, no command typed. Hand-off mode: the chat's own model develops, and docs, tests and repeated edits go to the policy's typing model
 - [docs/walkthroughs/](docs/walkthroughs/) — the two Gemini paths, frame by frame ([model](docs/walkthroughs/model-path.html), [agent](docs/walkthroughs/agent-path.html))
 - [examples/unit-convert/](examples/unit-convert/) — one endpoint, one conversion, minutes to run
 - [examples/quick-demo/](examples/quick-demo/) — one-endpoint ping service, minutes to run

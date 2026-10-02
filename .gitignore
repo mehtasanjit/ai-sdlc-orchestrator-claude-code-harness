@@ -59,3 +59,6 @@ Thumbs.db
 # source is ./plugin only.
 .claude/*
 !.claude/skills/
+
+# A temporary compile made by tools/test/server-bundle.test.mjs (removed after the test)
+plugin/mcp/model-dispatch/.bundle-check-*/

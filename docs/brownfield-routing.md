@@ -74,8 +74,8 @@ Three things the table shows:
 
 | Lever | Effect on the true total |
 |---|---|
-| Fewer driver turns — bookkeeping chained into one Bash call per packet (orchestrator.md rule 9) | each turn removed saves one full context re-read at the cache-read rate, ~$0.07 on Opus at 130k tokens |
-| Reviewers read diffs, not trees (rule 9, reviewer contract) | the two reviews read 56–87k tokens each on the measured run; the diff was under 15k |
+| Fewer driver turns — bookkeeping chained into one Bash call per packet (the brownfield-orchestrator's rule 9) | each turn removed saves one full context re-read at the cache-read rate, ~$0.07 on Opus at 130k tokens |
+| Reviewers read diffs, not trees (the brownfield-orchestrator's rule 9, reviewer contract) | the two reviews read 56–87k tokens each on the measured run; the diff was under 15k |
 | `light` security review when the touched set has no security surface (pipeline Phase 8) | skips one judgment-tier phase on presentation-only changes |
 | Codegen output ceiling 6000 instead of 3000 | no doublings on the measured run instead of 4; a ceiling is free until used |
 

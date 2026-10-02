@@ -16,7 +16,9 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ApplySpec, FileSlice, TaskPacket, TelemetryEvent } from "./types.js";
+import type { ApplySpec, FileSlice, ModelConfig, TaskPacket, TelemetryEvent } from "./types.js";
+import { LEGACY_GEMINI_ADAPTER_ID } from "./adapters/index.js";
+import { runEnded } from "./runLog.js";
 
 /** `{path, content}` — what every apply packet returns; substituted when the packet omits outputSchema. */
 export const FILE_OUTPUT_SCHEMA = {
@@ -173,36 +175,78 @@ export interface ContractDecision {
   rel: string;
 }
 
-/** True when a brownfield run's write contract is in force (written at Gate 0, cleared at run end). */
+/**
+ * The model settings an apply-form packet is dispatched with. Gemini bills its thinking as output, and the thinking
+ * counts against the packet's output cap: at Google's default level a 295-byte SVG cost 5,952 output tokens and long
+ * edit lists reached the 8,192 cap. So a Flash completion call of an apply-form packet thinks at "low", as the
+ * greenfield executor's typists do (executor/typists.ts). A tier the policy's leaf sets is kept, and every other
+ * model, the agent door included, is used as the policy writes it. Only apply-form packets get this, and only a
+ * brownfield feature run sends them.
+ */
+export function applyModelConfig(model: ModelConfig): ModelConfig {
+  const flashCompletion = model.adapter === "mcp:model-dispatch" || model.adapter === LEGACY_GEMINI_ADAPTER_ID;
+  if (!flashCompletion || (model as any).reasoning?.tier) return model;
+  return { ...model, reasoning: { ...(model as any).reasoning, tier: "low" } } as ModelConfig;
+}
+
+/**
+ * A brownfield run's record files, read by every packet and both reviews: written once before dispatch.
+ */
+const RUN_RECORD_FILES = new Set(["intent_brief.md", "discovery.md", "change_plan.md", "stack-profile.md"]);
+/**
+ * An apply-form packet with its slices of the run's record files marked stable ("stable" in the reason), so the
+ * Anthropic adapter puts them in the cached system block (BuiltinAnthropicAdapter isStableInput), as the
+ * orchestrator marks a stable input by hand (orchestrator.md rule 6). Only the server's apply path calls it, so a
+ * packet of any other run is sent as before.
+ */
+export function markRunRecordStable<P extends { inputs: Array<{ path: string; reason: string }> }>(packet: P): P {
+  return {
+    ...packet,
+    inputs: packet.inputs.map((s) => {
+      const name = String(s.path).split("/").pop() ?? "";
+      return RUN_RECORD_FILES.has(name) && !/\bstable\b/i.test(String(s.reason)) ? { ...s, reason: `${s.reason} (stable run record)` } : s;
+    }),
+  };
+}
+
+/**
+ * Whether a packet's inputs[] slices without `content` are read from disk under the project folder. Only for a
+ * brownfield packet: an apply-form packet, one that names its brownfield `intent` (greenfield packets carry none), or
+ * one in a project whose brownfield write contract is active. Any other packet goes to the model as develop sends it.
+ */
+export function readsSlicesFromDisk(packet: { intent?: unknown; inputs: Array<{ content?: unknown }> }, apply: unknown, projectRoot: string | undefined): boolean {
+  if (apply) return true;
+  if (!packet.inputs.some((s) => typeof s.content !== "string")) return false;
+  return Boolean(packet.intent) || (projectRoot !== undefined && hasActiveWriteContract(projectRoot));
+}
+
+/**
+ * True when a brownfield run's write contract is in force: written at Gate 0, and its run still live by its own log
+ * (runLog.ts). An ended run's contract is not in force even if it was never switched off, as the hook decides.
+ */
 export function hasActiveWriteContract(projectRoot: string): boolean {
   const contractPath = join(projectRoot, CONTRACT_REL_PATH);
   try {
     if (!existsSync(contractPath) || statSync(contractPath).size > 128 * 1024) return false;
-    return JSON.parse(readFileSync(contractPath, "utf8"))?.active === true;
+    const contract = JSON.parse(readFileSync(contractPath, "utf8"));
+    return contract?.active === true && !runEnded(projectRoot, contract.run_id);
   } catch {
     return false;
   }
 }
 
 /**
- * Decide whether the server may write `target` under `projectRoot`. Mirrors
- * the PreToolUse hook that gates the orchestrator's own Write/Edit: the
- * hardcoded off-limits always apply; an active contract adds its own
- * off_limits and, when strict, its allowlist. No contract, or an inactive one,
- * means the hardcoded list alone — the same fail-open the hook has.
+ * Decide whether the server may write `target` under `projectRoot`, in the order the PreToolUse hook that gates the
+ * orchestrator's own Write/Edit decides (plugin/scripts/write-contract-check.mjs): the active contract's own run
+ * folder (named by its run_id, never by the caller) is the plugin's to write; the hardcoded off-limits always apply;
+ * an active contract adds its off_limits and allowlist, which a contract with `strict: false` (--strict-write=off)
+ * reports instead of refusing. No contract, or an inactive one, means the hardcoded list alone.
  */
-export function checkWriteContract(projectRoot: string, target: string, opts: { runId?: string } = {}): ContractDecision {
+export function checkWriteContract(projectRoot: string, target: string): ContractDecision {
   const abs = resolve(projectRoot, target);
   const rel = toPosix(relative(projectRoot, abs));
   if (rel.startsWith("../") || rel === ".." || isAbsolute(rel)) {
     return { allowed: false, reason: `path escapes project_root: ${target}`, rel };
-  }
-  // The run's own record (a report, a receipt) is the plugin's to write, whatever the contract says about .sdlc/**.
-  if (opts.runId && rel.startsWith(`.sdlc/runs/${opts.runId}/`) && !rel.includes("/../")) {
-    return { allowed: true, reason: "run artifact", rel };
-  }
-  for (const p of HARDCODED_OFF_LIMITS) {
-    if (matchesAtAnyDepth(rel, p)) return { allowed: false, reason: `off-limits (hardcoded): ${p}`, rel };
   }
   const contractPath = join(projectRoot, CONTRACT_REL_PATH);
   let contract: any = null;
@@ -213,15 +257,38 @@ export function checkWriteContract(projectRoot: string, target: string, opts: { 
   } catch {
     contract = null;
   }
-  if (!contract || contract.active !== true) return { allowed: true, reason: "no active contract", rel };
-  const off = firstMatch(rel, contract.off_limits);
-  if (off) return { allowed: false, reason: `off-limits (contract): ${off}`, rel };
-  if (contract.strict !== false) {
-    const hit = firstMatch(rel, contract.allowlist);
-    if (!hit) return { allowed: false, reason: `not in the run's allowlist (strict contract)`, rel };
-    return { allowed: true, reason: `allowlist: ${hit}`, rel };
+  const active = contract?.active === true;
+  // As the hook decides (plugin/scripts/write-contract-check.mjs): a contract binds its run only while the run is live
+  // by its own log (runLog.ts); an ended run's contract binds nothing, exactly as one switched off.
+  const binds = active && !runEnded(projectRoot, contract.run_id);
+  const runId = binds && typeof contract.run_id === "string" && contract.run_id ? contract.run_id : null;
+  // While it binds, the contract file and the run's own log are not the run's to write, whatever the allowlist says:
+  // the run must not widen or switch off its own contract, or log its own end.
+  if (binds) {
+    const r = rel.toLowerCase();
+    const runLog = runId ? `.sdlc/runs/${runId.toLowerCase()}/orchestrator.log` : null;
+    if (r === CONTRACT_REL_PATH || (runLog && (r === runLog || r.startsWith(`${runLog}.`)))) {
+      if (contract.strict === false) return { allowed: true, reason: "the run's own contract or log, allowed because strict false", rel };
+      return { allowed: false, reason: "the run's own write contract or log, which a live run may not change", rel };
+    }
   }
-  return { allowed: true, reason: "contract not strict", rel };
+  // The run's own record (a report, a receipt) is the plugin's to write, whatever the contract says about .sdlc/**.
+  if (runId && rel.startsWith(`.sdlc/runs/${runId}/`)) {
+    return { allowed: true, reason: "run artifact", rel };
+  }
+  for (const p of HARDCODED_OFF_LIMITS) {
+    if (matchesAtAnyDepth(rel, p)) return { allowed: false, reason: `off-limits (hardcoded): ${p}`, rel };
+  }
+  if (!binds) return { allowed: true, reason: active ? "the contract's run has ended" : "no active contract", rel };
+  const off = firstMatch(rel, contract.off_limits);
+  if (off) {
+    if (contract.strict === false) return { allowed: true, reason: `off-limits (contract): ${off}, allowed because strict false`, rel };
+    return { allowed: false, reason: `off-limits (contract): ${off}`, rel };
+  }
+  const hit = firstMatch(rel, contract.allowlist);
+  if (hit) return { allowed: true, reason: `allowlist: ${hit}`, rel };
+  if (contract.strict === false) return { allowed: true, reason: "not in the run's allowlist, allowed because strict false", rel };
+  return { allowed: false, reason: `not in the run's allowlist (strict contract)`, rel };
 }
 
 // ---------------------------------------------------------------------------
@@ -501,7 +568,7 @@ export function spliceEdits(original: string, edits: EditOp[]): { ok: true; cont
 // The loop
 // ---------------------------------------------------------------------------
 
-export type ApplyStatus = "applied" | "verify_failed" | "escalate" | "dispatch_failed" | "refused" | "no_content";
+export type ApplyStatus = "applied" | "verify_failed" | "escalate" | "dispatch_failed" | "refused" | "no_content" | "stopped";
 
 export interface ApplyAttemptSummary {
   id: string;
@@ -561,6 +628,11 @@ export interface ApplyLoopDeps {
   route: (packet: TaskPacket) => RouteDecision;
   dispatch: (packet: TaskPacket) => Promise<DispatchResult>;
   log: (level: "info" | "warn", event: string, fields: Record<string, unknown>) => void;
+  /**
+   * The request's own cancel signal (Claude Code cancels the call when the person stops it): no attempt starts after
+   * it, and an answer that arrives after it is not written, so a stopped run writes nothing more into the project.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -570,7 +642,7 @@ export interface ApplyLoopDeps {
  * the receipt; the file never enters its context.
  */
 export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
-  const { packet, apply, projectRoot, runId, keepEvents, route, dispatch, log } = deps;
+  const { packet, apply, projectRoot, runId, keepEvents, route, dispatch, log, signal } = deps;
   const attempts: ApplyAttemptSummary[] = [];
   const allEvents: TelemetryEvent[] = [];
   const tokens = { input: 0, input_cached: 0, output: 0 };
@@ -591,14 +663,27 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
     if (!existsSync(abs)) return { status: "refused", decision: route(packet), attempts, tokens, cost_usd: 0, events_written: 0, events: keepEvents ? [] : undefined, refusal: `${packet.artifact_path}: edits mode needs an existing file` };
     editsBase = readFileSync(abs, "utf8");
   }
+  let snapshot: string | null = null;
   // Snapshot the file before anything is dispatched, so the backup is the original even if a worker
   // touches the file itself.
   if (runId) {
-    const allowed = checkWriteContract(projectRoot, packet.artifact_path!, { runId });
-    if (allowed.allowed) runProvenance("before", projectRoot, runId, allowed.rel, packet.id);
+    const allowed = checkWriteContract(projectRoot, packet.artifact_path!);
+    if (allowed.allowed) { runProvenance("before", projectRoot, runId, allowed.rel, packet.id); snapshot = allowed.rel; }
   }
 
-  const finish = (status: ApplyStatus, extra: Partial<ApplyOutcome> = {}): ApplyOutcome => ({
+  const finish = (status: ApplyStatus, extra: Partial<ApplyOutcome> = {}): ApplyOutcome => {
+    // A packet that ends without its write standing (the original put back, or nothing written) records the file as
+    // it is now, so the run's provenance matches the disk and /mmo:revert does not flag an unchanged file.
+    // write-provenance fills sha_after only while it is empty, and a failed attempt's write already filled it; a
+    // second --before keeps the run's first snapshot and empties sha_after, so the --after that follows records the
+    // file on disk now.
+    if (status !== "applied" && runId && snapshot) {
+      runProvenance("before", projectRoot, runId, snapshot, current.id);
+      runProvenance("after", projectRoot, runId, snapshot, current.id);
+    }
+    return outcome(status, extra);
+  };
+  const outcome = (status: ApplyStatus, extra: Partial<ApplyOutcome> = {}): ApplyOutcome => ({
     status,
     decision: firstDecision!,
     apply: receipt,
@@ -612,7 +697,12 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
     ...extra,
   });
 
+  const stopped = () => {
+    log("info", "apply.stopped", { packet_id: current.id, attempts: attempts.length });
+    return finish("stopped", { decision: firstDecision ?? route(current) });
+  };
   for (;;) {
+    if (signal?.aborted) return stopped();
     const decision = route(current);
     if (firstDecision && decision.modelId !== firstDecision.modelId) {
       const last = attempts[attempts.length - 1];
@@ -642,6 +732,7 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
       summary.failure = one.result.error;
       return finish("dispatch_failed");
     }
+    if (signal?.aborted) return stopped();
 
     let failure = "";
     let content: string | null = null;
@@ -662,7 +753,7 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
       summary.failure = failure;
       if (retriesUsed >= maxRetries) return finish("no_content");
     } else {
-      const contract = checkWriteContract(projectRoot, current.artifact_path!, { runId });
+      const contract = checkWriteContract(projectRoot, current.artifact_path!);
       if (!contract.allowed) {
         log("warn", "apply.refused", { packet_id: current.id, path: contract.rel, reason: contract.reason });
         summary.failure = contract.reason;

@@ -12,16 +12,16 @@ import { fileURLToPath } from "node:url";
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const read = (...p) => readFileSync(join(REPO, ...p), "utf8");
 
-test("the pipeline skill sends single-model packets to packet workers via packet-groups.mjs", () => {
-  const skill = read("plugin", "skills", "pipeline", "SKILL.md");
+test("a feature run's packet flow sends single-model packets to packet workers via packet-groups.mjs", () => {
+  const skill = read("plugin", "skills", "pipeline", "brownfield-features.md");
   assert.match(skill, /Hand the phase to packet workers \(brownfield, single-model policies\)/);
   assert.match(skill, /scripts\/packet-groups\.mjs/);
   assert.match(skill, /`packet-worker` agent in the foreground/);
   assert.match(skill, /Format before verify \(single-model\)/);
 });
 
-test("the orchestrator carries the packet-worker input contract", () => {
-  assert.match(read("plugin", "agents", "orchestrator.md"), /Packet-worker input contract \(brownfield, single-model\)/);
+test("the feature-run orchestrator carries the packet-worker input contract", () => {
+  assert.match(read("plugin", "agents", "brownfield-orchestrator.md"), /Packet-worker input contract \(brownfield, single-model\)/);
 });
 
 test("the packet worker formats before it verifies and records provenance after the format", () => {
