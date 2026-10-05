@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const { runBatch, validateBatch, batchPacketsFromArgs, compactBatchReceipt } = await import(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "batch.js"));
+const { runBatch, validateBatch, batchPacketsFromArgs, compactBatchReceipt, markSharedInputs, batchProgress } = await import(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "batch.js"));
 const silent = () => {};
 const pk = (id, over = {}) => ({ id, phase: "codegen", task_type: "x", module: "m", instruction: "", inputs: [], acceptance: [], budget: { maxInputTokens: 1, maxOutputTokens: 1 }, pass_id: "r", artifact_path: `src/${id}.ts`, apply: { write: true }, ...over });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -47,6 +47,17 @@ test("stopped by the person mid-batch: no packet starts after the stop, the wait
   assert.deepEqual(out.items.map((i) => [i.id, i.status]), [["a", "applied"], ["b", "stopped"], ["c", "stopped"]]);
   assert.ok(!r.events.includes("start:b") && !r.events.includes("start:c"), "nothing started after the stop");
   assert.equal(out.status, "partial");
+});
+
+test("a packet whose door refused its credentials halts the batch: nothing more starts, the rest are stopped with the reason", async () => {
+  const r = runner({ delay: 5 });
+  const halt = "the flash call was refused with HTTP 401 (its login or permission is broken); the batch stopped here";
+  const run = async (p) => (p.id === "a" ? { status: "dispatch_failed", cost_usd: 0, attempts: [{}], halt } : r.run(p));
+  const out = await runBatch({ packets: ["a", "b", "c"].map((id) => pk(id)), maxParallel: 1, run, log: silent });
+  assert.deepEqual(out.items.map((i) => [i.id, i.status]), [["a", "dispatch_failed"], ["b", "stopped"], ["c", "stopped"]]);
+  assert.equal(out.halted, halt);
+  assert.equal(out.items[1].stopped_reason, halt);
+  assert.ok(!r.events.includes("start:b"), "nothing started after the halt");
 });
 
 test("depends_on is honoured: a dependent starts only after its dependency applied", async () => {
@@ -122,6 +133,104 @@ test("compactBatchReceipt trims applied+verified items, keeps failures and non-r
   const bad = { id: "b", status: "verify_failed", cost_usd: 0.02, attempts: 2, outcome: { status: "verify_failed", verify: { ok: false, tail: "x" } } };
   const out = compactBatchReceipt({ status: "partial", counts: {}, cost_usd: 0.03, duration_ms: 1, max_parallel: 4, items: [ok, bad] }, ["t"]);
   assert.deepEqual(out.items[0], { id: "a", status: "applied", path: "src/a.ts", lines: 12, cost_usd: 0.01, attempts: 1, verify: { ok: true, ran: 2 }, verify_deferred: ["pnpm typecheck"] });
-  assert.deepEqual(out.items[1], bad);
+  assert.deepEqual(out.items[1], { id: "b", status: "verify_failed", cost_usd: 0.02, attempts: 2 }, "a failed packet: the decision fields only; its detail is in the full receipt");
   assert.deepEqual(out.skipped_no_apply, ["t"]);
+});
+
+// The receipt as sent stays within greenfield's stated bound (executor/run.ts RECEIPT_MAX_BYTES): the orchestrator
+// re-reads it every later turn. A failed packet keeps what the orchestrator decides on (status, a short reason, the
+// escalation target, what blocked it) and the full outcomes go to a file the receipt names.
+test("compactBatchReceipt keeps the receipt within 2 kB, failures first, and names the full receipt when it trimmed anything", async () => {
+  const { RECEIPT_MAX_BYTES } = await import(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "executor", "run.js"));
+  const failure = "verify failed: pnpm exec biome check src/x.ts (exit 1)\n" + "x".repeat(3000);
+  const failed = Array.from({ length: 6 }, (_, i) => ({ id: `f${i}`, status: "escalate", artifact_path: `src/f${i}.ts`, cost_usd: 0.01, attempts: 2,
+    outcome: { status: "escalate", attempts: [{ failure }, { failure }], escalate: { retry_count: 2, model_id: "opus", failure } } }));
+  const applied = Array.from({ length: 30 }, (_, i) => ({ id: `a${i}`, status: "applied", artifact_path: `src/a${i}.ts`, cost_usd: 0.001, attempts: 1,
+    outcome: { status: "applied", apply: { lines: 10 }, verify: { ok: true, ran: 1 } } }));
+  const out = compactBatchReceipt({ status: "partial", counts: { applied: 30, escalate: 6 }, cost_usd: 0.1, duration_ms: 1, max_parallel: 4, items: [...applied, ...failed] }, [], { fullReceipt: ".sdlc/runs/r1/batches/b1.json" });
+  assert.ok(JSON.stringify(out).length <= RECEIPT_MAX_BYTES, `${JSON.stringify(out).length} bytes`);
+  assert.equal(out.full_receipt, ".sdlc/runs/r1/batches/b1.json");
+  const first = out.items.find((i) => i.status === "escalate");
+  assert.deepEqual(Object.keys(first).sort(), ["attempts", "cost_usd", "escalate", "id", "path", "reason", "status"]);
+  assert.deepEqual(first.escalate, { retry_count: 2, model_id: "opus" });
+  assert.ok(first.reason.length <= 160);
+  assert.equal(out.items.filter((i) => i.status === "escalate").length + (out.failed_not_listed ?? 0), 6, "every failure listed or counted");
+  assert.equal(out.items.filter((i) => i.status === "applied").length + (out.applied_not_listed ?? 0), 30);
+  assert.equal(out.applied_not_listed, 30, "applied packets go first: a failure is what the orchestrator acts on");
+});
+
+// Greenfield's shared block, brownfield's way: the inputs every packet of a batch carries, from a file no packet in the
+// batch writes, are marked `shared`; the lean Opus typist sends them as its cached system-prompt tail (applyTypist.ts).
+test("markSharedInputs: only an input every packet carries, from a file no packet writes, is shared; a caller's mark is replaced", () => {
+  const house = { path: "change_plan.md", section: "House style", reason: "house style (stable run record)" };
+  const pk = (id, path, own) => ({ id, artifact_path: path, inputs: [{ path: "change_plan.md", section: id, reason: "unit spec (stable run record)", shared: true }, ...own, house] });
+  const out = markSharedInputs([
+    pk("A1", "src/a.ts", [{ path: "src/b.ts", reason: "mirror" }]),
+    pk("A2", "src/b.ts", [{ path: "src/b.ts", reason: "mirror" }]),
+  ]);
+  for (const p of out) {
+    assert.deepEqual(p.inputs.filter((s) => s.shared).map((s) => s.section), ["House style"]);
+    assert.equal(p.inputs.find((s) => s.section === p.id).shared, undefined, "a caller's mark on a per-unit input is dropped");
+  }
+  assert.equal(out[0].inputs.find((s) => s.path === "src/b.ts").shared, undefined, "src/b.ts is written by a packet of the batch");
+  const one = markSharedInputs([pk("A1", "src/a.ts", [{ path: "src/m.ts", reason: "mirror" }])]);
+  assert.deepEqual(one[0].inputs.filter((s) => s.shared).map((s) => s.path), ["change_plan.md", "src/m.ts", "change_plan.md"], "one packet: its own retries read every input it carries from the cache");
+});
+
+// A check the file failed before the change (apply.ts baselineChecks) is named in the receipt the orchestrator reads,
+// by id only, so the run's report can list it; its output stays in the full receipt file.
+test("compactBatchReceipt: a set-aside check is named by id on an applied and on a failed item", () => {
+  const long = "x".repeat(400);
+  const result = {
+    status: "partial", counts: {}, cost_usd: 0, duration_ms: 1,
+    items: [
+      { id: "p1", status: "applied", artifact_path: "src/a.ts", cost_usd: 0, attempts: 1, outcome: { status: "applied", apply: { lines: 3 }, set_aside: [{ id: "lint", run: "lint '{path}'", output: long }] } },
+      { id: "p2", status: "verify_failed", artifact_path: "src/b.ts", cost_usd: 0, attempts: 3, outcome: { status: "verify_failed", attempts: [{ failure: "tests failed" }], set_aside: [{ run: "fmt '{path}'", output: long }] } },
+    ],
+  };
+  const r = compactBatchReceipt(result, [], { fullReceipt: ".sdlc/runs/r/batches/x.json" });
+  assert.deepEqual(r.items.find((i) => i.id === "p1").set_aside, ["lint"]);
+  assert.deepEqual(r.items.find((i) => i.id === "p2").set_aside, ["fmt '{path}'"]);
+  assert.ok(!JSON.stringify(r).includes(long), "the output is in the full receipt only");
+});
+
+// Greenfield's long stage call sends progress (executor/tools.ts HEARTBEAT_MS), because Claude Code aborts an MCP call
+// that stays silent for its idle limit; a batch of slow typists can run that long. One message per finished packet,
+// and a heartbeat between them.
+test("runBatch reports each settled packet with a running count, blocked ones included", async () => {
+  const seen = [];
+  const packets = [{ id: "a", artifact_path: "a" }, { id: "b", artifact_path: "b", depends_on: ["a"] }, { id: "c", artifact_path: "c" }];
+  await runBatch({ packets, maxParallel: 2, run: async (p) => ({ status: p.id === "a" ? "verify_failed" : "applied", cost_usd: 0 }), log: () => {}, onSettled: (item, done, total) => seen.push(`${item.id}:${item.status}:${done}/${total}`) });
+  assert.equal(seen.length, 3);
+  assert.ok(seen.includes("b:blocked:3/3") || seen.some((s) => s.startsWith("b:blocked:")));
+  assert.deepEqual(seen.map((s) => s.split(":")[2]), ["1/3", "2/3", "3/3"]);
+});
+
+test("batchProgress: a message per settled packet and a heartbeat between them, only when the caller asked for progress", async () => {
+  const sent = [];
+  const channel = { token: "t1", send: async (p) => { sent.push(p); } };
+  const pr = batchProgress(channel, 2, 15);
+  await new Promise((r) => setTimeout(r, 50));
+  pr.settled({ id: "a", status: "applied" }, 1, 2);
+  pr.stop();
+  const beats = sent.filter((m) => /still typing/.test(m.message));
+  assert.ok(beats.length >= 2, `heartbeats: ${beats.length}`);
+  assert.deepEqual(sent.at(-1), { progressToken: "t1", progress: 1, total: 2, message: "a applied (1 of 2)" });
+  const after = sent.length;
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(sent.length, after, "stopped");
+  const silent = batchProgress({ token: undefined, send: async () => { throw new Error("must not send"); } }, 2, 5);
+  silent.settled({ id: "a", status: "applied" }, 1, 2);
+  silent.stop();
+});
+
+// The batch's answer must not overtake its own last progress message: a client stops listening for a request's
+// progress once the answer arrives, so stop() waits for the messages still being sent.
+test("batchProgress.stop waits for the progress messages still being sent", async () => {
+  const delivered = [];
+  const channel = { token: "t", send: (p) => new Promise((r) => setTimeout(() => { delivered.push(p.message); r(); }, 20)) };
+  const pr = batchProgress(channel, 1, 60_000);
+  pr.settled({ id: "a", status: "applied" }, 1, 1);
+  await pr.stop();
+  assert.deepEqual(delivered, ["a applied (1 of 1)"]);
 });

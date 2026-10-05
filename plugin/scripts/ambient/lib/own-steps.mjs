@@ -22,7 +22,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 export const OWN_SCRIPTS = new Set([
   "mmo-log.mjs", "write-provenance.mjs", "collect-orchestrator-usage.mjs", "write-manifest.mjs", "driver-model-check.mjs",
   "verify-setup.mjs", "setup-policy.mjs", "pre-check.mjs", "session-hydrate.mjs", "discovery-refresh.mjs",
-  "plan-lint.mjs", "plan-to-packets.mjs", "packet-groups.mjs",
+  "plan-lint.mjs", "plan-to-packets.mjs", "findings-to-packets.mjs",
 ]);
 /**
  * The model-server tools that take a policy file. In a run zero-touch started, the zero-touch plugin's pre-dispatch
@@ -37,11 +37,11 @@ export const ZERO_TOUCH_SCRIPTS = new Set(["workflow-stopped.mjs", "git-baseline
 const realOr = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };
 
 /**
- * The agents of a brownfield feature run (the copy built by tools/build-agent-copies.mjs, and packet-worker). Their
- * texts wrap long step calls over lines and chain bookkeeping calls with &&, so only their calls are read that way;
+ * The agent of a brownfield feature run that runs its steps (the orchestrator copy built by tools/build-agent-copies.mjs). Its
+ * texts wrap long step calls over lines and chain bookkeeping calls with &&, so only its calls are read that way;
  * every other caller keeps the one-call check below.
  */
-const FEATURE_RUN_AGENTS = ["brownfield-orchestrator", "packet-worker"];
+const FEATURE_RUN_AGENTS = ["brownfield-orchestrator"];
 const foldName = (s) => String(s ?? "").normalize("NFKC").toLowerCase().replace(/[\s_-]/g, "");
 export function featureRunAgent(agentType) {
   const n = foldName(agentType).replace(/^mmo:/, "");
@@ -70,9 +70,6 @@ export function ownScriptCall(command, scriptsDir, { joined = false } = {}) {
   const name = basename(script);
   // Only the run-start check is given the chat's model; any other script with a setting in front is not a step.
   if (m[1] && name !== "driver-model-check.mjs") return false;
-  // plan-to-packets writes packets.json beside the plan; its --out names any file, which a step run without a prompt
-  // must not write.
-  if (name === "plan-to-packets.mjs" && /(^|\s)--out(=|\s|$)/.test(m[5] ?? "")) return false;
   // The script must be this plugin's own, in its own folder, wherever the path goes through a link.
   const home = OWN_SCRIPTS.has(name) ? scriptsDir : ZERO_TOUCH_SCRIPTS.has(name) ? join(scriptsDir, "ambient") : null;
   return home !== null && realOr(dirname(script)) === realOr(home);
@@ -85,9 +82,9 @@ export function ownServerTool(toolName) {
 
 /**
  * The shell commands a model-server call makes the server run in the project, as the server will run them: each
- * apply-form packet's `verify` commands and its `format` commands, or, when it names none, the write form the server
- * derives from `verify` (apply.ts deriveFormat, mirrored by deriveFormat below and checked against it by a test), with
- * `{path}` filled in. Only packets the server applies count: `apply.write` true, and for execute_batch only the
+ * apply-form packet's typed `checks` (every `run` and `fix` on the file, and every `run` on its `baseline_from` file,
+ * which the server tries first; apply.ts normalizeApply, baselineChecks), or else its `verify` and `format` commands,
+ * with `{path}` filled in. Only packets the server applies count: `apply.write` true, and for execute_batch only the
  * `packet_ids` it names when it names any (execute_with_model's packet; execute_batch's packets, inline or in the
  * packets file it names, read as the server reads it, from the project folder). Claude Code's Bash rules never see a
  * command a server runs, so the hooks check these against the person's deny rules (lib/bash-rules.mjs), as they check
@@ -115,21 +112,15 @@ export function serverCommands(toolName, input, projectDir) {
   for (const p of packets) {
     const apply = p && typeof p === "object" ? p.apply : null;
     if (!apply || typeof apply !== "object" || apply.write !== true) continue;
-    const verify = Array.isArray(apply.verify) ? apply.verify.filter((c) => typeof c === "string") : [];
-    const given = Array.isArray(apply.format) ? apply.format.filter((c) => typeof c === "string") : [];
-    for (const template of [...verify, ...(given.length ? given : deriveFormat(verify))]) {
-      if (template.trim()) commands.push({ run: template.replaceAll("{path}", String(p.artifact_path ?? "")), template });
+    const add = (template, path) => { if (typeof template === "string" && template.trim()) commands.push({ run: template.replaceAll("{path}", String(path ?? "")), template }); };
+    const checks = Array.isArray(apply.checks) ? apply.checks.filter((c) => c && typeof c === "object" && typeof c.run === "string" && c.run.trim()) : [];
+    if (checks.length) {
+      for (const c of checks) { add(c.run, p.artifact_path); add(c.fix, p.artifact_path); }
+      if (typeof apply.baseline_from === "string" && apply.baseline_from) for (const c of checks) add(c.run, apply.baseline_from);
+      continue;
     }
+    for (const template of Array.isArray(apply.verify) ? apply.verify : []) add(template, p.artifact_path);
+    for (const template of Array.isArray(apply.format) ? apply.format : []) add(template, p.artifact_path);
   }
   return { commands };
-}
-
-/** The write form the server derives from a packet's verify commands when it names no format (apply.ts deriveFormat). */
-export function deriveFormat(verify) {
-  const out = [];
-  for (const c of verify ?? []) {
-    if (/\bbiome\s+(check|format)\b/.test(c) && !/--write\b/.test(c)) out.push(c.replace(/\bbiome\s+(check|format)\b/, "biome $1 --write"));
-    else if (/\bprettier\b.*--check\b/.test(c)) out.push(c.replace(/--check\b/, "--write"));
-  }
-  return out;
 }

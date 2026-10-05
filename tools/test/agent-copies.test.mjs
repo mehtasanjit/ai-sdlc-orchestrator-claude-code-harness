@@ -61,7 +61,7 @@ test("a change to an original reaches its copy on the next build", () => {
 });
 
 // The feature-run flow, by the names only it uses.
-const FEATURE_FLOW = /execute_batch|plan-to-packets|plan-lint|packet-groups|packet-worker|brownfield-features\.md|brownfield-orchestrator|brownfield-architect|brownfield-senior-reviewer|brownfield-security-reviewer|Lean review/;
+const FEATURE_FLOW = /execute_batch|plan-to-packets|plan-lint|brownfield-features\.md|brownfield-orchestrator|brownfield-architect|brownfield-senior-reviewer|brownfield-security-reviewer|Lean review/;
 
 test("the agents and the pipeline skill every other run reads carry none of the feature-run flow", () => {
   for (const file of [["agents", "orchestrator.md"], ["agents", "architect.md"], ["agents", "senior-reviewer.md"], ["agents", "security-reviewer.md"], ["agents", "discovery.md"], ["skills", "pipeline", "SKILL.md"]]) {
@@ -80,5 +80,29 @@ test("a feature run reaches its copies: the guide and /mmo:pass name brownfield-
   assert.match(read("commands", "pass.md"), /With `--intent=feature-extend` or\n`--intent=feature-new`, invoke `brownfield-orchestrator` instead of `orchestrator`\./);
   const orch = read("agents", "brownfield-orchestrator.md");
   assert.match(orch, /skills\/pipeline\/brownfield-features\.md/, "the copy reads the features file");
-  for (const helper of ["brownfield-architect", "brownfield-senior-reviewer", "brownfield-security-reviewer", "packet-worker"]) assert.match(orch + read("skills", "pipeline", "brownfield-features.md"), new RegExp(`\`${helper}\``), helper);
+  for (const helper of ["brownfield-architect", "brownfield-senior-reviewer", "brownfield-security-reviewer"]) assert.match(orch + read("skills", "pipeline", "brownfield-features.md"), new RegExp(`\`${helper}\``), helper);
+});
+
+// The security review reads the final diff: it runs after the senior review's refinements and the tests, as greenfield
+// orders them, never at the same time as the senior review. And the reviewer, who has read the diff, decides which
+// checklist items apply ("n/a — not in the touched set"); no keyword table picks a lighter review for it.
+test("feature runs review in order, and the security reviewer has one form", () => {
+  const features = read("skills", "pipeline", "brownfield-features.md");
+  const security = read("agents", "brownfield-security-reviewer.md");
+  assert.doesNotMatch(features, /can run at the same time|delegate both in one message/, "no parallel reviewers");
+  assert.match(features, /security review runs after the senior review's refinements and the test run/);
+  assert.doesNotMatch(features, /form: light|form: full|--form=/, "no light/full switch in the flow");
+  assert.doesNotMatch(security, /form: light|form: full|Pick the form/, "no light/full switch in the reviewer");
+  assert.match(security, /"n\/a — not in the touched set"/, "the per-item rule stays");
+});
+
+// The architect reads the change spec's shape in its own instructions, generated from the schema its sections are
+// checked against (plan-lint --shape prints the same), so the two cannot drift.
+test("the brownfield architect carries the change spec's shape exactly as plan-lint --shape prints it, and the check command", async () => {
+  const { changeShape } = await import(join(ROOT, "plugin", "scripts", "lib", "change-spec.mjs"));
+  const text = read("agents", "brownfield-architect.md");
+  assert.ok(text.includes("```\n" + (await changeShape()) + "\n```"), "the shape, verbatim");
+  assert.match(text, /node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/plan-lint\.mjs" --section <output_dir>\/change\.sections\/header\.json --run-id <run_id>/);
+  assert.doesNotMatch(text.split("# Feature runs (feature-extend, feature-new)")[1], /\{\{[A-Z_]+\}\}/, "every placeholder filled");
+  assert.throws(() => buildCopy(COPIES.find((c) => c.name === "brownfield-architect"), undefined, {}), /no fill for \{\{CHANGE_SPEC_SHAPE\}\}/);
 });

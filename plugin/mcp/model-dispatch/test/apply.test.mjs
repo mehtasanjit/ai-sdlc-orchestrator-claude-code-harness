@@ -23,16 +23,14 @@ const {
   runVerify,
   refinePacket,
   normalizeApply,
-  deriveFormat,
   extractFileContent,
   provenanceScriptPath,
   runApplyLoop,
   applyModelConfig,
   readsSlicesFromDisk,
-  markRunRecordStable,
-  spliceEdits,
-  extractEdits,
+  applySearchReplace,
   hasActiveWriteContract,
+  applyBudget,
 } = await import(join(DIST, "apply.js"));
 const offLimits = await import(join(HERE, "..", "..", "..", "scripts", "lib", "off-limits.mjs"));
 
@@ -274,6 +272,17 @@ test("refinePacket bumps retry_count, re-ids the packet and appends the failure;
   assert.equal(r2.artifact_path, "src/out.ts");
 });
 
+// An edits-mode retry is spliced into the file as it was before the packet, so it must be asked for a corrected edit
+// list, never "the complete corrected file" (which the edits contract cannot take: the reply would fail as "no edits").
+test("refinePacket asks an edits-mode retry for corrected exact edits against the file as given, and a content-mode retry for the complete file", () => {
+  const edits = refinePacket(basePacket(), "verify failed: tsc", "edits");
+  assert.match(edits.instruction, /\{path, edits: \[\{search, replace\}\]\} against the file's current text as given/);
+  assert.doesNotMatch(edits.instruction, /complete corrected file/);
+  const content = refinePacket(basePacket(), "verify failed: tsc", "content");
+  assert.match(content.instruction, /complete corrected file/);
+  assert.equal(refinePacket(basePacket(), "x").instruction, content.instruction.replace("verify failed: tsc", "x"), "content is the default");
+});
+
 test("normalizeApply and extractFileContent", () => {
   assert.equal(normalizeApply(undefined), null);
   assert.equal(normalizeApply({ write: false }), null);
@@ -305,6 +314,9 @@ function stubModel(replies) {
           tokens: { input: 10, input_cached: 0, output: 5 },
           cost_usd: 0.001,
           terminal_reason: r.fail ? "error" : "success",
+          ...(r.fail && (r.status !== undefined || r.code !== undefined || r.retryAfter !== undefined)
+            ? { attempts: [{ error_status: r.status, error_code: r.code, retry_after_ms: r.retryAfter }] }
+            : {}),
         },
         events: [{ task_id: packet.id, retry_count: packet.retry_count ?? 0 }],
       };
@@ -340,22 +352,6 @@ test("readsSlicesFromDisk: a content-less slice is read from disk for a brownfie
   writeFileSync(join(root, ".sdlc", "local", "write-contract.json"), JSON.stringify({ active: true, run_id: "r" }));
   assert.equal(readsSlicesFromDisk(pk(), null, root), true, "a project whose brownfield write contract is active");
   rmSync(root, { recursive: true, force: true });
-});
-
-test("markRunRecordStable: an apply-form packet's slices of the run's record files ride in the cached system block; nothing else changes", async () => {
-  const { isStableInput } = await import(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "adapters", "BuiltinAnthropicAdapter.js"));
-  const packet = { id: "p", inputs: [
-    { path: ".sdlc/runs/r1/intent_brief.md", reason: "brief" },
-    { path: ".sdlc/runs/r1/discovery.md", section: "Stack", reason: "repo facts" },
-    { path: ".sdlc/runs/r1/change_plan.md", reason: "unit spec (stable run record)" },
-    { path: ".sdlc/baseline/stack-profile.md", reason: "stack" },
-    { path: "src/a.ts", reason: "mirror" },
-  ] };
-  const out = markRunRecordStable(packet);
-  assert.deepEqual(out.inputs.map((s) => isStableInput(s)), [true, true, true, true, false]);
-  assert.equal(out.inputs[2].reason, "unit spec (stable run record)", "a slice already marked keeps its reason");
-  assert.equal(out.inputs[4].reason, "mirror");
-  assert.equal(packet.inputs[0].reason, "brief", "the packet it was given is not changed");
 });
 
 test("runApplyLoop: a verify failure is retried on the same model with the failure appended, then applied", async () => {
@@ -406,7 +402,7 @@ test("runApplyLoop: a packet that ends without its write leaves a provenance rec
   writeFileSync(join(root, "src", "out.ts"), "line1\nline2\n");
   const record = () => JSON.parse(readFileSync(join(root, ".sdlc", "runs", "run-1", "provenance.json"), "utf8")).files_touched.find((f) => f.path === "src/out.ts");
   // Edits mode: written, verify fails, the server puts the original back.
-  const edits = stubModel([{ edits: [{ line: 1, anchor: "line1", position: "replace", text: "bad" }] }]);
+  const edits = stubModel([{ path: "src/out.ts", edits: [{ search: "line1", replace: "bad" }] }]);
   const o1 = await runApplyLoop({ packet: basePacket({ outputSchema: undefined }), apply: normalizeApply({ write: true, mode: "edits", verify: ["false"], max_retries: 0 }), projectRoot: root, runId: "run-1", keepEvents: true, route: flashUntil(5), dispatch: edits.dispatch, log: silent });
   assert.equal(o1.status, "verify_failed");
   assert.equal(readFileSync(join(root, "src", "out.ts"), "utf8"), "line1\nline2\n", "the original is back");
@@ -416,6 +412,141 @@ test("runApplyLoop: a packet that ends without its write leaves a provenance rec
   const o2 = await runApplyLoop({ packet: basePacket({ id: "tp_codegen_002" }), apply: normalizeApply({ write: true }), projectRoot: root, runId: "run-1", keepEvents: true, route: flashUntil(5), dispatch: failed.dispatch, log: silent });
   assert.equal(o2.status, "dispatch_failed");
   assert.equal(record().sha_after, record().sha_before);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// A busy vendor is waited out, as greenfield's executor does (executor/tools.ts TRANSPORT, run.ts backoffMs): a wait
+// is not an attempt, and a 429 bills $0. Credentials the vendor refuses (401, 403) fail every packet the same way, so
+// the loop marks the outcome to stop the batch instead of handing each file to another model.
+const TRANSPORT_FAST = { maxWaits: 2, baseMs: 1, capMs: 60_000 };
+function sleeps() { const waited = []; return { waited, sleep: async (ms) => { waited.push(ms); } }; }
+
+test("runApplyLoop: a rate-limited or dropped call is waited out and sent again, and the wait is no attempt", async () => {
+  const root = tmpRoot();
+  const s = sleeps();
+  const model = stubModel([{ fail: true, status: 429, retryAfter: 7000 }, { fail: true, code: "ECONNRESET" }, { content: "ok\n" }]);
+  const out = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(2), dispatch: model.dispatch, log: silent, transport: TRANSPORT_FAST, sleep: s.sleep, random: () => 0.5 });
+  assert.equal(out.status, "applied");
+  assert.equal(model.calls.length, 3);
+  assert.equal(s.waited[0], 7000, "the vendor's own requested pause");
+  assert.equal(s.waited.length, 2);
+  assert.equal(model.calls.every((p) => (p.retry_count ?? 0) === 0), true, "a wait never refines the packet");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("runApplyLoop: waits stop at the stated bound, and a pause longer than one rate-limit window ends the packet", async () => {
+  const root = tmpRoot();
+  const s = sleeps();
+  const busy = stubModel([{ fail: true, status: 503 }, { fail: true, status: 503 }, { fail: true, status: 503 }]);
+  const a = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: busy.dispatch, log: silent, transport: TRANSPORT_FAST, sleep: s.sleep, random: () => 0.5 });
+  assert.equal(a.status, "dispatch_failed");
+  assert.equal(busy.calls.length, 3, "maxWaits 2: two waits, then the third failure ends it");
+  const long = stubModel([{ fail: true, status: 429, retryAfter: 120_000 }]);
+  const b = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: long.dispatch, log: silent, transport: TRANSPORT_FAST, sleep: s.sleep, random: () => 0.5 });
+  assert.equal(b.status, "dispatch_failed");
+  assert.equal(long.calls.length, 1);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("runApplyLoop: credentials refused (401, 403) end the packet with a halt that stops the batch, and no wait", async () => {
+  const root = tmpRoot();
+  for (const status of [401, 403]) {
+    const s = sleeps();
+    const model = stubModel([{ fail: true, status }]);
+    const out = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: model.dispatch, log: silent, transport: TRANSPORT_FAST, sleep: s.sleep, random: () => 0.5 });
+    assert.equal(out.status, "dispatch_failed");
+    assert.match(out.halt ?? "", new RegExp(`HTTP ${status}`));
+    assert.equal(s.waited.length, 0);
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
+// The in-server ladder (greenfield's rule): when the policy routes a retry to another model the server can type with
+// (the lean Opus typist for a feature run's Claude leaf), the loop carries on with it instead of handing the file back
+// to the orchestrator to type in its own long context. Only a model it cannot type with is an `escalate`.
+test("runApplyLoop: a retry the policy routes to a model the server can type with stays in the loop", async () => {
+  const root = tmpRoot();
+  const model = stubModel([{ content: "bad\n" }, { content: "bad\n" }, { content: "good\n" }]);
+  const verify = ["node -e \"process.exit(require('fs').readFileSync(process.argv[1],'utf8')==='good\\n'?0:1)\" {path}"];
+  const out = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true, verify, max_retries: 2 }), projectRoot: root, keepEvents: true, route: flashUntil(2), dispatch: model.dispatch, log: silent, typesInServer: (d) => d.modelId === "opus" });
+  assert.equal(out.status, "applied");
+  assert.equal(model.calls.length, 3, "flash, flash, then the routed model in the same loop");
+  assert.equal(readFileSync(join(root, "src", "out.ts"), "utf8"), "good\n");
+  rmSync(root, { recursive: true, force: true });
+});
+
+// Greenfield's ladder (executor/run.ts): the routed typist for every attempt but the last, then one attempt by its
+// last-attempt model (the lean Opus typist) when the server can type with it. A reply cut off at a model's own output
+// limit (the packet starts there: applyBudget) skips that model's later attempts and goes to the next different typist
+// in the ladder; it never adds an attempt, and with no other typist left it fails.
+test("applyBudget: an apply packet asks for the routed model's documented output limit, and keeps its own when the model declares none", () => {
+  const p = basePacket({ budget: { maxInputTokens: 1000, maxOutputTokens: 6000 } });
+  assert.equal(applyBudget(p, { max_output_tokens_absolute: 8192 }).budget.maxOutputTokens, 8192);
+  assert.equal(applyBudget(p, {}).budget.maxOutputTokens, 6000);
+  assert.equal(applyBudget(p, { max_output_tokens_absolute: 8192 }).budget.maxInputTokens, 1000);
+});
+
+/** A dispatch that answers each call from `replies` ("cut", "bad", "good"), as the model it was sent to. */
+function ladderModel(replies, route = flashUntil(5)) {
+  const calls = [];
+  const dispatch = async (packet, force) => {
+    calls.push({ packet, force });
+    const decision = force ?? route(packet);
+    const r = replies.shift() ?? "good";
+    const result = r === "cut"
+      ? { success: false, error: "cut off", result: null, tokens: { input: 1, input_cached: 0, output: 8192 }, cost_usd: 0.01, terminal_reason: "output_cap_at_model_absolute" }
+      : { success: true, result: { path: "src/out.ts", content: `${r}\n` }, tokens: { input: 1, input_cached: 0, output: 5 }, cost_usd: 0.01, terminal_reason: "success" };
+    return { decision, result, events: [] };
+  };
+  return { calls, dispatch };
+}
+const GOOD_ONLY = ["node -e \"process.exit(require('fs').readFileSync(process.argv[1],'utf8')==='good\\n'?0:1)\" {path}"];
+const LAST = () => ({ modelId: "opus", reason: "the ladder's last attempt", ruleIndex: -1 });
+
+test("runApplyLoop: the ladder's last attempt goes to greenfield's last-attempt model, once", async () => {
+  const root = tmpRoot();
+  const m = ladderModel(["bad", "bad", "good"]);
+  const out = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true, verify: GOOD_ONLY, max_retries: 2 }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: m.dispatch, log: silent, lastAttempt: LAST });
+  assert.equal(out.status, "applied");
+  assert.deepEqual(m.calls.map((c) => c.force?.modelId ?? "routed"), ["routed", "routed", "opus"]);
+  const failed = ladderModel(["bad", "bad", "bad", "good"]);
+  const f = await runApplyLoop({ packet: basePacket({ id: "tp_2" }), apply: normalizeApply({ write: true, verify: GOOD_ONLY, max_retries: 2 }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: failed.dispatch, log: silent, lastAttempt: LAST });
+  assert.equal(f.status, "verify_failed");
+  assert.equal(failed.calls.length, 3, "no attempt past the ladder");
+  // A packet with no retries is typed by its routed model only.
+  const once = ladderModel(["good"]);
+  await runApplyLoop({ packet: basePacket({ id: "tp_0" }), apply: normalizeApply({ write: true, max_retries: 0 }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: once.dispatch, log: silent, lastAttempt: LAST });
+  assert.equal(once.calls[0].force, undefined);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("runApplyLoop: a reply cut off at the model's limit skips that model's later attempts and never adds one", async () => {
+  const root = tmpRoot();
+  const m = ladderModel(["cut", "good"]);
+  const out = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true, max_retries: 2 }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: m.dispatch, log: silent, lastAttempt: LAST });
+  assert.equal(out.status, "applied");
+  assert.deepEqual(m.calls.map((c) => c.force?.modelId ?? "routed"), ["routed", "opus"]);
+  assert.match(m.calls[1].packet.instruction, /cut off at the model's output limit/);
+  // The last-attempt model gets its one attempt only: a bad answer there ends the packet.
+  const bad = ladderModel(["cut", "bad", "good"]);
+  const b = await runApplyLoop({ packet: basePacket({ id: "tp_2" }), apply: normalizeApply({ write: true, verify: GOOD_ONLY, max_retries: 2 }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: bad.dispatch, log: silent, lastAttempt: LAST });
+  assert.equal(b.status, "verify_failed");
+  assert.equal(bad.calls.length, 2);
+  // A later route to another model the server types with is the next typist; the jump keeps the route's own slot.
+  const routed = ladderModel(["cut", "good"], flashUntil(2));
+  const r = await runApplyLoop({ packet: basePacket({ id: "tp_3" }), apply: normalizeApply({ write: true, max_retries: 3 }), projectRoot: root, keepEvents: true, route: flashUntil(2), dispatch: routed.dispatch, log: silent, typesInServer: (d) => d.modelId === "opus" });
+  assert.equal(r.status, "applied");
+  assert.equal(routed.calls.length, 2);
+  assert.equal(routed.calls[1].packet.retry_count, 2, "flash's slot 1 skipped; opus's slot 2");
+  // No other typist (a policy with no Claude model, or the last-attempt model itself cut off): the packet fails.
+  const none = ladderModel(["cut", "good"]);
+  const n = await runApplyLoop({ packet: basePacket({ id: "tp_4" }), apply: normalizeApply({ write: true, max_retries: 2 }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: none.dispatch, log: silent });
+  assert.equal(n.status, "dispatch_failed");
+  assert.equal(none.calls.length, 1);
+  const same = ladderModel(["cut", "good"], () => LAST());
+  const s = await runApplyLoop({ packet: basePacket({ id: "tp_5" }), apply: normalizeApply({ write: true, max_retries: 2 }), projectRoot: root, keepEvents: true, route: () => LAST(), dispatch: same.dispatch, log: silent, lastAttempt: LAST, typesInServer: () => true });
+  assert.equal(s.status, "dispatch_failed");
+  assert.equal(same.calls.length, 1);
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -486,45 +617,51 @@ test("runApplyLoop: a reply without content is retried with that told to the mod
   rmSync(root, { recursive: true, force: true });
 });
 
-test("spliceEdits resolves anchors on the original text, applies bottom-up, and names what it cannot apply", () => {
-  const src = "import a from \"a\";\nconst x = 1;\n  });\nreturn {\n  a,\n};\n  });\n";
-  const ok = spliceEdits(src, [
-    { anchor: "import a from \"a\";", position: "after", text: "import b from \"b\";" },
-    { anchor: "  a,", position: "after", text: "  b,\n" },
-    { anchor: "const x = 1;", position: "replace", text: "const x = 2;" },
-    { anchor: "  });", position: "before", text: "  // second", line: 7 },
-  ]);
-  assert.equal(ok.ok, true);
-  assert.equal(ok.content, "import a from \"a\";\nimport b from \"b\";\nconst x = 2;\n  });\nreturn {\n  a,\n  b,\n};\n  // second\n  });\n");
-  assert.match(spliceEdits(src, [{ anchor: "nope", position: "after", text: "x" }]).reason, /anchor not found/);
-  assert.match(spliceEdits(src, [{ anchor: "  });", position: "after", text: "x" }]).reason, /matches 2 lines \(3, 7\)/);
-  assert.match(spliceEdits(src, [{ anchor: "  });", position: "after", text: "x", line: 2 }]).reason, /matches 2 lines/, "a wrong line hint falls back to the search");
-  assert.match(spliceEdits(src, []).reason, /empty/);
-  assert.deepEqual(extractEdits({ edits: [{ anchor: "a", position: "after", text: "b" }] }), [{ anchor: "a", position: "after", text: "b", line: undefined }]);
-  assert.equal(extractEdits({ edits: [{ anchor: "a", position: "sideways", text: "b" }] }), null);
-  assert.equal(extractEdits({ content: "whole file" }), null);
+// The writer keeps each file's own line ending: lines spliced into a CRLF file get CRLF, untouched lines keep theirs,
+// a whole file written over a CRLF file is written with CRLF, and a new file takes the ending of the first file it was
+// shown of its own kind (its mirror). Otherwise every edit to a CRLF file changes line endings it never meant to.
+test("applySearchReplace applies greenfield's exact edits and keeps a CRLF file's own line ending", () => {
+  const crlf = "a\r\nb\r\nc\r\n";
+  const r = applySearchReplace(crlf, { path: "x", edits: [{ search: "b\nc", replace: "b\nx\ny\nz" }] });
+  assert.equal(r.content, "a\r\nb\r\nx\r\ny\r\nz\r\n", "the search matches across the CRLF lines; inserted lines take CRLF");
+  assert.equal(applySearchReplace("a\nb\n", { path: "x", edits: [{ search: "a", replace: "a\r\nx" }] }).content, "a\nx\nb\n", "an LF file stays LF");
+  assert.equal(applySearchReplace(crlf, { path: "x", content: "new\nfile\n" }).content, "new\r\nfile\r\n", "a whole file takes the file's ending");
 });
 
-test("spliceEdits: delete and multi-line replace take a count; overlapping or out-of-range spans are refused (Run 30)", () => {
-  const src = "a\nb\nc\nd\ne\n";
-  assert.deepEqual(spliceEdits(src, [{ anchor: "b", position: "delete", text: "" }]), { ok: true, content: "a\nc\nd\ne\n" });
-  assert.deepEqual(spliceEdits(src, [{ anchor: "b", position: "delete", text: "", count: 3 }]), { ok: true, content: "a\ne\n" });
-  assert.deepEqual(spliceEdits(src, [{ anchor: "b", position: "replace", text: "X", count: 2 }]), { ok: true, content: "a\nX\nd\ne\n" });
-  // Adjacent ops still combine: delete b..c, insert before d.
-  assert.deepEqual(spliceEdits(src, [{ anchor: "b", position: "delete", text: "", count: 2 }, { anchor: "d", position: "before", text: "Y" }]), { ok: true, content: "a\nY\nd\ne\n" });
-  assert.match(spliceEdits(src, [{ anchor: "b", position: "delete", text: "", count: 2 }, { anchor: "c", position: "after", text: "Y" }]).reason, /two edits target line 3/);
-  assert.match(spliceEdits(src, [{ anchor: "d", position: "delete", text: "", count: 9 }]).reason, /runs past the end/);
-  assert.deepEqual(extractEdits({ edits: [{ anchor: "a", position: "delete", count: 2 }] }), [{ anchor: "a", position: "delete", text: "", line: undefined, count: 2 }]);
-  assert.equal(extractEdits({ edits: [{ anchor: "a", position: "after" }] }), null, "only a delete may omit text");
+test("runApplyLoop writes a whole file over a CRLF file with CRLF, and a new file with its mirror's ending", async () => {
+  const root = tmpRoot();
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "out.ts"), "old\r\nfile\r\n");
+  const over = stubModel([{ content: "new\nfile\n" }]);
+  const a = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: over.dispatch, log: silent });
+  assert.equal(a.status, "applied");
+  assert.equal(readFileSync(join(root, "src", "out.ts"), "utf8"), "new\r\nfile\r\n");
+  writeFileSync(join(root, "src", "mirror.ts"), "m\r\n");
+  const fresh = stubModel([{ content: "one\ntwo\n" }]);
+  const b = await runApplyLoop({ packet: basePacket({ id: "tp_new", artifact_path: "src/new.ts", inputs: [{ path: "docs/plan.md" }, { path: "src/mirror.ts" }] }), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: fresh.dispatch, log: silent });
+  assert.equal(b.status, "applied");
+  assert.equal(readFileSync(join(root, "src", "new.ts"), "utf8"), "one\r\ntwo\r\n", "the mirror is CRLF; the plan (another kind of file) does not count");
+  const plain = stubModel([{ content: "p\r\nq\r\n" }]);
+  await runApplyLoop({ packet: basePacket({ id: "tp_new2", artifact_path: "src/plain.ts", inputs: [] }), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: plain.dispatch, log: silent });
+  assert.equal(readFileSync(join(root, "src", "plain.ts"), "utf8"), "p\r\nq\r\n", "no file to follow: written as the model gave it");
+  rmSync(root, { recursive: true, force: true });
 });
 
-test("runApplyLoop in edits mode splices into the existing file and retries a bad anchor with the reason", async () => {
+test("applySearchReplace refuses what greenfield's applier refuses, naming the edit", () => {
+  const src = "a\n  });\nb\n  });\n";
+  assert.match(applySearchReplace(src, { path: "x", edits: [{ search: "  });", replace: "x" }] }).reason, /edit 1: its search text appears 2 times/);
+  assert.match(applySearchReplace(src, { path: "x", edits: [{ search: "nope", replace: "x" }] }).reason, /appears 0 times/);
+  assert.equal(applySearchReplace(src, { path: "x", edits: [{ search: "b\n  });", replace: "c\n  });" }] }).content, "a\n  });\nc\n  });\n");
+  assert.match(applySearchReplace(src, { edits: [] }).reason, /\{path, edits\} or \{path, content\}/, "greenfield's contract check");
+});
+
+test("runApplyLoop in edits mode applies exact edits to the existing file and retries a search that is not found, with the reason", async () => {
   const root = tmpRoot();
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "out.ts"), "line1\nline2\n");
   const model = stubModel([
-    { edits: [{ anchor: "missing", position: "after", text: "x" }] },
-    { edits: [{ anchor: "line1", position: "after", text: "inserted" }] },
+    { path: "src/out.ts", edits: [{ search: "missing", replace: "x" }] },
+    { path: "src/out.ts", edits: [{ search: "line1\n", replace: "line1\ninserted\n" }] },
   ]);
   const out = await runApplyLoop({
     packet: basePacket(), apply: normalizeApply({ write: true, mode: "edits" }),
@@ -532,7 +669,7 @@ test("runApplyLoop in edits mode splices into the existing file and retries a ba
   });
   assert.equal(out.status, "applied");
   assert.equal(model.calls.length, 2);
-  assert.match(model.calls[1].instruction, /anchor not found/);
+  assert.match(model.calls[1].instruction, /appears 0 times/);
   assert.equal(readFileSync(join(root, "src", "out.ts"), "utf8"), "line1\ninserted\nline2\n");
   const missing = await runApplyLoop({
     packet: basePacket({ artifact_path: "src/absent.ts" }), apply: normalizeApply({ write: true, mode: "edits" }),
@@ -542,13 +679,13 @@ test("runApplyLoop in edits mode splices into the existing file and retries a ba
   rmSync(root, { recursive: true, force: true });
 });
 
-test("runApplyLoop in edits mode: a verify failure restores the original, and the retry splices from it (no duplicate insert)", async () => {
+test("runApplyLoop in edits mode: a verify failure restores the original, and the retry applies to it (no duplicate insert)", async () => {
   const root = tmpRoot();
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "out.ts"), "a\nb\nc\n");
   const model = stubModel([
-    { edits: [{ anchor: "a", position: "after", text: "inserted-bad" }] },
-    { edits: [{ anchor: "a", position: "after", text: "inserted-good" }] },
+    { path: "src/out.ts", edits: [{ search: "a\n", replace: "a\ninserted-bad\n" }] },
+    { path: "src/out.ts", edits: [{ search: "a\n", replace: "a\ninserted-good\n" }] },
   ]);
   const out = await runApplyLoop({
     packet: basePacket(), apply: normalizeApply({ write: true, mode: "edits", verify: ["grep -q inserted-good {path}"] }),
@@ -558,7 +695,7 @@ test("runApplyLoop in edits mode: a verify failure restores the original, and th
   assert.equal(readFileSync(join(root, "src", "out.ts"), "utf8"), "a\ninserted-good\nb\nc\n", "exactly one insertion; attempt 0's line is gone");
   const failed = await runApplyLoop({
     packet: basePacket(), apply: normalizeApply({ write: true, mode: "edits", verify: ["false"], max_retries: 0 }),
-    projectRoot: root, keepEvents: true, route: flashUntil(2), dispatch: stubModel([{ edits: [{ anchor: "b", position: "after", text: "x" }] }]).dispatch, log: silent,
+    projectRoot: root, keepEvents: true, route: flashUntil(2), dispatch: stubModel([{ path: "src/out.ts", edits: [{ search: "b\n", replace: "b\nx\n" }] }]).dispatch, log: silent,
   });
   assert.equal(failed.status, "verify_failed");
   assert.equal(readFileSync(join(root, "src", "out.ts"), "utf8"), "a\ninserted-good\nb\nc\n", "a failed edit leaves the file as it was");
@@ -592,10 +729,75 @@ test("applyContent runs format commands before provenance, and the receipt descr
   rmSync(root, { recursive: true, force: true });
 });
 
-test("normalizeApply derives format from verify when a hand-written packet omits it (Large2-C debug packets)", () => {
-  assert.deepEqual(normalizeApply({ write: true, verify: ["pnpm exec biome check {path}", "pnpm test"] }).format, ["pnpm exec biome check --write {path}"]);
-  assert.deepEqual(normalizeApply({ write: true, verify: ["pnpm exec biome check a.ts"], format: ["x --fix a.ts"] }).format, ["x --fix a.ts"], "an explicit format wins");
-  assert.equal(normalizeApply({ write: true, verify: ["pnpm test"] }).format, undefined);
-  assert.deepEqual(deriveFormat(["npx prettier --check a.ts"]), ["npx prettier --write a.ts"]);
-  assert.equal(deriveFormat(["pnpm exec biome check --write a.ts"]), undefined);
+// Typed checks (a feature run's change spec): each check's run and its own write form, so no command is guessed from
+// another's text; a packet with no format and no checks runs no formatter.
+test("a check's output is kept up to greenfield's receipt bound, the most any receipt carries", async () => {
+  const { VERIFY_OUTPUT_TAIL_CHARS } = await import(join(DIST, "apply.js"));
+  const { RECEIPT_MAX_BYTES } = await import(join(DIST, "executor", "run.js"));
+  assert.equal(VERIFY_OUTPUT_TAIL_CHARS, RECEIPT_MAX_BYTES);
+});
+
+test("normalizeApply: typed checks give verify and format; nothing is derived from a verify command's text", () => {
+  const a = normalizeApply({ write: true, checks: [{ id: "lint", run: "lint '{path}'", fix: "lint --write '{path}'" }, { id: "types", run: "tc '{path}'" }], baseline_from: "src/style.ts" });
+  assert.deepEqual(a.verify, ["lint '{path}'", "tc '{path}'"]);
+  assert.deepEqual(a.format, ["lint --write '{path}'"]);
+  assert.deepEqual(a.checks.map((c) => c.id), ["lint", "types"]);
+  assert.equal(a.baseline_from, "src/style.ts");
+  assert.equal(normalizeApply({ write: true, verify: ["pnpm exec biome check {path}"] }).format, undefined, "no write form guessed from a check's text");
+  assert.deepEqual(normalizeApply({ write: true, verify: ["x {path}"], format: ["x --fix {path}"] }).format, ["x --fix {path}"], "an explicit format stays");
+  assert.equal(normalizeApply({ write: true, checks: [{ run: 3 }] }).checks, undefined, "a malformed check is dropped");
+});
+
+// The baseline rule: before any typist is paid, each typed check runs on the file as it is (an edit) or on its style
+// file (a new file with one). A check that already fails there is set aside for this file: it never judges the answer
+// and its write form never runs, so a formatter never rewrites a file the repo does not keep formatted, and a check
+// that cannot handle this file (a CRLF checkout, a file type the tool does not read) costs no retries.
+const CRLF_CHECK = "node -e \"process.exit(require('fs').readFileSync(process.argv[1],'utf8').includes('\\r\\n')?1:0)\" {path}";
+const MARK = (name) => `node -e "require('fs').appendFileSync('${name}','x')"`;
+test("runApplyLoop: a check that fails on the untouched file is set aside, and its write form never runs", async () => {
+  const root = tmpRoot();
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "out.ts"), "const a = 1;\r\nconst b = 2;\r\n");
+  const model = stubModel([{ path: "src/out.ts", edits: [{ search: "const a = 1;\n", replace: "const a = 1;\nconst c = 3;\n" }] }]);
+  const apply = normalizeApply({ write: true, mode: "edits", checks: [
+    { id: "crlf", run: CRLF_CHECK, fix: MARK("fix-crlf") },
+    { id: "ok", run: "node -e \"process.exit(0)\" {path}", fix: MARK("fix-ok") },
+  ] });
+  const out = await runApplyLoop({ packet: basePacket(), apply, projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: model.dispatch, log: silent });
+  assert.equal(out.status, "applied", JSON.stringify(out.attempts));
+  assert.deepEqual(out.set_aside.map((c) => c.id), ["crlf"]);
+  assert.match(out.set_aside[0].output ?? "", /exit 1|^$/);
+  assert.equal(existsSync(join(root, "fix-crlf")), false, "a set-aside check's write form never runs");
+  assert.equal(existsSync(join(root, "fix-ok")), true, "a check that passed before keeps its write form");
+  assert.equal(model.calls.length, 1, "no retry spent on a check the file failed before the change");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("runApplyLoop: a new file's checks run first on its style file; with none, every check judges the answer", async () => {
+  const root = tmpRoot();
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "style.ts"), "x\r\n");
+  const crlfOnly = normalizeApply({ write: true, checks: [{ id: "crlf", run: CRLF_CHECK }], baseline_from: "src/style.ts" });
+  const a = await runApplyLoop({ packet: basePacket(), apply: crlfOnly, projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: stubModel([{ content: "y\r\n" }]).dispatch, log: silent });
+  assert.equal(a.status, "applied");
+  assert.deepEqual(a.set_aside.map((c) => c.id), ["crlf"]);
+  const noStyle = normalizeApply({ write: true, checks: [{ id: "crlf", run: CRLF_CHECK }], max_retries: 0 });
+  const b = await runApplyLoop({ packet: basePacket({ id: "tp_2", artifact_path: "src/b.ts" }), apply: noStyle, projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: stubModel([{ content: "y\r\n" }]).dispatch, log: silent });
+  assert.equal(b.status, "verify_failed", "no style file: the check judges the answer");
+  assert.equal(b.set_aside, undefined);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("runApplyLoop: a check that passed before the change still judges the answer, and its failure is a retry", async () => {
+  const root = tmpRoot();
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "out.ts"), "const a = 1;\n");
+  const model = stubModel([{ path: "src/out.ts", edits: [{ search: "const a = 1;\n", replace: "const a = 1;\nbad\n" }] }, { path: "src/out.ts", edits: [{ search: "const a = 1;\n", replace: "const a = 1;\nconst b = 2;\n" }] }]);
+  const NO_BAD = "node -e \"process.exit(require('fs').readFileSync(process.argv[1],'utf8').includes('bad')?1:0)\" {path}";
+  const apply = normalizeApply({ write: true, mode: "edits", checks: [{ id: "no-bad", run: NO_BAD }] });
+  const out = await runApplyLoop({ packet: basePacket(), apply, projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: model.dispatch, log: silent });
+  assert.equal(out.status, "applied");
+  assert.equal(model.calls.length, 2);
+  assert.equal(out.set_aside, undefined);
+  rmSync(root, { recursive: true, force: true });
 });

@@ -18,14 +18,17 @@ orchestrator sends paths only), and instead of Brownfield mode's
 - **Load the change in ONE Bash call**, before anything else: print the touched-file list from
   `provenance.json`, then `git diff --ignore-cr-at-eol <git_head_before> -- <edited files>` and
   `cat` of every new file, all in the same command. Do not open touched files one `Read` at a time.
-- **Budget: about 12 tool calls, never more than 20.** Group lookups: several `grep -n`
-  / `sed -n` in one Bash call. If you reach the cap, write the review with what you have and
-  mark unverified items as such.
+- **Group lookups:** several `grep -n` / `sed -n` in one Bash call. Put `"tool_calls": <n>` (how many
+  tool calls you made) in the review JSON, so the run's report shows what the review cost.
 - **Do not re-run what the orchestrator already ran.** No test suites, typecheck, lint, build,
   route/code generators or `npm|pnpm audit`. The orchestrator passes you the results;
   trust them. Only run a command when a finding cannot be decided without it, and then only a
   file-scoped one.
 - **One targeted lookup per suspected issue.** Do not read library source or `node_modules` to
   prove a finding; state the issue, the evidence in the diff, and your confidence.
-- **Short output.** Findings and refinement packets only; list passing checks in one line each
-  at most. Do not restate the diff.
+- **Short output.** Findings only; list passing checks in one line each at most. Do not restate the diff.
+- **Findings, not packets.** Instead of writing `refinement_packets` (and instead of "Emit a refinement
+  packet" above), leave `refinement_packets` an empty list and make every defect a finding: its `file`
+  (the path as `provenance.json` lists it), its `line` when you know it, the `issue`, and the `fix` in one
+  or two sentences. Code turns each finding into a fix packet for that file (`findings-to-packets.mjs`),
+  with the file's own brief and checks.

@@ -3,7 +3,7 @@
  * model-server calls carry the person's policy (plugin/scripts/ambient/lib/own-steps.mjs).
  *
  *   - Every one-line script call the workflow texts tell Claude to run (plugin/agents, commands and skills) is one of
- *     the workflow's own steps. A brownfield feature run's agents (brownfield-orchestrator, packet-worker) also wrap
+ *     the workflow's own steps. A brownfield feature run's orchestrator (brownfield-orchestrator) also wraps
  *     long calls over lines and chain bookkeeping with &&, and only their calls are read that way: every other caller
  *     keeps the one-call check, so greenfield's and the other jobs' answers are develop's.
  *   - Every model-server tool that takes a policy file reaches the stamp: the zero-touch plugin's matcher sends it to
@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
 const PLUGIN = join(ROOT, "plugin");
 const SCRIPTS = join(PLUGIN, "scripts");
-const { featureRunAgent, ownScriptCall, deriveFormat, serverCommands, STAMPED_TOOLS } = await import(join(SCRIPTS, "ambient", "lib", "own-steps.mjs"));
+const { featureRunAgent, ownScriptCall, serverCommands, STAMPED_TOOLS } = await import(join(SCRIPTS, "ambient", "lib", "own-steps.mjs"));
 const { serverBuilt } = await import(join(ROOT, "tools", "test", "lib", "server-built.mjs"));
 
 function markdownFiles(dir) {
@@ -46,7 +46,7 @@ function scriptCalls() {
 }
 
 // The texts a feature run's agents follow: their own agent files and the packet flow the orchestrator copy reads.
-const FEATURE_TEXTS = new Set(["brownfield-orchestrator.md", "packet-worker.md", "brownfield-features.md"]);
+const FEATURE_TEXTS = new Set(["brownfield-orchestrator.md", "brownfield-features.md"]);
 
 test("every script call the workflow texts give Claude is a step: one-line calls for every agent, wrapped calls for a feature run's agents only", () => {
   const calls = scriptCalls();
@@ -62,7 +62,7 @@ test("every script call the workflow texts give Claude is a step: one-line calls
 });
 
 test("a feature run's agents are told apart by the hook payload's agent_type; no other caller is", () => {
-  for (const t of ["mmo:brownfield-orchestrator", "brownfield-orchestrator", "mmo:packet-worker", "Packet Worker"]) assert.equal(featureRunAgent(t), true, t);
+  for (const t of ["mmo:brownfield-orchestrator", "brownfield-orchestrator", "Brownfield Orchestrator"]) assert.equal(featureRunAgent(t), true, t);
   for (const t of ["mmo:orchestrator", "orchestrator", "mmo:architect", "general-purpose", "", undefined]) assert.equal(featureRunAgent(t), false, String(t));
 });
 
@@ -95,19 +95,26 @@ test("a feature run's chain of step calls joined by && is one step; any other pa
   assert.equal(ownScriptCall(`${log("phase.end")}; ${log("gate.open")}`, SCRIPTS, fr), false, "; is not &&");
 });
 
-test("plan-to-packets is a step only without --out (which would let it write any file)", () => {
-  const ptp = `node "${SCRIPTS}/plan-to-packets.mjs" ".sdlc/runs/r1/change_plan.md" --run-id r1 --intent feature-extend`;
-  assert.equal(ownScriptCall(ptp, SCRIPTS), true);
-  assert.equal(ownScriptCall(`${ptp} --out /etc/hosts`, SCRIPTS), false);
-  assert.equal(ownScriptCall(`${ptp} --out=x.json`, SCRIPTS), false);
+// The change spec's steps write only inside the run's own folder, .sdlc/runs/<run-id> (lib/change-spec.mjs
+// runFolder; planLint.test.mjs refuses any other), so they are steps like the other bookkeeping scripts.
+test("the change spec's section check, its finalize and the fix packets are steps", () => {
+  assert.equal(ownScriptCall(`node "${SCRIPTS}/plan-lint.mjs" --section .sdlc/runs/r1/change.sections/units-001.json --run-id r1`, SCRIPTS), true);
+  assert.equal(ownScriptCall(`node "${SCRIPTS}/plan-to-packets.mjs" --spec --run-id r1 --intent feature-extend --project-root "$(pwd)"`, SCRIPTS), true);
+  assert.equal(ownScriptCall(`node "${SCRIPTS}/findings-to-packets.mjs" --run-id r1 --intent feature-extend --review .sdlc/runs/r1/review-api.json`, SCRIPTS), true);
+  assert.equal(ownScriptCall(`node "${SCRIPTS}/plan-lint.mjs" --shape; rm -rf src`, SCRIPTS), false);
 });
 
-test("the commands a server call runs are the ones the server will run: derived write forms, only packets it applies, only the ids a batch names", async () => {
+test("the commands a server call runs are the ones the server will run: typed checks and their write forms, only packets it applies, only the ids a batch names", async () => {
   const pk = (id, apply) => ({ id, artifact_path: `src/${id}.ts`, apply });
   const tool = "mcp__plugin_mmo_model-dispatch__execute_batch";
   const runs = (input) => serverCommands(tool, input, ROOT).commands.map((c) => c.run);
-  assert.deepEqual(runs({ packets: [pk("a", { write: true, verify: ["npx biome check '{path}'"] })] }), ["npx biome check 'src/a.ts'", "npx biome check --write 'src/a.ts'"], "a format the server derives is checked too");
-  assert.deepEqual(runs({ packets: [pk("a", { write: true, verify: ["npx prettier --check {path}"], format: ["npx prettier --write {path} --log-level warn"] })] }), ["npx prettier --check src/a.ts", "npx prettier --write src/a.ts --log-level warn"], "a format the packet names replaces the derived one");
+  assert.deepEqual(runs({ packets: [pk("a", { write: true, verify: ["npx biome check '{path}'"] })] }), ["npx biome check 'src/a.ts'"], "no write form is guessed from a check's text");
+  assert.deepEqual(runs({ packets: [pk("a", { write: true, verify: ["npx prettier --check {path}"], format: ["npx prettier --write {path} --log-level warn"] })] }), ["npx prettier --check src/a.ts", "npx prettier --write src/a.ts --log-level warn"], "a format the packet names is checked");
+  assert.deepEqual(
+    runs({ packets: [pk("a", { write: true, checks: [{ id: "lint", run: "lint '{path}'", fix: "lint --write '{path}'" }], baseline_from: "src/style.ts", verify: ["ignored {path}"] })] }),
+    ["lint 'src/a.ts'", "lint --write 'src/a.ts'", "lint 'src/style.ts'"],
+    "typed checks: each run and its write form on the file, and each run on the style file the server tries first",
+  );
   assert.deepEqual(runs({ packets: [pk("a", { write: false, verify: ["rm -rf {path}"] })] }), [], "an apply block the server ignores runs nothing");
   const { mkdtempSync: mk, writeFileSync: wf } = await import("node:fs");
   const dir = mk(join(tmpdir(), "zt-servercmd-"));
@@ -115,12 +122,6 @@ test("the commands a server call runs are the ones the server will run: derived 
     wf(join(dir, "packets.json"), JSON.stringify([pk("a", { write: true, verify: ["rm -rf {path}"] }), pk("b", { write: true, verify: ["npx tsc --noEmit"] })]));
     assert.deepEqual(serverCommands(tool, { packets_path: "packets.json", packet_ids: ["b"] }, dir).commands.map((c) => c.run), ["npx tsc --noEmit"], "only the packets the call runs");
   } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("the hook's copy of the server's derived format rule is the server's own (apply.ts deriveFormat)", { skip: serverBuilt() ?? false }, async () => {
-  const server = await import(join(PLUGIN, "mcp", "model-dispatch", "dist", "apply.js"));
-  const cases = [["npx biome check {path}"], ["npx biome format '{path}'"], ["biome check --write {path}"], ["npx prettier --check {path}"], ["npx prettier {path} --check"], ["npx vitest run {path}"], ["npx biome check a && npx prettier --check b"], []];
-  for (const verify of cases) assert.deepEqual(deriveFormat(verify), server.deriveFormat(verify) ?? [], JSON.stringify(verify));
 });
 
 test("every model-server tool that takes a policy file reaches the stamp: the plugin's matcher and the hook's own list name it", { skip: serverBuilt() ?? false }, async () => {

@@ -11,7 +11,9 @@
  *   - its own name, and a description that says which runs it serves;
  *   - the tools those runs add (the orchestrator's execute_batch; the architect's Glob and Grep);
  *   - a one-hour prompt cache where the original has none (the reviewers);
- *   - the section in tools/agent-copies/<copy>.md appended after the original's text.
+ *   - the section in tools/agent-copies/<copy>.md appended after the original's text, with each `{{NAME}}` in it
+ *     replaced by FILLS[NAME] (the change spec's shape, printed by the same code plan-lint --shape prints it with,
+ *     so the architect reads exactly the shape its sections are checked against).
  * So a change to an original reaches its copy on the next build, and tools/test/agent-copies.test.mjs fails while a
  * committed copy differs from what this builds. Edit the originals or the sections, never a copy.
  *
@@ -21,6 +23,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { changeShape } from "../plugin/scripts/lib/change-spec.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const AGENTS = join(ROOT, "plugin", "agents");
@@ -36,7 +39,7 @@ export const COPIES = [
   {
     name: "brownfield-orchestrator",
     base: "orchestrator",
-    description: "Orchestrator for brownfield feature-extend and feature-new runs only; the brownfield guide delegates it by name for those two intents. Drives the run's packet flow (skills/pipeline/brownfield-features.md): the change plan, packets derived from it, batched dispatch through the bundled MCP server per the loaded policy, lean reviews, and the HITL gates.",
+    description: "Orchestrator for brownfield feature-extend and feature-new runs only; the brownfield guide delegates it by name for those two intents. Drives the run's packet flow (skills/pipeline/brownfield-features.md): the typed change spec, packets derived from it, batched dispatch through the bundled MCP server per the loaded policy, lean reviews, and the HITL gates.",
     toolsAfter: {
       "mcp__model-dispatch__execute_with_model": ["mcp__model-dispatch__execute_batch"],
       "mcp__plugin_mmo_model-dispatch__execute_with_model": ["mcp__plugin_mmo_model-dispatch__execute_batch"],
@@ -45,7 +48,7 @@ export const COPIES = [
   {
     name: "brownfield-architect",
     base: "architect",
-    description: "Architect for brownfield feature-extend and feature-new runs only. Writes change_plan.md from requirements.md: the change, unit by unit, that the run's packets are derived from. Delegated by brownfield-orchestrator during the architecture_design phase.",
+    description: "Architect for brownfield feature-extend and feature-new runs only. Hands over the run's typed change spec from requirements.md, section by section, each checked against the files on arrival; code renders change_plan.md and derives the packets from it. Delegated by brownfield-orchestrator during the architecture_design phase.",
     toolsAfter: { Edit: ["Glob", "Grep"] },
   },
   {
@@ -67,6 +70,9 @@ const HOUR_CACHE = [
   "  cacheTtl: 1h",
 ];
 
+/** Text generated into the sections at build time. */
+export const FILLS = { CHANGE_SPEC_SHAPE: await changeShape() };
+
 /** The agent file's header lines (between the two `---` lines) and its text after them. */
 function split(text, file) {
   const lines = text.split("\n");
@@ -76,7 +82,7 @@ function split(text, file) {
 }
 
 /** The copy's full text, built from its original and its section. */
-export function buildCopy(copy, read = (p) => readFileSync(p, "utf8")) {
+export function buildCopy(copy, read = (p) => readFileSync(p, "utf8"), fills = FILLS) {
   const baseFile = join(AGENTS, `${copy.base}.md`);
   const { header, body } = split(read(baseFile), baseFile);
   const out = [];
@@ -105,7 +111,10 @@ export function buildCopy(copy, read = (p) => readFileSync(p, "utf8")) {
     } else out.push(line);
   }
   if (named !== 1 || described !== 1 || tools !== 1) throw new Error(`${copy.base}.md: expected one name, description and tools line`);
-  const section = read(join(SECTIONS, `${copy.name}.md`)).replace(/\s+$/, "");
+  const section = read(join(SECTIONS, `${copy.name}.md`)).replace(/\s+$/, "").replace(/\{\{([A-Z_]+)\}\}/g, (m, name) => {
+    if (!(name in fills)) throw new Error(`tools/agent-copies/${copy.name}.md: no fill for ${m}`);
+    return fills[name];
+  });
   return `---\n${out.join("\n")}\n---\n${body.replace(/\s+$/, "")}\n\n${section}\n`;
 }
 

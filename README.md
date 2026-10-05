@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.9.1-blue)](.claude-plugin/marketplace.json)
+[![Version](https://img.shields.io/badge/version-0.9.2-blue)](.claude-plugin/marketplace.json)
 
 ![How the plugin works — you paste two prompts, an orchestrator routes premium work to Claude Opus and mechanical work to Gemini Flash, and your project gets both generated code and a full audit trail](docs/assets/hero.svg)
 

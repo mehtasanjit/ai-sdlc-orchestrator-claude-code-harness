@@ -16,8 +16,8 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-import { existsSync, readFileSync, unwatchFile, watchFile } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import { loadPolicy, loadPolicyFromPath, getModel } from "./policy.js";
 import {
@@ -37,9 +37,8 @@ import {
   resolveGcpProject,
   resolveGcpLocation,
 } from "./adapters/geminiTransports.js";
-import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides, ApplySpec } from "./types.js";
+import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides, ApplySpec, ModelConfig } from "./types.js";
 import {
-  EDITS_OUTPUT_SCHEMA,
   FILE_OUTPUT_SCHEMA,
   applyContent,
   checkWriteContract,
@@ -49,14 +48,16 @@ import {
   normalizeApply,
   runApplyLoop,
   applyModelConfig,
+  applyBudget,
   readsSlicesFromDisk,
-  markRunRecordStable,
 } from "./apply.js";
-import { runBatch, batchPacketsFromArgs, compactBatchReceipt } from "./batch.js";
+import { runBatch, batchPacketsFromArgs, compactBatchReceipt, markSharedInputs, batchProgress } from "./batch.js";
 import { resolveProjectRoot } from "./project-root.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
 // Typed-spec executor tools (greenfield runs): listed below, handled in executor/tools.ts.
-import { EXECUTOR_TOOLS, EXECUTOR_TOOL_NAMES, executorClaudeLeaves, executorPolicyNotes, handleExecutorTool, type RunState } from "./executor/tools.js";
+import { EXECUTOR_TOOLS, EXECUTOR_TOOL_NAMES, STAGE_CONCURRENCY, fallbackLeaf, typistForLeaf, executorClaudeLeaves, executorPolicyNotes, handleExecutorTool, type RunState } from "./executor/tools.js";
+import { FEATURE_INTENTS, TypistApplyAdapter, usesServerTypist } from "./applyTypist.js";
+import { EDIT_ANSWER_SCHEMA } from "./executor/brief.js";
 import { HANDOFF_TOOLS, HANDOFF_TOOL_NAMES, handleHandoffTool } from "./handoff/tools.js";
 import { handoffListing } from "./handoff/listing.js";
 import { leanOpusCliProblem } from "./executor/typists.js";
@@ -174,6 +175,18 @@ function legacySelectValue(): string | undefined {
     log("warn", "env.legacy_name", { names: LEGACY_SELECT_ENV, canonical: SELECT_ENV });
   }
   return value;
+}
+
+/**
+ * Greenfield's typist for a policy leaf (executor/tools.ts typistForLeaf), wrapped for the apply loop: one per leaf and
+ * billing mode, so its warm gate and Flash's inline header persist across a batch's packets.
+ */
+const typistAdapters = new Map<string, TypistApplyAdapter>();
+function typistApplyAdapter(leaf: ModelConfig, authMode: "estimated" | "vendor"): TypistApplyAdapter {
+  const key = `${leaf.id}|${authMode}`;
+  let adapter = typistAdapters.get(key);
+  if (!adapter) { adapter = new TypistApplyAdapter(leaf, typistForLeaf(leaf, authMode)); typistAdapters.set(key, adapter); }
+  return adapter;
 }
 
 function adapterFor(policy: Policy, modelId: string, forApply = false) {
@@ -346,8 +359,8 @@ interface DispatchOnce {
 }
 
 /** Route one packet, run it, log it, append its telemetry. Same behaviour as before the apply loop existed. */
-async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, forApply = false): Promise<DispatchOnce> {
-  const decision = pickModel(
+async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, forApply = false, force?: { modelId: string; reason: string; ruleIndex: number; selection?: any }): Promise<DispatchOnce> {
+  const decision = force ?? pickModel(
     {
       phase: packet.phase,
       task_type: packet.task_type,
@@ -372,7 +385,16 @@ async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, forApply
     select_overridden: decision.selection?.overridden,
   });
 
-  const adapter = adapterFor(policy, decision.modelId, forApply);
+  // A feature run's apply packet is typed by greenfield's own typist for its leaf (applyTypist.ts): the lean Opus
+  // typist, Flash through the completion door, or the Antigravity agent — one machine for both flows and every policy.
+  // Every other packet goes to its policy adapter, as before.
+  const leafForDispatch = getModel(policy, decision.modelId);
+  // An apply packet starts at the routed model's own output limit (apply.ts applyBudget): a cut-off is then a true one,
+  // and goes to the next typist in the apply loop. (Greenfield's typists set their own limit the same way.)
+  if (forApply) packet = applyBudget(packet, leafForDispatch);
+  const adapter = forApply && usesServerTypist(leafForDispatch, packet, runState)
+    ? typistApplyAdapter(leafForDispatch, runState!.authMode)
+    : adapterFor(policy, decision.modelId, forApply);
   const dispatchStarted = Date.now();
   log("info", "dispatch.start", {
     packet_id: packet.id,
@@ -465,6 +487,10 @@ async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, forApply
       select: decision.selection,
     },
     retry_count: packet.retry_count ?? 0,
+    // A lean typist call names its door, as greenfield's typist events do: it runs `claude -p` with no session file,
+    // so the run's true total keeps its dollars (collect-orchestrator-usage.mjs inSessionDispatched never subtracts an
+    // event with a door). Every other dispatch writes the event as before.
+    ...(adapter instanceof TypistApplyAdapter ? { door: adapter.door } : {}),
   };
   const events: TelemetryEvent[] = attempts.map((att) => ({
     ...baseEvent,
@@ -540,8 +566,6 @@ async function runPacket(raw: unknown, a: any, signal?: AbortSignal): Promise<un
         ".sdlc/local/write-contract.json; no active write contract under project_root.",
     );
   }
-  // A brownfield feature packet's slices of the run's record files ride in the cached system block (apply.ts).
-  if (apply) packet = markRunRecordStable(packet);
   if (apply) {
     // An Antigravity worker edits the project folder itself, outside the write contract and the
     // per-file before/after snapshots, and parallel sessions would see each other's edits.
@@ -550,15 +574,22 @@ async function runPacket(raw: unknown, a: any, signal?: AbortSignal): Promise<un
       policy,
       selectOverrides(),
     );
-    if (getModel(policy, first.modelId).adapter === "antigravity-worker") {
+    // A feature run's agent-door leaf types through greenfield's agent typist, which answers from a scratch folder while
+    // code writes (applyTypist.ts); it needs the run's start check, which records how the run is billed.
+    const firstLeaf = getModel(policy, first.modelId);
+    if (firstLeaf.adapter === "antigravity-worker" && !usesServerTypist(firstLeaf, packet, runState)) {
       throw new Error(
-        `${packet0.id}: routed to '${first.modelId}' (antigravity-worker). The apply form and execute_batch do not ` +
-          "run agent-door workers; route this phase to a completion-door model (flash-completion) or dispatch it without apply.",
+        FEATURE_INTENTS.has(String(packet.intent ?? ""))
+          ? `${packet0.id}: routed to '${first.modelId}' (antigravity-worker). A feature run's agent-door files are typed by the agent typist, which answers ` +
+              "from a scratch folder while the server writes; it needs the run's start check: call preflight_dispatch for this run first. Without it the agent would edit the project folder itself, outside the write contract and the per-file snapshots."
+          : `${packet0.id}: routed to '${first.modelId}' (antigravity-worker). The apply form and execute_batch do not ` +
+              "run agent-door workers; route this phase to a completion-door model (flash-completion) or dispatch it without apply.",
       );
     }
   }
   if (apply && !packet.outputSchema) {
-    packet = { ...packet, outputSchema: apply.mode === "edits" ? EDITS_OUTPUT_SCHEMA : FILE_OUTPUT_SCHEMA };
+    // Greenfield's answer contracts: exact edits (or the whole file) for an edit, the whole file for a new one.
+    packet = { ...packet, outputSchema: apply.mode === "edits" ? EDIT_ANSWER_SCHEMA : FILE_OUTPUT_SCHEMA };
   }
 
   if (!apply) {
@@ -578,9 +609,18 @@ async function runPacket(raw: unknown, a: any, signal?: AbortSignal): Promise<un
         policy,
         selectOverrides(),
       ),
-    dispatch: async (p) => {
-      const one = await dispatchOnce(p, policy, a, true);
+    dispatch: async (p, force) => {
+      const one = await dispatchOnce(p, policy, a, true, force);
       return { decision: one.decision, result: one.result, events: one.events };
+    },
+    // A retry routed to a Claude leaf of a feature run is typed here by the lean typist (applyTypist.ts), so it
+    // stays in the loop: greenfield's ladder ends in one lean Opus attempt inside the server.
+    typesInServer: (d) => usesServerTypist(getModel(policy, d.modelId), packet, runState),
+    // The ladder's last attempt is greenfield's last-attempt model (executor/tools.ts fallbackLeaf: the chat's model, or
+    // the policy's Claude leaf) when the server can type with it: a feature run's packets only (usesServerTypist).
+    lastAttempt: () => {
+      const leaf = fallbackLeaf(policy, selectOverrides());
+      return leaf && usesServerTypist(leaf, packet, runState) ? { modelId: leaf.id, reason: "the ladder's last attempt", ruleIndex: -1 } : null;
     },
     log: (level, event, fields) => log(level, event, fields),
     signal,
@@ -660,14 +700,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "execute_batch",
       description:
-        "Execute several apply-form TaskPackets in one call: the server runs them in parallel (max_parallel, default 4) " +
+        "Execute several apply-form TaskPackets in one call: the server runs them in parallel (4 at a time) " +
         "in depends_on order, never two on the same artifact_path at once, and returns one receipt per packet plus " +
         "totals. Same routing, apply, verify and telemetry as execute_with_model; one orchestrator turn for the phase " +
         "instead of one per packet.",
       inputSchema: {
         type: "object",
         properties: {
-          packets: { type: "array", items: { type: "object" }, description: "TaskPackets, each with an apply block (plan-to-packets output). Omit when packets_path is given. `apply: { write: true, format?: ['cmd {path}'], verify?: ['cmd {path}', ...], max_retries? }` makes the server write the returned content to artifact_path (write contract + provenance), run the format and verify commands, retry on the same model with the failure appended, and return a receipt instead of the file; status 'escalate' the moment the policy would route the next attempt to a different model. An inputs[] slice without `content` is read from disk under project_root (narrow it with `lines: [from, to]` or `section: '<heading>'`)." },
+          packets: { type: "array", items: { type: "object" }, description: "TaskPackets, each with an apply block (plan-to-packets output). Omit when packets_path is given. `apply: { write: true, mode?: 'content'|'edits', checks?: [{id, run: 'cmd {path}', fix?: 'cmd --write {path}'}], baseline_from?, max_retries? }` (or `verify` and `format` command lists) makes the server write the returned content to artifact_path (write contract + provenance), run each check's fix then its run, retry with the failure appended, and return a receipt instead of the file. A check the file already fails before the change is set aside for it (the receipt's set_aside). Status 'escalate' when the policy routes the next attempt to a model the server cannot type with. An inputs[] slice without `content` is read from disk under project_root (narrow it with `lines: [from, to]` or `section: '<heading>'`)." },
           packets_path: { type: "string", description: "Path to packets.json (plan-to-packets output); the server reads it so the packets never pass through the caller's context. Packets without an apply block (tooling) are skipped and listed in the receipt." },
           packet_ids: { type: "array", items: { type: "string" }, description: "With packets_path: run only these ids." },
           policy_name: { type: "string" },
@@ -676,7 +716,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           run_id: { type: "string" },
           cache_context: { type: "string" },
           telemetry_path: { type: "string" },
-          max_parallel: { type: "number", description: "1–8, default 4." },
           log_level: { type: "string", enum: ["error", "warn", "info", "debug", "trace"] },
         },
         required: [],
@@ -845,21 +884,45 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       case "execute_batch": {
         const a = args as any;
         const { list: rawPackets, skipped } = batchPacketsFromArgs(a);
-        const packets: TaskPacket[] = rawPackets.map((p: unknown) => validateTaskPacket(p));
+        // The inputs every packet carries are marked shared: the lean Opus typist sends them once, cached (batch.ts).
+        const packets: TaskPacket[] = markSharedInputs(rawPackets.map((p: unknown) => validateTaskPacket(p)));
         for (const p of packets) {
           if (!normalizeApply(p.apply)) throw new Error(`execute_batch: packet ${p.id} has no apply block; a batch carries apply-form packets only (the receipt is what makes a batch cheap).`);
         }
         ensurePolicy(a.policy_name, a.project_root, a.policy_path);
-        const maxParallel = Math.max(1, Math.min(8, Number(a.max_parallel ?? 4)));
-        const result = await runBatch({
-          packets,
-          maxParallel,
-          run: (p) => runPacket(p, a, extra.signal) as Promise<any>,
-          signal: extra.signal,
-          log: (level, event, fields) => log(level, event, fields),
-        });
+        // Packets typed at once: greenfield's stated bound for every stage and policy (executor/tools.ts
+        // STAGE_CONCURRENCY), fixed by the server, not chosen per call. A rate-limited call waits, so it changes only
+        // the wall time, never who types or what is billed.
+        const maxParallel = STAGE_CONCURRENCY;
+        // Progress as greenfield's execute_stage sends it: a message per settled packet and a heartbeat between.
+        const token = (req.params as any)._meta?.progressToken;
+        const progress = batchProgress({ token, send: (params) => extra.sendNotification({ method: "notifications/progress", params } as any) }, packets.length);
+        let result;
+        try {
+          result = await runBatch({
+            packets,
+            maxParallel,
+            run: (p) => runPacket(p, a, extra.signal) as Promise<any>,
+            signal: extra.signal,
+            log: (level, event, fields) => log(level, event, fields),
+            onSettled: (item, done) => progress.settled(item, done),
+          });
+        } finally {
+          await progress.stop();
+        }
         log("info", "batch.done", { packets: packets.length, status: result.status, counts: JSON.stringify(result.counts), cost_usd: result.cost_usd, duration_ms: result.duration_ms });
-        return { content: [{ type: "text", text: JSON.stringify(compactBatchReceipt(result, skipped)) }] };
+        // Every outcome whole, in the run's own folder, for the orchestrator to read one packet of with jq; the
+        // receipt it reads each turn stays within its bound (batch.ts compactBatchReceipt).
+        let fullReceipt: string | undefined;
+        if (typeof a.run_id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(a.run_id) && typeof a.project_root === "string") {
+          const rel = `.sdlc/runs/${a.run_id}/batches/${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+          try {
+            mkdirSync(dirname(join(a.project_root, rel)), { recursive: true });
+            writeFileSync(join(a.project_root, rel), JSON.stringify({ ...result, skipped_no_apply: skipped }, null, 2) + "\n");
+            fullReceipt = rel;
+          } catch { fullReceipt = undefined; }
+        }
+        return { content: [{ type: "text", text: JSON.stringify(compactBatchReceipt(result, skipped, { fullReceipt })) }] };
       }
       case "simulate_policy": {
         const a = args as any;

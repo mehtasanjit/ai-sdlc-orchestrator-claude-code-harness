@@ -1,7 +1,7 @@
 ---
 name: brownfield-orchestrator
 # Built by tools/build-agent-copies.mjs from agents/orchestrator.md and tools/agent-copies/brownfield-orchestrator.md: edit those, then run it.
-description: Orchestrator for brownfield feature-extend and feature-new runs only; the brownfield guide delegates it by name for those two intents. Drives the run's packet flow (skills/pipeline/brownfield-features.md): the change plan, packets derived from it, batched dispatch through the bundled MCP server per the loaded policy, lean reviews, and the HITL gates.
+description: Orchestrator for brownfield feature-extend and feature-new runs only; the brownfield guide delegates it by name for those two intents. Drives the run's packet flow (skills/pipeline/brownfield-features.md): the typed change spec, packets derived from it, batched dispatch through the bundled MCP server per the loaded policy, lean reviews, and the HITL gates.
 tools: Read, Write, Edit, Bash, Glob, Grep, Agent, Task, TaskCreate, TaskUpdate, TaskList, mcp__model-dispatch__execute_with_model, mcp__model-dispatch__execute_batch, mcp__model-dispatch__log_telemetry, mcp__model-dispatch__load_policy, mcp__model-dispatch__preflight_dispatch, mcp__plugin_mmo_model-dispatch__execute_with_model, mcp__plugin_mmo_model-dispatch__execute_batch, mcp__plugin_mmo_model-dispatch__log_telemetry, mcp__plugin_mmo_model-dispatch__load_policy, mcp__plugin_mmo_model-dispatch__preflight_dispatch, mcp__model-dispatch__execute_stage, mcp__model-dispatch__finalize_spec, mcp__plugin_mmo_model-dispatch__execute_stage, mcp__plugin_mmo_model-dispatch__finalize_spec
 # A run's orchestrator waits on long calls (the architect, the reviewers, an executor stage);
 # a helper's default five-minute prompt cache expires during them and the whole conversation
@@ -429,16 +429,17 @@ See "Wait inside your turn" in brownfield-features.md.
 
 and two more fields:
 
-   | `depends_on` | string[] (optional) | Packet ids this one waits for; `plan-to-packets.mjs` fills it from the plan. `execute_batch` schedules on it |
-   | `apply` | `{ write: true, mode?: "content" | "edits", verify?: string[], max_retries?: number }` (optional) | Brownfield, every file-producing mechanical packet: the server writes `artifact_path`, runs `verify` (`{path}` = the artifact), retries on the same tier with the failure appended, and returns a receipt instead of the file. Pass `run_id` beside `packet` so provenance is recorded. Contract and receipt statuses: brownfield-features.md, Phase 5 "Apply form" |
+   | `depends_on` | string[] (optional) | Packet ids this one waits for; `plan-to-packets.mjs` fills it from the change spec. `execute_batch` schedules on it |
+   | `apply` | `{ write: true, mode?: "content" | "edits", checks?: [{id, run, fix?}], baseline_from?: string, verify?: string[], format?: string[], max_retries?: number }` (optional) | Brownfield, every file-producing mechanical packet: the server writes `artifact_path`, runs each check's `fix` then its `run` (`{path}` = the artifact; `verify` and `format` when a packet has no `checks`), retries on the same tier with the failure appended, and returns a receipt instead of the file. Pass `run_id` beside `packet` so provenance is recorded. Contract and receipt statuses: brownfield-features.md, Phase 5 "Apply form" |
 
-**Stable inputs in this run.** The run record is read by every packet and both reviews: put `stable` in the
-`reason` of a slice of `intent_brief.md`, `discovery.md`, `change_plan.md` or `stack-profile.md` (as rule 6
-marks a stable input), so it rides in the cached system block. `plan-to-packets.mjs` marks its plan slices so.
+**Stable inputs in this run.** Instead of rule 6's marking for a packet's own slices: only a block every
+packet of the run reads the same is marked `stable` — the shared brief (`briefs/shared.md`), which the
+derived and fix packets already carry so. A slice that differs per packet is not: a cached block no other
+packet reads is a cache write at 1.25× the input price, not a saving.
 
 **Persisting the packet plan in this run.** Instead of rule 5's "Decompose `design.md` into TaskPackets (one per file-sized unit of work).":
 
-   - Brownfield: run `scripts/plan-to-packets.mjs` on `change_plan.md` (brownfield-features.md, Phase 4; add `--multi-model` when the policy names more than one model) — it writes `packets.json` from the unit sections with no model call; you read its summary and warnings and touch a packet only when a warning names it. Greenfield has no packet plan: executor mode (above) types its files from the spec.
+   - Brownfield: run `scripts/plan-to-packets.mjs --spec` (brownfield-features.md, Phase 2) — it finalizes the architect's change spec, renders `change_plan.md` and writes `packets.json` with no model call; you read its summary and warnings and never edit a packet. Greenfield has no packet plan: executor mode (above) types its files from the spec.
 
 9. **Keep your own session small.** On measured brownfield runs the dispatched work was under 5% of the
    true total; the other 95% was this session — every turn re-reads the whole conversation at the
@@ -446,7 +447,7 @@ marks a stable input), so it rides in the cached system block. `plan-to-packets.
    that number, and both are yours to control:
 
    - **Turn count.** Every Bash call is a turn, and so is every `execute_with_model` call: in brownfield
-     under a multi-model policy the phase's packets go in **one `execute_batch` call** (brownfield-features.md,
+     under every policy the phase's packets go in **one `execute_batch` call** (brownfield-features.md,
      Phase 5 "Batch the phase"), not one call each. Chain bookkeeping into one call wherever the calls
      have no decision between them: the `--after` for the file you just wrote, the `--before` for
      the next packet's file, and the `phase.start` / `phase.end` / `gate.*` log lines all go in a
@@ -468,8 +469,10 @@ marks a stable input), so it rides in the cached system block. `plan-to-packets.
 
    **Architect input contract (brownfield).** Delegate `brownfield-architect`, never `architect` (the same
    instructions with this run's planning rules, and Glob and Grep for finding files). The delegation prompt carries `mode: brownfield`,
-   `intent`, `run_id`, `policy_kind: single-model | multi-model` (multi-model when the loaded policy
-   names more than one model), the paths to `requirements.md` and `intent_brief.md`. No inlined file contents.
+   `intent`, `run_id`, the paths to `requirements.md` and `intent_brief.md`. No inlined file contents, and
+   nothing about the policy: the spec has one form under every policy. The architect hands over the change
+   spec (its sections under `<output_dir>/change.sections/`, each checked when it writes it) and returns; it
+   does not write `change_plan.md`, which code renders from the spec.
 
    **Reviewer input contract (brownfield).** In brownfield, delegate `brownfield-senior-reviewer`
    and `brownfield-security-reviewer`, never `senior-reviewer` or `security-reviewer` (same
@@ -480,13 +483,6 @@ marks a stable input), so it rides in the cached system block. `plan-to-packets.
    and reads edited files as `git diff <git_head_before> -- <file>`, new files in full. On the run
    this rule comes from, each review read 56k–87k tokens of context of which the diff was under 15k.
 
-   **Packet-worker input contract (brownfield, single-model).** Under a single-model policy you do
-   not write the derived packets yourself: `packet-groups.mjs` splits them into groups and you
-   delegate each group to `packet-worker` in the foreground (brownfield-features.md, Phase 5). The
-   delegation carries exactly `run_id`, `intent`, `packets_path`, `packet_ids`, `project_root`,
-   `plugin_root`, `telemetry_path`, `policy_name`, `model` and the model's `effective_price.rates`.
-   No packet bodies, no plan text. The worker's receipt is the record: an `applied` line ends that
-   packet, exactly like an applied receipt from `execute_batch`.
 
 **Provenance in this run.** Instead of "Do this per Write/Edit;":
 

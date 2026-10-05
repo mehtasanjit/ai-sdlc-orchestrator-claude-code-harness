@@ -14,11 +14,14 @@
 import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ApplySpec, FileSlice, ModelConfig, TaskPacket, TelemetryEvent } from "./types.js";
 import { LEGACY_GEMINI_ADAPTER_ID } from "./adapters/index.js";
 import { runEnded } from "./runLog.js";
+import { TRANSPORT } from "./executor/tools.js";
+import { applyEdits, backoffMs, RECEIPT_MAX_BYTES } from "./executor/run.js";
+import { contractShape, isTransient, parseAnswer } from "./executor/typists.js";
 
 /** `{path, content}` — what every apply packet returns; substituted when the packet omits outputSchema. */
 export const FILE_OUTPUT_SCHEMA = {
@@ -27,36 +30,31 @@ export const FILE_OUTPUT_SCHEMA = {
   required: ["path", "content"],
 } as const;
 
-/** What an `apply.mode: "edits"` packet returns; substituted when the packet omits outputSchema. */
-export const EDITS_OUTPUT_SCHEMA = {
-  type: "object",
-  properties: {
-    edits: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          line: { type: "number" },
-          anchor: { type: "string" },
-          position: { type: "string", enum: ["after", "before", "replace", "delete"] },
-          text: { type: "string" },
-          count: { type: "number" },
-        },
-        required: ["anchor", "position", "text"],
-      },
-    },
-  },
-  required: ["edits"],
-} as const;
 
+/** Retries after the first attempt: three attempts in all, as greenfield's two routed attempts and its last one. */
 export const DEFAULT_MAX_RETRIES = 2;
+/**
+ * Seconds a check may run when its packet states none: a safety bound, because a check that never ends would hold
+ * its batch slot. A feature run's packets state the plan's own time (the architect's timeout_s per check).
+ */
 export const DEFAULT_VERIFY_TIMEOUT_SEC = 120;
-/** A hydrated slice larger than this is refused — the packet wanted a section, not the file. */
+/**
+ * The most one input is read whole: a safety bound against a path that names a build output or a lockfile. A larger
+ * source file is sent in consecutive parts, whole (scripts/lib/change-spec.mjs wholeFileInputs).
+ */
 export const MAX_SLICE_BYTES = 200_000;
-/** Verify output is tailed to this many characters before it goes into a retry instruction or a receipt. */
-export const VERIFY_OUTPUT_TAIL_CHARS = 1500;
+/**
+ * A check's output is tailed to greenfield's receipt bound, the most any receipt carries (executor/run.ts
+ * RECEIPT_MAX_BYTES), before it goes into a retry instruction or a receipt: the end of the output, where the
+ * failure is.
+ */
+export const VERIFY_OUTPUT_TAIL_CHARS = RECEIPT_MAX_BYTES;
 
 const CONTRACT_REL_PATH = ".sdlc/local/write-contract.json";
+/** A safety bound on what one check command may print before it is stopped; its retry text is tailed far below this. */
+const COMMAND_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
+/** The write-contract hook's own bound on the contract file (write-contract-check.mjs), so both read the same contracts. */
+const CONTRACT_MAX_BYTES = 128 * 1024;
 
 // Same list as plugin/scripts/lib/off-limits.mjs HARDCODED_OFF_LIMITS; the
 // server cannot import an .mjs from the plugin tree at runtime, and
@@ -190,26 +188,6 @@ export function applyModelConfig(model: ModelConfig): ModelConfig {
 }
 
 /**
- * A brownfield run's record files, read by every packet and both reviews: written once before dispatch.
- */
-const RUN_RECORD_FILES = new Set(["intent_brief.md", "discovery.md", "change_plan.md", "stack-profile.md"]);
-/**
- * An apply-form packet with its slices of the run's record files marked stable ("stable" in the reason), so the
- * Anthropic adapter puts them in the cached system block (BuiltinAnthropicAdapter isStableInput), as the
- * orchestrator marks a stable input by hand (orchestrator.md rule 6). Only the server's apply path calls it, so a
- * packet of any other run is sent as before.
- */
-export function markRunRecordStable<P extends { inputs: Array<{ path: string; reason: string }> }>(packet: P): P {
-  return {
-    ...packet,
-    inputs: packet.inputs.map((s) => {
-      const name = String(s.path).split("/").pop() ?? "";
-      return RUN_RECORD_FILES.has(name) && !/\bstable\b/i.test(String(s.reason)) ? { ...s, reason: `${s.reason} (stable run record)` } : s;
-    }),
-  };
-}
-
-/**
  * Whether a packet's inputs[] slices without `content` are read from disk under the project folder. Only for a
  * brownfield packet: an apply-form packet, one that names its brownfield `intent` (greenfield packets carry none), or
  * one in a project whose brownfield write contract is active. Any other packet goes to the model as develop sends it.
@@ -227,7 +205,7 @@ export function readsSlicesFromDisk(packet: { intent?: unknown; inputs: Array<{ 
 export function hasActiveWriteContract(projectRoot: string): boolean {
   const contractPath = join(projectRoot, CONTRACT_REL_PATH);
   try {
-    if (!existsSync(contractPath) || statSync(contractPath).size > 128 * 1024) return false;
+    if (!existsSync(contractPath) || statSync(contractPath).size > CONTRACT_MAX_BYTES) return false;
     const contract = JSON.parse(readFileSync(contractPath, "utf8"));
     return contract?.active === true && !runEnded(projectRoot, contract.run_id);
   } catch {
@@ -251,7 +229,7 @@ export function checkWriteContract(projectRoot: string, target: string): Contrac
   const contractPath = join(projectRoot, CONTRACT_REL_PATH);
   let contract: any = null;
   try {
-    if (existsSync(contractPath) && statSync(contractPath).size <= 128 * 1024) {
+    if (existsSync(contractPath) && statSync(contractPath).size <= CONTRACT_MAX_BYTES) {
       contract = JSON.parse(readFileSync(contractPath, "utf8"));
     }
   } catch {
@@ -313,6 +291,7 @@ function runProvenance(
   spawnSync(
     process.execPath,
     [script, `--${mode}`, `--run-id=${runId}`, `--path=${rel}`, `--packet-id=${packetId}`, `--project-root=${projectRoot}`],
+    // A safety bound on a local bookkeeping script, so a hung one never holds the write.
     { cwd: projectRoot, stdio: "ignore", timeout: 30_000 },
   );
 }
@@ -374,7 +353,7 @@ export function runFormat(commands: string[], projectRoot: string, artifactPath:
       shell: true,
       encoding: "utf8",
       timeout: timeoutSec * 1000,
-      maxBuffer: 8 * 1024 * 1024,
+      maxBuffer: COMMAND_OUTPUT_MAX_BYTES,
     });
   }
 }
@@ -396,7 +375,7 @@ export function runVerify(
       shell: true,
       encoding: "utf8",
       timeout: timeoutSec * 1000,
-      maxBuffer: 8 * 1024 * 1024,
+      maxBuffer: COMMAND_OUTPUT_MAX_BYTES,
     });
     const timedOut = r.error && (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
     if (r.status !== 0 || timedOut) {
@@ -424,26 +403,43 @@ export function runVerify(
  * by design (orchestrator rule 7) — the model sees the failure, not a
  * conversation.
  */
-export function refinePacket(packet: TaskPacket, failure: string): TaskPacket {
+/**
+ * The packet for the next attempt: the failure appended to the instruction, asking for what the packet's mode takes.
+ * In edits mode every attempt is spliced into the file as it was before the packet, so the retry is asked for a
+ * corrected edit list; asking it for "the complete corrected file" there gets a reply the edits contract cannot take.
+ */
+export function refinePacket(packet: TaskPacket, failure: string, mode: "content" | "edits" = "content"): TaskPacket {
   const retry = (packet.retry_count ?? 0) + 1;
   const baseId = packet.id.replace(/-r\d+$/, "");
+  const ask = mode === "edits"
+    ? "Fix the cause below and return JSON {path, edits: [{search, replace}]} against the file's current text as given (your earlier edits were not kept; each search must appear exactly once), or {path, content} with the whole file."
+    : "Fix the cause below and return the complete corrected file.";
   return {
     ...packet,
     id: `${baseId}-r${retry}`,
     retry_count: retry,
     instruction:
       `${packet.instruction}\n\n### Previous attempt failed verification (attempt ${retry})\n` +
-      `Fix the cause below and return the complete corrected file.\n\`\`\`\n${failure}\n\`\`\``,
+      `${ask}\n\`\`\`\n${failure}\n\`\`\``,
   };
 }
 
-/** The write form of each verify formatter check (same rule as plan-to-packets' formatCommands). */
-export function deriveFormat(verify: string[] | undefined): string[] | undefined {
-  const out: string[] = [];
-  for (const c of verify ?? []) {
-    if (/\bbiome\s+(check|format)\b/.test(c) && !/--write\b/.test(c)) out.push(c.replace(/\bbiome\s+(check|format)\b/, "biome $1 --write"));
-    else if (/\bprettier\b.*--check\b/.test(c)) out.push(c.replace(/--check\b/, "--write"));
-  }
+/**
+ * An apply packet's output ceiling: the routed model's documented limit (its policy leaf's max_output_tokens_absolute),
+ * so a reply is cut off only at the model's own limit and a cut-off goes to the next model in the ladder (runApplyLoop);
+ * the packet's own ceiling only when the model declares none.
+ */
+export function applyBudget<P extends { budget: { maxInputTokens: number; maxOutputTokens: number } }>(packet: P, leaf: { max_output_tokens_absolute?: number }): P {
+  const limit = leaf.max_output_tokens_absolute;
+  return typeof limit === "number" && limit > 0 ? { ...packet, budget: { ...packet.budget, maxOutputTokens: limit } } : packet;
+}
+
+/** A typed check as a packet carries it: a command with `{path}`, an optional id, and its own write form. */
+function typedChecks(raw: unknown): { id?: string; run: string; fix?: string }[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out = raw
+    .filter((c): c is Record<string, unknown> => !!c && typeof c === "object" && typeof (c as any).run === "string" && (c as any).run.trim() !== "")
+    .map((c) => ({ ...(typeof c.id === "string" ? { id: c.id } : {}), run: c.run as string, ...(typeof c.fix === "string" && c.fix.trim() ? { fix: c.fix } : {}) }));
   return out.length ? out : undefined;
 }
 
@@ -451,20 +447,49 @@ export function normalizeApply(spec: unknown): ApplySpec | null {
   if (!spec || typeof spec !== "object") return null;
   const s = spec as Record<string, unknown>;
   if (s.write !== true) return null;
-  const verify = Array.isArray(s.verify) ? s.verify.filter((v): v is string => typeof v === "string") : undefined;
+  // Typed checks carry their own write forms; otherwise verify and format are taken as given. A formatter command is
+  // never guessed from a check's text: that was one tool's spelling, and a packet that wants one says so.
+  const checks = typedChecks(s.checks);
+  const verify = checks ? checks.map((c) => c.run) : Array.isArray(s.verify) ? s.verify.filter((v): v is string => typeof v === "string") : undefined;
   const given = Array.isArray(s.format) ? s.format.filter((v): v is string => typeof v === "string") : undefined;
-  // Packets from plan-to-packets carry `format`; hand-written debug / refinement packets often
-  // omit it, and on Large2-C two of them escalated to Opus over Biome spacing the formatter fixes.
-  const format = given && given.length ? given : deriveFormat(verify);
+  const format = checks ? checks.flatMap((c) => (c.fix ? [c.fix] : [])) : given;
   return {
     write: true,
     mode: s.mode === "edits" ? "edits" : "content",
     verify,
     ...(format && format.length ? { format } : {}),
+    ...(checks ? { checks } : {}),
+    ...(checks && typeof s.baseline_from === "string" && s.baseline_from ? { baseline_from: s.baseline_from } : {}),
     max_retries: typeof s.max_retries === "number" ? Math.max(0, Math.floor(s.max_retries)) : DEFAULT_MAX_RETRIES,
     verify_timeout_sec:
       typeof s.verify_timeout_sec === "number" ? Math.max(1, s.verify_timeout_sec) : DEFAULT_VERIFY_TIMEOUT_SEC,
   };
+}
+
+/**
+ * The baseline rule for typed checks: each check's `run` on the file before the change — the file itself for an
+ * edit, `baseline_from` (a new file's style file) otherwise. A check that fails there, or cannot run, is set aside
+ * for this packet: it would judge the repo's own state, not the answer, and its write form would rewrite lines the
+ * change does not touch. Returns the apply spec to use and what was set aside; no baseline file, no change.
+ */
+export function baselineChecks(apply: ApplySpec, projectRoot: string, artifactPath: string): { apply: ApplySpec; set_aside?: { id?: string; run: string; output?: string }[] } {
+  if (!apply.checks?.length) return { apply };
+  const target = apply.mode === "edits" ? artifactPath : apply.baseline_from;
+  if (!target) return { apply };
+  const abs = resolve(projectRoot, target);
+  const rel = toPosix(relative(projectRoot, abs));
+  if (rel.startsWith("../") || rel === ".." || isAbsolute(rel) || !existsSync(abs)) return { apply };
+  const kept: { id?: string; run: string; fix?: string }[] = [];
+  const setAside: { id?: string; run: string; output?: string }[] = [];
+  for (const c of apply.checks) {
+    const r = runVerify([c.run], projectRoot, rel, apply.verify_timeout_sec);
+    if (r.ok) kept.push(c);
+    else setAside.push({ ...(c.id ? { id: c.id } : {}), run: c.run, output: `exit ${r.exit_code ?? "timeout"}: ${r.output_tail ?? ""}` });
+  }
+  if (!setAside.length) return { apply };
+  const format = kept.flatMap((c) => (c.fix ? [c.fix] : []));
+  const { format: _all, ...rest } = apply;
+  return { apply: { ...rest, checks: kept, verify: kept.map((c) => c.run), ...(format.length ? { format } : {}) }, set_aside: setAside };
 }
 
 /** The file content a model returned, whatever wrapper the adapter left around it. */
@@ -476,92 +501,51 @@ export function extractFileContent(result: unknown): { content: string; path?: s
   return null;
 }
 
-export interface EditOp {
-  anchor: string;
-  position: "after" | "before" | "replace" | "delete";
-  text: string;
-  line?: number;
-  /** replace / delete only: how many lines, starting at the anchor, the op covers (default 1). */
-  count?: number;
+
+/**
+ * A text's line ending: the one most of its line breaks use, or null when it has none. The writer keeps a file's own
+ * ending, so an edit never rewrites the line endings of lines it did not mean to change.
+ */
+export function lineEndingOf(text: string): "\r\n" | "\n" | null {
+  const crlf = (text.match(/\r\n/g) ?? []).length;
+  const lf = (text.match(/\n/g) ?? []).length - crlf;
+  if (crlf + lf === 0) return null;
+  return crlf > lf ? "\r\n" : "\n";
 }
 
-export function extractEdits(result: unknown): EditOp[] | null {
-  if (!result || typeof result !== "object") return null;
-  const r = result as Record<string, unknown>;
-  if (Array.isArray(r.edits)) {
-    const ops: EditOp[] = [];
-    for (const e of r.edits) {
-      if (!e || typeof e !== "object") return null;
-      const o = e as Record<string, unknown>;
-      if (typeof o.anchor !== "string") return null;
-      if (o.position !== "after" && o.position !== "before" && o.position !== "replace" && o.position !== "delete") return null;
-      // A delete carries no text; every other op must.
-      if (typeof o.text !== "string" && o.position !== "delete") return null;
-      const count = typeof o.count === "number" && Number.isInteger(o.count) && o.count >= 1 ? o.count : undefined;
-      ops.push({
-        anchor: o.anchor,
-        position: o.position,
-        text: typeof o.text === "string" ? o.text : "",
-        line: typeof o.line === "number" ? o.line : undefined,
-        ...(count ? { count } : {}),
-      });
-    }
-    return ops;
+/**
+ * The line ending a whole-file write takes: the file's own when it exists; for a new file, that of the first input the
+ * packet shows that is a file of the same kind (same extension: its mirror); otherwise null, and the text is written
+ * as the model gave it.
+ */
+export function targetLineEnding(projectRoot: string, packet: TaskPacket): "\r\n" | "\n" | null {
+  const read = (rel: string) => { try { return readFileSync(resolve(projectRoot, rel), "utf8"); } catch { return null; } };
+  const own = packet.artifact_path ? read(packet.artifact_path) : null;
+  if (own !== null) return lineEndingOf(own);
+  const ext = packet.artifact_path ? extname(packet.artifact_path) : "";
+  for (const s of packet.inputs ?? []) {
+    if (!ext || typeof s?.path !== "string" || extname(s.path) !== ext) continue;
+    const text = read(s.path);
+    if (text !== null) return lineEndingOf(text);
   }
-  if (r.result && typeof r.result === "object") return extractEdits(r.result);
   return null;
 }
 
 /**
- * Splice an edit list into `original`. Every anchor is resolved against the
- * ORIGINAL text (so later inserts never shift earlier line numbers): the
- * `line` hint wins when that line's text equals the anchor (trailing
- * whitespace ignored), otherwise the anchor must match exactly one line.
- * Returns the new text, or the reason it could not be applied — which is
- * what the retry packet carries back to the model.
+ * An edits-mode answer applied to the file as it was before the packet: greenfield's contract and applier
+ * (executor/typists.ts parseAnswer, executor/run.ts applyEdits) — {path, edits: [{search, replace}]}, each search found
+ * exactly once in the text as it stands, or {path, content} with the whole file. Greenfield writes new files; a
+ * brownfield file can have CRLF endings (a Windows checkout), so the edits apply to the text with LF endings and the
+ * result takes the file's own ending back (a file with mixed endings comes back with its dominant one).
  */
-const removes = (op: EditOp) => op.position === "replace" || op.position === "delete";
-
-export function spliceEdits(original: string, edits: EditOp[]): { ok: true; content: string } | { ok: false; reason: string } {
-  if (edits.length === 0) return { ok: false, reason: "the edit list was empty" };
-  const lines = original.split("\n");
-  const norm = (s: string) => s.replace(/\s+$/, "");
-  const resolved: Array<{ index: number; op: EditOp }> = [];
-  for (const op of edits) {
-    const want = norm(op.anchor);
-    let index = -1;
-    if (op.line && op.line >= 1 && op.line <= lines.length && norm(lines[op.line - 1]) === want) index = op.line - 1;
-    else {
-      const hits: number[] = [];
-      lines.forEach((l, i) => { if (norm(l) === want) hits.push(i); });
-      if (hits.length === 1) index = hits[0];
-      else if (hits.length === 0) return { ok: false, reason: `anchor not found in the file: ${JSON.stringify(op.anchor)}` };
-      else return { ok: false, reason: `anchor matches ${hits.length} lines (${hits.map((h) => h + 1).join(", ")}); give \`line\` to pick one: ${JSON.stringify(op.anchor)}` };
-    }
-    const span = removes(op) ? (op.count ?? 1) : 0;
-    if (index + span > lines.length) {
-      return { ok: false, reason: `${op.position} of ${span} line(s) from line ${index + 1} runs past the end of the file (${lines.length} lines)` };
-    }
-    // Two ops clash when either removes lines the other touches.
-    const clash = resolved.find((r) => {
-      const rSpan = removes(r.op) ? (r.op.count ?? 1) : 0;
-      if (span === 0 && rSpan === 0) return false;
-      const lo = Math.max(index, r.index), hi = Math.min(index + Math.max(span, 1), r.index + Math.max(rSpan, 1));
-      return lo < hi;
-    });
-    if (clash) return { ok: false, reason: `two edits target line ${Math.max(index, clash.index) + 1}` };
-    resolved.push({ index, op });
-  }
-  // Bottom-up so earlier indices stay valid; stable for same-line before/after pairs.
-  resolved.sort((x, y) => y.index - x.index);
-  for (const { index, op } of resolved) {
-    if (op.position === "delete") { lines.splice(index, op.count ?? 1); continue; }
-    const ins = op.text.replace(/\n$/, "").split("\n");
-    if (op.position === "replace") lines.splice(index, op.count ?? 1, ...ins);
-    else if (op.position === "after") lines.splice(index + 1, 0, ...ins);
-    else lines.splice(index, 0, ...ins);
-  }
-  return { ok: true, content: lines.join("\n") };
+export function applySearchReplace(base: string, answer: unknown): { content?: string; reason?: string } {
+  const a = parseAnswer(answer, "edit");
+  if (!a) return { reason: `the answer was not ${contractShape("edit")}` };
+  const lf = (s: string) => s.replace(/\r\n/g, "\n");
+  const own = (s: string) => (lineEndingOf(base) === "\r\n" ? lf(s).replace(/\n/g, "\r\n") : lf(s));
+  if (a.content !== undefined) return { content: own(a.content) };
+  const r = applyEdits(lf(base), a.edits!.map((e) => ({ search: lf(e.search), replace: lf(e.replace) })));
+  return r.content !== undefined ? { content: own(r.content) } : { reason: r.reason };
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +562,8 @@ export interface ApplyAttemptSummary {
   verify_ok?: boolean;
   cost_usd: number;
   failure?: string;
+  /** A busy vendor's reply (429, 5xx, a dropped connection) that was waited out: no attempt. */
+  transport_wait?: boolean;
 }
 
 export interface ApplyOutcome {
@@ -593,6 +579,10 @@ export interface ApplyOutcome {
   escalate?: { retry_count: number; model_id: string; failure: string };
   /** Set on "refused": why the write contract said no. Not retried — a planner bug. */
   refusal?: string;
+  /** Set when the vendor refused the call's credentials (401, 403): every packet would fail the same way, so the batch stops. */
+  halt?: string;
+  /** Typed checks the file failed before the change (baselineChecks): set aside, never judging this packet. */
+  set_aside?: { id?: string; run: string; output?: string }[];
   events_written: number;
   /** Only when no telemetry_path was given, so the events are not lost. */
   events?: TelemetryEvent[];
@@ -614,6 +604,8 @@ export interface DispatchResult {
     tokens: { input: number; input_cached: number; output: number };
     cost_usd: number;
     terminal_reason?: string;
+    /** The vendor's own account of the last call (types.ts AttemptRecord): a failure is classified from these, never from words. */
+    attempts?: Array<{ error_status?: number; error_code?: string; retry_after_ms?: number; transient?: boolean }>;
   };
   events: TelemetryEvent[];
 }
@@ -626,14 +618,35 @@ export interface ApplyLoopDeps {
   /** True when no telemetry file is written, so the events ride in the outcome instead of being lost. */
   keepEvents: boolean;
   route: (packet: TaskPacket) => RouteDecision;
-  dispatch: (packet: TaskPacket) => Promise<DispatchResult>;
+  /** One call; `force` names the model for this attempt instead of the policy's route (a cut-off's next typist). */
+  dispatch: (packet: TaskPacket, force?: RouteDecision) => Promise<DispatchResult>;
   log: (level: "info" | "warn", event: string, fields: Record<string, unknown>) => void;
   /**
    * The request's own cancel signal (Claude Code cancels the call when the person stops it): no attempt starts after
    * it, and an answer that arrives after it is not written, so a stopped run writes nothing more into the project.
    */
   signal?: AbortSignal;
+  /**
+   * Whether the server can type with the model a routing decision names (the server's applyTypist.ts lean typist for
+   * a feature run's Claude leaf). A retry the policy routes to such a model stays in this loop, as greenfield's ladder
+   * does; one routed to any other model ends the loop as `escalate`, for the orchestrator. Absent: every change of
+   * model is an escalate, as before.
+   */
+  typesInServer?: (decision: RouteDecision) => boolean;
+  /**
+   * The model of the ladder's last attempt (greenfield's: the lean Opus typist, executor/tools.ts fallbackLeaf), or
+   * null when the server cannot type with one. Every attempt but the last goes where the policy routes it; the last
+   * goes here. Absent or null: every attempt goes where the policy routes it, as before.
+   */
+  lastAttempt?: () => RouteDecision | null;
+  /** Waits for a busy vendor: greenfield's stated bounds (executor/tools.ts TRANSPORT) unless a test passes its own. */
+  transport?: { maxWaits: number; baseMs: number; capMs: number };
+  sleep?: (ms: number) => Promise<void>;
+  random?: () => number;
 }
+
+/** HTTP statuses that mean the credentials or permission are wrong, not that the vendor is busy (RFC 9110). */
+const CREDENTIAL_REFUSALS = new Set([401, 403]);
 
 /**
  * The editor loop: dispatch → write → verify → refine → dispatch, on one
@@ -642,7 +655,12 @@ export interface ApplyLoopDeps {
  * the receipt; the file never enters its context.
  */
 export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
-  const { packet, apply, projectRoot, runId, keepEvents, route, dispatch, log, signal } = deps;
+  const { packet, projectRoot, runId, keepEvents, route, dispatch, log, signal } = deps;
+  let apply = deps.apply;
+  const transport = deps.transport ?? TRANSPORT;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const random = deps.random ?? Math.random;
+  let waits = 0;
   const attempts: ApplyAttemptSummary[] = [];
   const allEvents: TelemetryEvent[] = [];
   const tokens = { input: 0, input_cached: 0, output: 0 };
@@ -654,15 +672,30 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
   let retriesUsed = 0;
   let current = packet;
   const maxRetries = apply.max_retries ?? 2;
+  const baseRetry = packet.retry_count ?? 0;
+  // The ladder's model for attempt `slot` (0 … maxRetries) of packet `p`: the policy's route, the last-attempt model
+  // for the last slot when it is a retry (the routed model always types first). `forced` says the decision is not the
+  // policy's own, so dispatch is told it.
+  const ladder = (p: TaskPacket, slot: number): { decision: RouteDecision; forced: boolean } => {
+    const last = slot > 0 && slot >= maxRetries ? deps.lastAttempt?.() ?? null : null;
+    return last ? { decision: last, forced: true } : { decision: route(p), forced: false };
+  };
   // Edits are spliced into the file as it was before this packet, on every attempt: a retry
   // onto the already-edited file finds its anchors shifted or duplicated (measured: "anchor
   // matches 3 lines" after attempt 0 had inserted eleven lines above them).
   let editsBase: string | null = null;
+  // A whole-file write keeps the file's own line ending (or its mirror's, for a new file); edits keep it in spliceEdits.
+  const contentEol = apply.mode === "edits" ? null : targetLineEnding(projectRoot, packet);
   if (apply.mode === "edits") {
     const abs = resolve(projectRoot, packet.artifact_path!);
     if (!existsSync(abs)) return { status: "refused", decision: route(packet), attempts, tokens, cost_usd: 0, events_written: 0, events: keepEvents ? [] : undefined, refusal: `${packet.artifact_path}: edits mode needs an existing file` };
     editsBase = readFileSync(abs, "utf8");
   }
+  // Typed checks: before any typist is paid, a check the file already fails is set aside for this packet
+  // (baselineChecks), so it neither judges the answer nor runs its write form; the receipt names it.
+  const baseline = baselineChecks(apply, projectRoot, packet.artifact_path!);
+  apply = baseline.apply;
+  if (baseline.set_aside) log("info", "apply.baseline", { packet_id: packet.id, set_aside: baseline.set_aside.map((c) => c.id ?? c.run).join(",") });
   let snapshot: string | null = null;
   // Snapshot the file before anything is dispatched, so the backup is the original even if a worker
   // touches the file itself.
@@ -694,6 +727,7 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
     terminal_reason: terminalReason,
     events_written: keepEvents ? 0 : allEvents.length,
     events: keepEvents ? allEvents : undefined,
+    ...(baseline.set_aside ? { set_aside: baseline.set_aside } : {}),
     ...extra,
   });
 
@@ -703,15 +737,18 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
   };
   for (;;) {
     if (signal?.aborted) return stopped();
-    const decision = route(current);
-    if (firstDecision && decision.modelId !== firstDecision.modelId) {
+    const step = ladder(current, retriesUsed);
+    const decision = step.decision;
+    // The last-attempt model is one the server types with by its definition (lastAttempt); any other change of model
+    // the server cannot type with goes back to the orchestrator.
+    if (!step.forced && firstDecision && decision.modelId !== firstDecision.modelId && !deps.typesInServer?.(decision)) {
       const last = attempts[attempts.length - 1];
       log("info", "apply.escalate", { packet_id: current.id, retry_count: current.retry_count, from: firstDecision.modelId, to: decision.modelId });
       return finish("escalate", {
         escalate: { retry_count: current.retry_count ?? 0, model_id: decision.modelId, failure: last?.failure ?? "" },
       });
     }
-    const one = await dispatch(current);
+    const one = await dispatch(current, step.forced ? decision : undefined);
     if (!firstDecision) firstDecision = one.decision;
     allEvents.push(...one.events);
     tokens.input += one.result.tokens.input;
@@ -729,7 +766,39 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
     attempts.push(summary);
 
     if (!one.result.success) {
+      const last = one.result.attempts?.[one.result.attempts.length - 1];
       summary.failure = one.result.error;
+      // Credentials the vendor refuses fail every packet the same way: the batch stops here, as greenfield's executor
+      // stops its stage, instead of handing each file to another model.
+      if (last?.error_status !== undefined && CREDENTIAL_REFUSALS.has(last.error_status)) {
+        return finish("dispatch_failed", { halt: `the ${one.decision.modelId} call was refused with HTTP ${last.error_status} (its login or permission is broken); the batch stopped here` });
+      }
+      // Cut off at the model's own output limit (the packet starts there: applyBudget). Greenfield's rule
+      // (executor/run.ts): the same model cannot return the whole answer at the same limit, so its later attempts are
+      // skipped and the packet goes to the next different model in the ladder, in that model's own slot; a cut-off
+      // never adds an attempt. With no other model left the packet fails with the cut-off as its reason.
+      if (one.result.terminal_reason === "output_cap_at_model_absolute" || one.result.terminal_reason === "output_cap_doubling_budget_exhausted") {
+        let slot = retriesUsed + 1;
+        while (slot <= maxRetries && ladder({ ...current, retry_count: baseRetry + slot }, slot).decision.modelId === one.decision.modelId) slot++;
+        if (slot > maxRetries) return finish("dispatch_failed");
+        const to = ladder({ ...current, retry_count: baseRetry + slot }, slot).decision.modelId;
+        log("info", "apply.cut_off", { packet_id: current.id, from: one.decision.modelId, to });
+        retriesUsed = slot;
+        current = refinePacket({ ...current, retry_count: baseRetry + slot - 1 }, "The previous answer was cut off at the model's output limit; give the whole answer.", apply.mode === "edits" ? "edits" : "content");
+        continue;
+      }
+      // A busy vendor (429, 5xx, a dropped connection) is waited out and the same packet sent again, as greenfield's
+      // executor does: a wait is not an attempt, and a rate-limited call bills $0. A pause longer than one rate-limit
+      // window (both vendors meter per minute) means the quota is spent for longer than a batch waits: that ends it.
+      const longPause = last?.retry_after_ms !== undefined && last.retry_after_ms > transport.capMs;
+      // A typist that read the vendor's own fields says so itself (greenfield's TypistResult.transport).
+      if ((last?.transient === true || isTransient(last?.error_status, last?.error_code)) && !longPause && waits < transport.maxWaits) {
+        summary.transport_wait = true;
+        log("info", "apply.transport_wait", { packet_id: current.id, status: last?.error_status, code: last?.error_code, wait: waits + 1 });
+        await sleep(last?.retry_after_ms ?? backoffMs(waits, transport.baseMs, transport.capMs, random));
+        waits++;
+        continue;
+      }
       return finish("dispatch_failed");
     }
     if (signal?.aborted) return stopped();
@@ -737,16 +806,14 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
     let failure = "";
     let content: string | null = null;
     if (apply.mode === "edits") {
-      const edits = extractEdits(one.result.result);
-      if (!edits) failure = "the response had no `edits` array; return JSON {edits: [{anchor, position, text, line?, count?}]}";
-      else {
-        const spliced = spliceEdits(editsBase!, edits);
-        if (spliced.ok) content = spliced.content;
-        else failure = `edit list could not be applied: ${spliced.reason}`;
-      }
+      // Every attempt applies to the file as it was before the packet (editsBase), as greenfield's fixes apply to the
+      // current text they were shown.
+      const r = applySearchReplace(editsBase!, one.result.result);
+      if (r.content !== undefined) content = r.content;
+      else failure = `the edits could not be applied: ${r.reason}`;
     } else {
       const file = extractFileContent(one.result.result);
-      if (file) content = file.content;
+      if (file) content = contentEol ? file.content.replace(/\r?\n/g, contentEol) : file.content;
       else failure = "the response had no `content` string; return JSON {path, content} with the complete file in `content`";
     }
     if (content === null) {
@@ -778,7 +845,7 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
       if (retriesUsed >= maxRetries) return finish("verify_failed");
     }
     retriesUsed++;
-    current = refinePacket(current, failure);
+    current = refinePacket(current, failure, apply.mode === "edits" ? "edits" : "content");
   }
 }
 

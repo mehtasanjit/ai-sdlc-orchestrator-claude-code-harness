@@ -33,14 +33,14 @@ const packet = {
   apply: { write: true },
 };
 
-async function callExecute(root, policy_path) {
+async function callExecute(root, policy_path, over = {}) {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
   const transport = new StdioClientTransport({ command: process.execPath, args: [join(HERE, "..", "dist", "server.js")], env: { PATH: process.env.PATH, HOME: root, MMO_LOG_LEVEL: "error" }, stderr: "ignore" });
   const client = new Client({ name: "apply-guards-test", version: "0" });
   await client.connect(transport);
   try {
-    return await client.callTool({ name: "execute_with_model", arguments: { packet, project_root: root, policy_path, run_id: "r1", auth_mode: "estimated" } });
+    return await client.callTool({ name: "execute_with_model", arguments: { packet: { ...packet, ...over }, project_root: root, policy_path, run_id: "r1", auth_mode: "estimated" } });
   } finally {
     await client.close();
   }
@@ -75,6 +75,21 @@ test("an apply packet routed to an antigravity-worker leaf is refused", async ()
     const r = await callExecute(root, join(root, "policy.yaml"));
     assert.equal(r.isError, true);
     assert.match(r.content[0].text, /do not run agent-door workers/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A feature run's agent-door files are typed by greenfield's agent typist, which answers from a scratch folder while
+// the server writes; that needs the run's start check (preflight_dispatch). Without it the packet is refused, never sent
+// to an agent that would edit the project folder itself.
+test("a feature run's packet routed to the agent door is refused until the run's start check, and the refusal offers no way around the contract", async () => {
+  const root = project({ schema_version: 1, active: true, strict: true, allowlist: ["src/**"], off_limits: [] });
+  try {
+    const r = await callExecute(root, join(root, "policy.yaml"), { intent: "feature-new" });
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, /call preflight_dispatch for this run first/);
+    assert.doesNotMatch(r.content[0].text, /without apply/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1,6 +1,6 @@
 # Repo guide
 
-This repository holds `mmo` (Multi-Model Orchestrator) v0.9.1 — a Claude Code plugin that runs a
+This repository holds `mmo` (Multi-Model Orchestrator) v0.9.2 — a Claude Code plugin that runs a
 full software-delivery pipeline against a brief (requirements → design → code → senior review →
 tests → security review), routes each phase to the model that fits it, and records what each phase
 cost — plus the harness, tests and documentation that ship it.
@@ -67,6 +67,7 @@ path, one API call per unit of work, nothing here is installed and nothing here 
 | `plugin/mcp/model-dispatch/src/executor/` | Reading or changing the typed-spec executor (greenfield: `/mmo:greenfield` and `/mmo:pass`). `brief.ts` renders briefs and fix briefs; `typists.ts` holds the three typists (their environments, request shapes and failure classification); `checks.ts` the checks on every answer; `run.ts` the stage runner (the ladder, repairs, warm-up); `acceptance.ts` the acceptance stage (runs the spec's acceptance commands and marks every criterion); `tools.ts` the MCP tools. The typed spec itself is in `src/spec/`, and `worker/typist_worker.py` is the agent-door typist. |
 | `plugin/scripts/write-manifest.mjs` | Rebuilding a run's `manifest.json` from its records. Phase 9 runs it; the manifest is never typed by hand. The collector copies the acceptance table into SUMMARY.md with `plugin/scripts/lib/acceptance-summary.mjs`. |
 | `plugin/scripts/executor-guard.mjs` | Debugging a refused helper launch or write in an executor run. It keeps that run's orchestrator to the pipeline's own helpers and to writes inside its own run's record folder. |
+| `plugin/scripts/lib/change-spec.mjs` | Reading or changing a brownfield feature run's typed change spec: its shape (built on greenfield's spec schema, loaded from the server's bundle), the check each section gets when the architect hands it over (`plan-lint.mjs --section`), the finalize checks, the rendered `change_plan.md` and briefs, and the packets (`plan-to-packets.mjs --spec`). The packets' typed checks and the baseline rule run in the server (`apply.ts` `baselineChecks`). Fix packets from review findings and check failures: `plugin/scripts/findings-to-packets.mjs`. |
 | `plugin/mcp/model-dispatch/src/runCard.ts` | Reading the run card pre-flight records: the plugin version and commit, Claude Code's version, and the prompt-cache overrides it found. |
 
 ## Inside `plugin/`
@@ -74,7 +75,7 @@ path, one API call per unit of work, nothing here is installed and nothing here 
 | Path | What it holds |
 |---|---|
 | `commands/` | 13 slash commands, one Markdown file each, all namespaced `/mmo:` — `greenfield.md`, `brownfield.md`, `pass.md`, seven per-job aliases, plus `setup.md`, `policy.md` and `revert.md`. |
-| `agents/` | Subagent definitions: `orchestrator`, `architect`, `discovery`, `senior-reviewer`, `security-reviewer`; `packet-worker` (a brownfield feature run's single-model writer); and the feature-run copies `brownfield-orchestrator`, `brownfield-architect`, `brownfield-senior-reviewer`, `brownfield-security-reviewer`, built by `tools/build-agent-copies.mjs` from the originals plus a section in `tools/agent-copies/` (never edited by hand; `tools/test/agent-copies.test.mjs` checks them). |
+| `agents/` | Subagent definitions: `orchestrator`, `architect`, `discovery`, `senior-reviewer`, `security-reviewer`; and the feature-run copies `brownfield-orchestrator`, `brownfield-architect`, `brownfield-senior-reviewer`, `brownfield-security-reviewer`, built by `tools/build-agent-copies.mjs` from the originals plus a section in `tools/agent-copies/` (never edited by hand; `tools/test/agent-copies.test.mjs` checks them). |
 | `skills/` | Playbooks a subagent reads at run time. `pipeline/SKILL.md` carries the state machine, the task-packet schema (one packet per unit of work, the unit that gets routed to a model) and the approval gates; `brownfield-guide/SKILL.md` covers work on an existing repo; `pipeline/brownfield-features.md` is the packet flow only `feature-extend` and `feature-new` runs follow (read by `brownfield-orchestrator`). Per-stack guidance lives in `skills/pipeline/stacks/`. |
 | `config/policies/` | Routing policies as YAML — the directory listing is the authoritative preset set (`opus-plus-flash.yaml` is the default). A policy maps each phase to a model and prices each model; it sets no cost cap. |
 | `config/intents.json` | The seven brownfield job types. |

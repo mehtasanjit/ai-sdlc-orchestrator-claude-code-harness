@@ -1,172 +1,107 @@
 #!/usr/bin/env node
 /**
- * plan-lint — refuse a brownfield `change_plan.md` that contains the program
- * instead of the spec for it.
+ * plan-lint — check one section of a brownfield feature run's change spec when the architect hands it over, or
+ * print the spec's shape.
  *
- * Why: under a multi-model policy the architect tends to write every file in
- * full into the plan so the cheap tier can transcribe it. Every such block is
- * premium-model output that both reviewers re-read, and the worker's part
- * collapses to copying. This gate makes the "no literal code" rule mechanical
- * so it cannot be argued with mid-run.
+ * Why: the plan used to be free-text change_plan.md, linted after the architect returned by counting fenced lines,
+ * and a failure cost a fresh architect delegation. Greenfield checks each spec section on arrival, in the same
+ * architect session, against a strict schema whose shape is shown up front (spec/store.ts submitSpecSection), so a
+ * refusal costs one Edit. This does the same for a change, as a mode of the run's own script so the server's tool
+ * list is unchanged: the schema rules (every text field one line, so no code fits; exact enums), and the change's
+ * pointers checked against the files as they are (lib/change-spec.mjs checkUnits). An accepted section is copied
+ * to the run's change.parts/ with the hash of every file it points into; plan-to-packets --spec builds from those.
  *
- * What passes: signatures, one-line literals, a numbered rule list, a
- * `path:lines` pointer to the file to mirror. What fails: any fenced block
- * longer than --max-block-lines (default 12: a type + a signature or two),
- * more than --max-fenced-lines of fenced text overall (default 150), or a
- * section whose body is headed "Content:" / "Full file" / "Complete file".
- * The architect prompt says the same in words; this is the check.
+ * Usage:
+ *   node plan-lint.mjs --shape
+ *   node plan-lint.mjs --section <file> --run-id <id> [--project-root <dir>]
+ *     <file>: header.json or units-NNN.json under <project>/.sdlc/runs/<id>/change.sections/
  *
- * Exit 0 = clean. 1 = violations (listed, one per line, with the section
- * heading so the architect can be re-delegated with the list). 2 = usage /
- * unreadable file. Greenfield design.md is not linted — it has no worker to
- * transcribe for.
- *
- * Usage: node plan-lint.mjs <change_plan.md> [--max-block-lines N]
- *                                             [--max-fenced-lines N] [--json]
+ * Exit 0 = accepted (one summary line). 1 = refused (one line per problem, each naming the unit and field; nothing is
+ * stored). 2 = usage, or a file outside the run's section folder.
  */
-
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-export const DEFAULTS = { maxBlockLines: 12, maxFencedLines: 150 };
-
-/**
- * Advisory only (never fails the lint — a re-delegation costs more than it saves).
- * A long plan is premium-model output that both reviewers re-read. Notes feed the
- * run's notes.md.
- */
-export const PLAN_LINE_BUDGET = 500;
-
-/** Headings that announce a transcription target rather than a spec. */
-const LITERAL_BODY_HEADINGS = /^\s*(\*\*)?(content|full file|complete file|file contents?)(\*\*)?\s*:?\s*(\*\*)?\s*$/i;
-
-/**
- * Lint the plan text. Returns { ok, violations: [{ line, section, kind, detail }],
- * stats: { fencedBlocks, fencedLines, sections } }. Pure; no I/O.
- */
-export function lintPlan(text, opts = {}) {
-  const maxBlockLines = opts.maxBlockLines ?? DEFAULTS.maxBlockLines;
-  const maxFencedLines = opts.maxFencedLines ?? DEFAULTS.maxFencedLines;
-  const lines = text.split(/\r?\n/);
-  const violations = [];
-  let section = "(preamble)";
-  let sections = 0;
-  let inFence = false;
-  let fenceStart = 0;
-  let fenceLines = 0;
-  let fencedBlocks = 0;
-  let fencedLines = 0;
-  const notes = [];
-  const sectionLines = new Map();
-
-  lines.forEach((raw, i) => {
-    const n = i + 1;
-    if (/^\s*(```|~~~)/.test(raw)) {
-      if (!inFence) {
-        inFence = true;
-        fenceStart = n;
-        fenceLines = 0;
-        fencedBlocks += 1;
-      } else {
-        inFence = false;
-        fencedLines += fenceLines;
-        if (fenceLines > maxBlockLines) {
-          violations.push({
-            line: fenceStart,
-            section,
-            kind: "block_too_long",
-            detail: `fenced block of ${fenceLines} lines (max ${maxBlockLines}) — replace with signatures + numbered rules, or a path:lines pointer to the file to mirror`,
-          });
-        }
-      }
-      return;
-    }
-    if (inFence) {
-      fenceLines += 1;
-      return;
-    }
-    if (/^#{1,6}\s/.test(raw)) {
-      section = raw.replace(/^#+\s*/, "").trim();
-      sections += 1;
-      if (/^###\s+Edits?\b/i.test(raw)) notes.push({ line: n, section, kind: "edit_sites_form", detail: "edit sites under a `### Edits` heading — write them as sub-bullets of `- **Edit anchor**`: after `:N` `<line text>`" });
-      return;
-    }
-    if (/^#{1,2}\s/.test(section) === false) sectionLines.set(section, (sectionLines.get(section) ?? 0) + 1);
-    if (LITERAL_BODY_HEADINGS.test(raw)) {
-      violations.push({
-        line: n,
-        section,
-        kind: "literal_body",
-        detail: `"${raw.trim()}" announces a full-file listing — a plan section carries Exports / Behavior / Mirror, never the file`,
-      });
-    }
-  });
-
-  if (inFence) {
-    violations.push({ line: fenceStart, section, kind: "unterminated_fence", detail: "code fence never closed" });
-  }
-  if (fencedLines > maxFencedLines) {
-    violations.push({
-      line: 0,
-      section: "(whole plan)",
-      kind: "too_much_fenced_text",
-      detail: `${fencedLines} fenced lines in total (max ${maxFencedLines}) across ${fencedBlocks} blocks`,
-    });
-  }
-  const planLines = lines.filter((l) => l.trim()).length;
-  if (planLines > PLAN_LINE_BUDGET) {
-    notes.push({ line: 0, section: "(whole plan)", kind: "long_plan", detail: `${planLines} non-blank lines (brief form ≈ ${PLAN_LINE_BUDGET}; informational — do not trim a written plan); largest sections: ${[...sectionLines].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([s, c]) => `${s} (${c})`).join(", ")}` });
-  }
-  return { ok: violations.length === 0, violations, notes, stats: { fencedBlocks, fencedLines, sections, planLines } };
-}
-
-export function formatReport(path, result) {
-  const { stats, violations } = result;
-  const head = `plan-lint ${result.ok ? "ok" : "FAILED"}: ${path} — ${stats.sections} sections, ${stats.planLines} lines, ${stats.fencedBlocks} fenced blocks, ${stats.fencedLines} fenced lines`;
-  const noteRows = (result.notes ?? []).map((v) => `  note L${v.line || "-"} [${v.section}] ${v.kind}: ${v.detail}`);
-  if (result.ok) return noteRows.length ? `${head}\n${noteRows.join("\n")}` : head;
-  const rows = violations.map((v) => `  L${v.line || "-"} [${v.section}] ${v.kind}: ${v.detail}`);
-  return `${head}\n${rows.join("\n")}\n\nRe-delegate the architect with this list: shrink each named section to a spec (Exports as signatures, Behavior as numbered rules, Mirror as path:lines). The plan is read by the worker through inputs[].section, so nothing is lost by pointing instead of pasting.`;
-}
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadServerLib } from "./lib/server-lib.mjs";
+import { PARTS_DIR, SECTIONS_DIR, acceptedParts, changeSchemas, changeShape, checkUnits, runFolder } from "./lib/change-spec.mjs";
 
 function parseArgs(argv) {
-  const args = { file: undefined, json: false, ...DEFAULTS };
+  const out = { shape: false, section: null, runId: null, projectRoot: process.cwd() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    const eat = (flag) => Number(a.startsWith(`${flag}=`) ? a.slice(flag.length + 1) : argv[++i]);
-    if (a === "--json") args.json = true;
-    else if (a.startsWith("--max-block-lines")) args.maxBlockLines = eat("--max-block-lines");
-    else if (a.startsWith("--max-fenced-lines")) args.maxFencedLines = eat("--max-fenced-lines");
-    else if (a.startsWith("--")) throw new Error(`unknown argument '${a}'`);
-    else args.file = a;
+    const val = () => (a.includes("=") ? a.slice(a.indexOf("=") + 1) : argv[++i]);
+    if (a === "--shape") out.shape = true;
+    else if (a.startsWith("--section")) out.section = val();
+    else if (a.startsWith("--run-id")) out.runId = val();
+    else if (a.startsWith("--project-root")) out.projectRoot = val();
   }
-  if (!args.file) throw new Error("usage: plan-lint.mjs <change_plan.md> [--max-block-lines N] [--max-fenced-lines N] [--json]");
-  if (!Number.isFinite(args.maxBlockLines) || !Number.isFinite(args.maxFencedLines)) throw new Error("limits must be numbers");
-  return args;
+  return out;
 }
 
-export function main(argv = process.argv.slice(2)) {
-  let args;
-  try {
-    args = parseArgs(argv);
-  } catch (err) {
-    console.error(`plan-lint: ${err.message}`);
-    return 2;
+/**
+ * Checks one section file. Returns { ok, lines } — the lines to print; on success the section is stored.
+ * A header section is named header*.json; every other section file holds units.
+ */
+export async function checkSection(projectRoot, runId, file) {
+  const run = runFolder(projectRoot, runId);
+  if (run.error) return { ok: false, usage: true, lines: [run.error] };
+  const { specSchema, specStore } = await loadServerLib();
+  const { header: headerSchema, unit: unitSchema } = await changeSchemas();
+  const sectionsDir = join(run.dir, SECTIONS_DIR);
+  const name = basename(file);
+  const kind = /^header/i.test(name) ? "header" : "units";
+  const read = specStore.readSectionFile(sectionsDir, resolve(projectRoot, file), kind);
+  if (read.error) {
+    const why = read.error.replace(/must hold the header object \{[^}]*\}/, "must hold the header object {conventions, decisions, file_checks, project_checks}");
+    return { ok: false, usage: /outside the spec directory|name the section file/.test(why), lines: [why] };
   }
-  let text;
-  try {
-    text = readFileSync(resolve(args.file), "utf8");
-  } catch (err) {
-    console.error(`plan-lint: cannot read ${args.file}: ${err.message}`);
-    return 2;
+  const value = read.value;
+  const parts = acceptedParts(run.dir);
+  let hashes = {};
+  if (kind === "header") {
+    const schemaErrors = specSchema.validate(headerSchema, value);
+    if (schemaErrors.length) return { ok: false, lines: schemaErrors.map((e) => `${name} ${e.path}: ${e.message}`) };
+  } else {
+    // Earlier = the units of section files named before this one; a re-sent section replaces its own earlier copy.
+    const header = [...parts].reverse().find((p) => p.section === "header")?.value;
+    if (!header) return { ok: false, lines: [`${name}: check the header section first (its file checks are what units name)`] };
+    const earlier = parts.filter((p) => p.section === "units" && p.source < name).flatMap((p) => p.value);
+    // Every problem in one answer, so one round of Edits fixes the section: the schema's, and the file checks of
+    // every unit whose shape is right (a unit with a wrong shape still counts as known, so others' references to it
+    // are not reported twice).
+    const schemaErrors = value.flatMap((u, i) => specSchema.validate(unitSchema, u, `/${i}`).map((e) => ({ i, e })));
+    const bad = new Set(schemaErrors.map((x) => x.i));
+    const r = checkUnits(value.filter((_, i) => !bad.has(i)), { projectRoot: resolve(projectRoot), runId, header, earlier: [...earlier, ...value.filter((u, i) => bad.has(i) && u && typeof u.id === "string")] });
+    const lines = [...schemaErrors.map(({ e }) => `${name} ${e.path}: ${e.message}`), ...r.errors.map((e) => `${name} ${e}`)];
+    if (lines.length) return { ok: false, lines };
+    hashes = r.hashes;
   }
-  const result = lintPlan(text, args);
-  if (args.json) console.log(JSON.stringify({ path: args.file, ...result }, null, 2));
-  else (result.ok ? console.log : console.error)(formatReport(args.file, result));
-  return result.ok ? 0 : 1;
+  mkdirSync(join(run.dir, PARTS_DIR), { recursive: true });
+  writeFileSync(join(run.dir, PARTS_DIR, name), JSON.stringify({ section: kind, source: name, value, hashes }, null, 2) + "\n");
+  const summary = kind === "header"
+    ? `accepted ${name}: ${value.conventions.length} conventions, ${value.file_checks.length} file checks, ${value.project_checks.length} project checks`
+    : `accepted ${name}: ${value.length} unit(s) (${value.map((u) => u.id).join(", ")})`;
+  return { ok: true, lines: [summary] };
 }
 
-const invokedDirectly =
-  process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
-if (invokedDirectly) process.exit(main());
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
+  if (args.shape) {
+    process.stdout.write((await changeShape()) + "\n");
+    return 0;
+  }
+  if (!args.section || !args.runId) {
+    process.stderr.write("usage: plan-lint.mjs --shape | --section <change.sections/file.json> --run-id <id> [--project-root <dir>]\n");
+    return 2;
+  }
+  const r = await checkSection(args.projectRoot, args.runId, args.section);
+  (r.ok ? process.stdout : process.stderr).write(r.lines.join("\n") + "\n");
+  return r.ok ? 0 : r.usage ? 2 : 1;
+}
+
+// Run directly, also through a linked folder (real paths compared, as handoff-models.mjs does). exitCode, not
+// exit(): the process ends once its output has drained, which a pipe on macOS needs.
+const isDirectRun = (() => { try { return realpathSync(resolve(process.argv[1] ?? "")) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();
+if (isDirectRun) {
+  main().then((code) => { process.exitCode = code; }, (e) => { process.stderr.write(`plan-lint: ${e?.message ?? e}\n`); process.exitCode = 2; });
+}

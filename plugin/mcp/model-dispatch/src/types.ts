@@ -48,6 +48,12 @@ export interface FileSlice {
    * Matched by substring against the heading text, first hit wins.
    */
   section?: string;
+  /**
+   * Set by `execute_batch` only (batch.ts markSharedInputs): every packet of the batch carries this input, from a file
+   * no packet writes. The lean Opus typist sends shared inputs once, as its cached system-prompt tail; every other door
+   * reads the packet as before. A value a caller sends is replaced.
+   */
+  shared?: boolean;
 }
 
 /**
@@ -77,6 +83,16 @@ export interface ApplySpec {
    * so a formatting-only miss costs a second of formatter time, not a retry.
    */
   format?: string[];
+  /**
+   * Typed checks (a feature run's change spec, plan-to-packets): each a command with `{path}` and its own write
+   * form. They give `verify` (every `run`) and `format` (every `fix`), and turn on the baseline rule: before any
+   * typist is paid, each `run` is tried on the file as it is (`edits` mode) or on `baseline_from` (a new file's
+   * style file); a check that already fails there is set aside for this packet, and the receipt's `set_aside`
+   * names it. Without a baseline file every check judges the answer.
+   */
+  checks?: { id?: string; run: string; fix?: string }[];
+  /** The style file a new file's checks are first tried on (relative to project_root). */
+  baseline_from?: string;
   /** Mechanical-tier retries the server may spend on verify failures. Default 2. */
   max_retries?: number;
   /** Seconds each verify command may run. Default 120. */
@@ -130,10 +146,11 @@ export interface TelemetryEvent {
   model_id?: string;
   routed_by: "orchestrator" | "fallback" | "manual";
   /**
-   * Executor events only (execute_stage): which typist typed the unit —
+   * Executor events (execute_stage): which typist typed the unit —
    * `lean-opus` (a `claude -p` with no tools), `flash-completion` (Gemini
    * through the completion door) or `agy` (Gemini through the Antigravity
-   * SDK). Absent on every other event.
+   * SDK). Also `lean-opus` on a brownfield feature run's apply call typed by
+   * the lean typist (applyTypist.ts). Absent on every other event.
    */
   door?: "lean-opus" | "flash-completion" | "agy";
   /**
@@ -308,6 +325,11 @@ export interface AttemptRecord {
   ttl_split?: TtlSplit;
   /** claude-cli only: the per-model ledger behind `cost_usd`. */
   per_model?: WorkerModelCost[];
+  /**
+   * The call failed for the vendor's or the network's reason ("not now"), as the typist that made it read from the
+   * vendor's own fields (greenfield's TypistResult.transport): the apply loop waits and sends it again, not an attempt.
+   */
+  transient?: boolean;
 }
 
 export type PriceBasis = "list" | "custom";

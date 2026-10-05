@@ -222,7 +222,7 @@ copyFileSync(
   join(ROOT, "plugin", "commands", "pass.md"),
   join(projClaude, "commands", "pass.md"),
 );
-for (const a of ["orchestrator", "architect", "senior-reviewer", "security-reviewer", "brownfield-orchestrator", "brownfield-architect", "brownfield-senior-reviewer", "brownfield-security-reviewer", "packet-worker"]) {
+for (const a of ["orchestrator", "architect", "senior-reviewer", "security-reviewer", "brownfield-orchestrator", "brownfield-architect", "brownfield-senior-reviewer", "brownfield-security-reviewer"]) {
   copyFileSync(
     join(ROOT, "plugin", "agents", `${a}.md`),
     join(projClaude, "agents",   `${a}.md`),
