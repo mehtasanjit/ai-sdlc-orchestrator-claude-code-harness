@@ -9,9 +9,17 @@
  *                            Uses --record to post the result here.
  *   2. Test-command probe  — this script (invokes the test command's --help
  *                            or equivalent to verify it can be launched).
- *   3. Dispatch smoke      — orchestrator runs a trivial packet through
- *                            each policy tier via execute_with_model.
- *                            Uses --record to post the result here.
+ *   3. Dispatch smoke      — tested at each run's start, not here:
+ *                            preflight_dispatch with probe_typists sends
+ *                            one call through every model that types the
+ *                            run, with the run's auth mode, which is only
+ *                            chosen later, at Gate 0. A smoke here had to
+ *                            guess it and asked a subscription user for an
+ *                            API key. Recorded as `skip`, and every --run
+ *                            writes it as `skip` again (DISPATCH_SKIP), so a
+ *                            `fail` or `pending` an earlier plugin left in
+ *                            the status file cannot keep the project "not
+ *                            ready". --record still accepts it.
  *   4. Write-contract smoke — this script (creates .sdlc/pre-check/hello.txt
  *                            and verifies the write-contract hook allowed it
  *                            given the current contract state).
@@ -26,7 +34,8 @@
  *
  * Modes:
  *   node pre-check.mjs --run                    # do the script-side steps
- *   node pre-check.mjs --record STEP RESULT     # orchestrator posts steps 1 or 3
+ *   node pre-check.mjs --record STEP RESULT     # orchestrator posts step 1 (step 3
+ *                                               # is still accepted; --run resets it)
  *                                               # STEP: discovery|dispatch
  *                                               # RESULT: pass|fail|skip
  *                                               # optional stdin JSON extras
@@ -82,6 +91,14 @@ function writeStatus(sdlc, status) {
   writeFileSync(join(sdlc, STATUS_REL), JSON.stringify(status, null, 2) + "\n");
 }
 
+/**
+ * Step 3's only record: the pre-check sends no dispatch smoke, because the run's start check (preflight_dispatch with
+ * probe_typists) tests the models that type the run, with the run's auth mode. One value for a fresh status file and
+ * for every --run, so a status file an earlier plugin wrote (step 3 `fail` from a smoke that asked a subscription user
+ * for an API key, or `pending` that nothing posts any more) is reset instead of keeping the project "not ready".
+ */
+const DISPATCH_SKIP = Object.freeze({ status: "skip", note: "tested at each run's start: preflight_dispatch with probe_typists, with the run's auth mode" });
+
 function emptyStatus() {
   return {
     schema_version: 1,
@@ -89,7 +106,7 @@ function emptyStatus() {
     steps: {
       discovery_smoke: { status: "pending", note: "Orchestrator posts via --record discovery" },
       test_command_probe: { status: "pending" },
-      dispatch_smoke: { status: "pending", note: "Orchestrator posts via --record dispatch" },
+      dispatch_smoke: { ...DISPATCH_SKIP },
       write_contract_smoke: { status: "pending" },
       rollback_smoke: { status: "pending" },
       report_finalized: { status: "pending" },
@@ -279,13 +296,15 @@ async function main() {
   let status = readStatus(sdlc) ?? emptyStatus();
 
   if (args.mode === "run") {
-    // Script-side steps: 2, 4, 5, 6.
+    // Script-side steps: 2, 4, 5, 6. Step 3 is written as skipped on every run (DISPATCH_SKIP): the status file may
+    // come from an earlier plugin whose own dispatch smoke left it failed or pending.
     status.steps.test_command_probe = probeTestCommand(args.testCmd);
+    status.steps.dispatch_smoke = { ...DISPATCH_SKIP };
     status.steps.write_contract_smoke = writeContractSmoke(sdlc);
     status.steps.rollback_smoke = rollbackSmoke(sdlc);
     status.steps.report_finalized = {
       status: "pass",
-      note: "Script-side steps recorded. Steps 1 (discovery) and 3 (dispatch) are the orchestrator's responsibility and get posted via --record.",
+      note: "Script-side steps recorded. Step 1 (discovery) is the orchestrator's and gets posted via --record discovery; step 3 (dispatch) is tested at each run's start.",
     };
     status.updated_at = new Date().toISOString();
     status.ok = computeOk(status);

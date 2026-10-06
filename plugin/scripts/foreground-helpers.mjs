@@ -23,7 +23,7 @@ import { pathToFileURL } from "node:url";
 /** The plugin's own agents (plugin/agents/*.md). */
 export const PIPELINE_AGENTS = new Set(["orchestrator", "architect", "senior-reviewer", "security-reviewer", "discovery", "brownfield-orchestrator", "brownfield-architect", "brownfield-senior-reviewer", "brownfield-security-reviewer"]);
 
-/** The plugin's orchestrators: every run's, and the copy brownfield feature runs use (tools/build-agent-copies.mjs). */
+/** The plugin's orchestrators: greenfield's, and the copy brownfield runs use (tools/build-agent-copies.mjs). */
 const ORCHESTRATORS = new Set(["orchestrator", "brownfield-orchestrator"]);
 
 // Claude Code looks an agent up by its exact name, then by the name with case, spaces, dashes and

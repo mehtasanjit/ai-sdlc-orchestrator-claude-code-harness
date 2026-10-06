@@ -18,7 +18,7 @@
  * each other's run by time alone; so a chat claims its run by the run id its own orchestrator logs with (hook.mjs
  * claimRun), and once claimed only that run is read.
  */
-import { appendFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants as FS, existsSync, fstatSync, openSync, readdirSync, readSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { formatLine } from "../../lib/log.mjs";
 
@@ -44,10 +44,56 @@ function fields(rest) {
   return out;
 }
 
-/** The events of one log file, oldest first: { ms, event, fields }. */
-export function readWorkflowLog(file) {
-  let text = "";
-  try { text = readFileSync(file, "utf8"); } catch { return []; }
+/**
+ * A file's bytes, read only when it is a regular file (and, with `maxBytes`, no larger), else null.
+ * Why: reading a named pipe blocks until something writes to it, and the readers of the run logs and the write
+ * contract run before every Write and Edit (the write-contract hook) and inside the model server: one pipe where a log
+ * should be would hang them all. The file is opened without blocking and without following a link, and judged on what
+ * was opened (no gap between a check and the read). Anything else (a pipe, a link, a folder, a device) is no file.
+ */
+const OPEN_FLAGS = FS.O_RDONLY | (FS.O_NONBLOCK ?? 0) | (FS.O_NOFOLLOW ?? 0);
+export function readRegularFile(file, { maxBytes = Infinity } = {}) {
+  let fd;
+  try { fd = openSync(file, OPEN_FLAGS); } catch { return null; }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > maxBytes) return null;
+    const buf = Buffer.alloc(st.size);
+    let at = 0;
+    while (at < st.size) {
+      const n = readSync(fd, buf, at, st.size - at, at);
+      if (n <= 0) break;
+      at += n;
+    }
+    return buf.subarray(0, at);
+  } catch {
+    return null;
+  } finally {
+    try { closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+/**
+ * Appends `text` to a regular file (created when missing), never to anything else; returns whether it did. The same
+ * reason as readRegularFile: opening a named pipe to write blocks until something reads it.
+ */
+const APPEND_FLAGS = FS.O_WRONLY | FS.O_APPEND | FS.O_CREAT | (FS.O_NONBLOCK ?? 0) | (FS.O_NOFOLLOW ?? 0);
+export function appendRegularFile(file, text) {
+  let fd;
+  try { fd = openSync(file, APPEND_FLAGS, 0o644); } catch { return false; }
+  try {
+    if (!fstatSync(fd).isFile()) return false;
+    writeSync(fd, text);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+/** The events of a log's text, oldest first: { ms, event, fields }. */
+export function parseWorkflowLog(text) {
   const events = [];
   for (const line of text.split("\n")) {
     const m = LINE.exec(line.trim());
@@ -56,6 +102,34 @@ export function readWorkflowLog(file) {
     if (Number.isFinite(ms)) events.push({ ms, event: m[2], fields: fields(m[3]) });
   }
   return events;
+}
+
+/** The events of one log file, oldest first: { ms, event, fields }. A missing file, or no regular file, has none. */
+export function readWorkflowLog(file) {
+  return parseWorkflowLog(readRegularFile(file)?.toString("utf8") ?? "");
+}
+
+/**
+ * The whole text of a run's own log, oldest first: the pieces the plugin's logger rotated out (orchestrator.log.<n>,
+ * the highest number the oldest) and then the current orchestrator.log. Why: the logger renames a run log that reached
+ * its size limit (lib/log.mjs rotateIfNeeded) and starts a new one, and the rotated piece is still the run's own
+ * record: its start, its gates, and the contract's freeze record (lib/contract-lock.mjs) may sit there.
+ */
+export function readRunLogText(runDir) {
+  let names = [];
+  try { names = readdirSync(runDir); } catch { return ""; }
+  const pieces = names
+    .map((n) => /^orchestrator\.log\.([1-9]\d{0,5})$/.exec(n))
+    .filter(Boolean)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .map((m) => m[0]);
+  if (names.includes("orchestrator.log")) pieces.push("orchestrator.log");
+  return pieces.map((n) => readRegularFile(join(runDir, n))?.toString("utf8") ?? "").filter(Boolean).join("\n");
+}
+
+/** The events of a run's own log, rotated pieces included (readRunLogText), oldest first. */
+export function readRunLog(runDir) {
+  return parseWorkflowLog(readRunLogText(runDir));
 }
 
 /**
@@ -131,7 +205,8 @@ export function runStartMs(projectDir, runId) {
  * Stops a run the way the workflow's own abort does ("Replace it" in a zero-touch chat): the run's log
  * records `run.end outcome=aborted`, in the format mmo-log.mjs writes, so workflowState and the collector read it as
  * ended; and a brownfield write lock (`.sdlc/local/write-contract.json`) that belongs to this run is switched off,
- * as the brownfield manual's abort step does (active: false, the file and the run folder kept). A lock of another
+ * as `write-contract.mjs --abandon` does: the run's end logged, then its contract switched off (active: false, the
+ * file and the run folder kept). A lock of another
  * run is left alone. The run's resume record (`.sdlc/local/state.json`) is marked aborted when it is this run's, so
  * the next brownfield run does not offer to resume a run stopped by "Replace it" or /clear. Returns what was done.
  */
@@ -139,13 +214,11 @@ export function abortRun(projectDir, runId, why) {
   const done = { logged: false, unlocked: false, resumable: false };
   if (!runId) return done;
   const log = join(projectDir, ".sdlc", "runs", runId, "orchestrator.log");
-  if (existsSync(log)) {
-    appendFileSync(log, formatLine("info", "run.end", { run_id: runId, outcome: "aborted", reason: why }) + "\n");
-    done.logged = true;
-  }
+  if (existsSync(log)) done.logged = appendRegularFile(log, formatLine("info", "run.end", { run_id: runId, outcome: "aborted", reason: why }) + "\n");
   const contractFile = join(projectDir, ".sdlc", "local", "write-contract.json");
   try {
-    const contract = JSON.parse(readFileSync(contractFile, "utf8"));
+    // Read as a regular file only (readRegularFile): a pipe in its place must not stall the stop.
+    const contract = JSON.parse(readRegularFile(contractFile)?.toString("utf8") ?? "null");
     if (contract && contract.active === true && contract.run_id === runId) {
       writeFileSync(contractFile, JSON.stringify({ ...contract, active: false }, null, 2) + "\n");
       done.unlocked = true;
@@ -153,7 +226,7 @@ export function abortRun(projectDir, runId, why) {
   } catch { /* no lock, or not this run's */ }
   const stateFile = join(projectDir, ".sdlc", "local", "state.json");
   try {
-    const state = JSON.parse(readFileSync(stateFile, "utf8"));
+    const state = JSON.parse(readRegularFile(stateFile)?.toString("utf8") ?? "null");
     if (state && typeof state === "object" && state.run_id === runId && state.status !== "complete" && state.status !== "aborted") {
       writeFileSync(stateFile, JSON.stringify({ ...state, status: "aborted" }, null, 2) + "\n");
       done.resumable = true;

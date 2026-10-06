@@ -3,11 +3,16 @@
  * model-server calls carry the person's policy (plugin/scripts/ambient/lib/own-steps.mjs).
  *
  *   - Every one-line script call the workflow texts tell Claude to run (plugin/agents, commands and skills) is one of
- *     the workflow's own steps. A brownfield feature run's orchestrator (brownfield-orchestrator) also wraps
- *     long calls over lines and chain bookkeeping with &&, and only their calls are read that way: every other caller
- *     keeps the one-call check, so greenfield's and the other jobs' answers are develop's.
- *   - Every model-server tool that takes a policy file reaches the stamp: the zero-touch plugin's matcher sends it to
- *     the stamp's hook, and the hook's own list leaves it to that hook, so one call never gets two answers.
+ *     the workflow's own steps. A brownfield run's orchestrator (brownfield-orchestrator) also wraps long calls over
+ *     lines and chain bookkeeping with &&, and only their calls are read that way: every other caller keeps the
+ *     one-call check, so greenfield's answers are develop's.
+ *   - The contract script (write-contract.mjs) is never a plain step: its Gate 0 freeze and close-out are steps only
+ *     under the checks of lib/own-steps.mjs contractStepCall (one call, the main chat, the chat's own project), and its
+ *     --abandon is the person's own decision, never a step.
+ *   - Every model-server tool that takes a policy file reaches the stamp exactly once: a tool the released zero-touch
+ *     matcher names goes to the stamp's hook (pre-dispatch), and one it does not name (execute_batch, added after it)
+ *     is stamped by the hook that sees every call (pre-any). The matcher is kept exactly as released: an installed
+ *     zero-touch moves only through its own update, so a newer mmo cannot count on a newer matcher.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -20,7 +25,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
 const PLUGIN = join(ROOT, "plugin");
 const SCRIPTS = join(PLUGIN, "scripts");
-const { featureRunAgent, ownScriptCall, serverCommands, STAMPED_TOOLS } = await import(join(SCRIPTS, "ambient", "lib", "own-steps.mjs"));
+const { brownfieldRunAgent, contractStepCall, ownScriptCall, PRE_DISPATCH_TOOLS, serverCommands, STAMPED_TOOLS } = await import(join(SCRIPTS, "ambient", "lib", "own-steps.mjs"));
 const { serverBuilt } = await import(join(ROOT, "tools", "test", "lib", "server-built.mjs"));
 
 function markdownFiles(dir) {
@@ -45,28 +50,38 @@ function scriptCalls() {
   return calls;
 }
 
-// The texts a feature run's agents follow: their own agent files and the packet flow the orchestrator copy reads.
-const FEATURE_TEXTS = new Set(["brownfield-orchestrator.md", "brownfield-features.md"]);
+// The texts a brownfield run's agents follow: their own agent files and the packet flow the orchestrator copy reads.
+const BROWNFIELD_TEXTS = new Set(["brownfield-orchestrator.md", "brownfield-runs.md"]);
 
-test("every script call the workflow texts give Claude is a step: one-line calls for every agent, wrapped calls for a feature run's agents only", () => {
+test("every script call the workflow texts give Claude is a step: one-line calls for every agent, wrapped calls for a brownfield run's agents only", () => {
   const calls = scriptCalls();
   assert.ok(calls.length >= 30, `the texts' script calls are found (${calls.length})`);
-  assert.ok(calls.some((c) => c.text.includes("\\\n") && !FEATURE_TEXTS.has(basename(c.file))), "develop's own texts wrap some calls over lines");
+  assert.ok(calls.some((c) => c.text.includes("\\\n") && !BROWNFIELD_TEXTS.has(basename(c.file))), "develop's own texts wrap some calls over lines");
   for (const c of calls) {
     // As Claude runs it: the plugin's real folder, and a plain word wherever the text shows a placeholder.
     const command = c.text.replaceAll("${CLAUDE_PLUGIN_ROOT}", PLUGIN).replace(/<[^>\n]*>/g, "x").replace(/\[([^\]\n]*)\]/g, "$1");
-    if (FEATURE_TEXTS.has(basename(c.file))) assert.equal(ownScriptCall(command, SCRIPTS, { joined: true }), true, `${c.where}: ${c.text.split("\n")[0]}`);
+    // The contract script: never a plain step; its freeze and close-out are steps under their own checks, its
+    // --abandon never (the person's decision).
+    if (/\/write-contract\.mjs"/.test(command)) {
+      assert.equal(ownScriptCall(command, SCRIPTS), false, `${c.where}: never a plain step`);
+      assert.equal(ownScriptCall(command, SCRIPTS, { joined: true }), false, `${c.where}: never in a chain`);
+      const step = contractStepCall(command, SCRIPTS);
+      if (/--abandon\b/.test(command)) assert.equal(step, null, `${c.where}: --abandon is the person's decision`);
+      else assert.ok(step && ["freeze", "close"].includes(step.mode) && step.runId === "x", `${c.where}: ${c.text.split("\n")[0]}`);
+      continue;
+    }
+    if (BROWNFIELD_TEXTS.has(basename(c.file))) assert.equal(ownScriptCall(command, SCRIPTS, { joined: true }), true, `${c.where}: ${c.text.split("\n")[0]}`);
     // Every other text is read by develop's one-call check: a one-line call is a step, a wrapped one is not (as on develop).
     else assert.equal(ownScriptCall(command, SCRIPTS), !command.includes("\n"), `${c.where}: ${c.text.split("\n")[0]}`);
   }
 });
 
-test("a feature run's agents are told apart by the hook payload's agent_type; no other caller is", () => {
-  for (const t of ["mmo:brownfield-orchestrator", "brownfield-orchestrator", "Brownfield Orchestrator"]) assert.equal(featureRunAgent(t), true, t);
-  for (const t of ["mmo:orchestrator", "orchestrator", "mmo:architect", "general-purpose", "", undefined]) assert.equal(featureRunAgent(t), false, String(t));
+test("a brownfield run's agents are told apart by the hook payload's agent_type; no other caller is", () => {
+  for (const t of ["mmo:brownfield-orchestrator", "brownfield-orchestrator", "Brownfield Orchestrator"]) assert.equal(brownfieldRunAgent(t), true, t);
+  for (const t of ["mmo:orchestrator", "orchestrator", "mmo:architect", "general-purpose", "", undefined]) assert.equal(brownfieldRunAgent(t), false, String(t));
 });
 
-test("a feature run's wrapped call is joined as the shell joins it; any other backslash or line end is not a step", () => {
+test("a brownfield run's wrapped call is joined as the shell joins it; any other backslash or line end is not a step", () => {
   const log = `node "${SCRIPTS}/mmo-log.mjs" --event=phase.start --level=info`;
   const fr = { joined: true };
   assert.equal(ownScriptCall(`${log} \\\n  --run-id=r1 --project-root "$(pwd)"`, SCRIPTS, fr), true, "a backslash just before a line feed joins the lines");
@@ -79,7 +94,7 @@ test("a feature run's wrapped call is joined as the shell joins it; any other ba
   assert.equal(ownScriptCall(`${log} \\`, SCRIPTS, fr), false, "a backslash with nothing after it is not a step");
 });
 
-test("a feature run's chain of step calls joined by && is one step; any other part or operator, or any other caller, is not", () => {
+test("a brownfield run's chain of step calls joined by && is one step; any other part or operator, or any other caller, is not", () => {
   const log = (e) => `node "${SCRIPTS}/mmo-log.mjs" --event=${e} --level=info --run-id=r1 --project-root "$(pwd)"`;
   const prov = `node "${SCRIPTS}/write-provenance.mjs" --after --run-id=r1 --path=src/a.ts --project-root "$(pwd)"`;
   const fr = { joined: true };
@@ -124,7 +139,28 @@ test("the commands a server call runs are the ones the server will run: typed ch
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("every model-server tool that takes a policy file reaches the stamp: the plugin's matcher and the hook's own list name it", { skip: serverBuilt() ?? false }, async () => {
+// The stamp matcher of the released zero-touch plugin (develop's zero-touch/hooks/hooks.json). The working tree's
+// matcher must stay exactly this: an mmo newer than an installed zero-touch cannot count on a newer one.
+const RELEASED_STAMP_MATCHER = "mcp__(plugin_mmo_)?model-dispatch__(load_policy|preflight_dispatch|execute_with_model|simulate_policy)";
+
+test("the contract script's own calls: Gate 0's freeze and the close-out are read with their run id and project; --abandon, chains and any other syntax are not steps", () => {
+  const w = `node "${SCRIPTS}/write-contract.mjs"`;
+  assert.deepEqual(contractStepCall(`${w} --freeze --run-id r1 --allowlist '["src/**"]' --off-limits '[]'`, SCRIPTS), { mode: "freeze", runId: "r1", projectRoot: null });
+  assert.deepEqual(contractStepCall(`${w} --freeze --run-id=r1 --allowlist '["src/**"]' --project-root "$(pwd)"`, SCRIPTS), { mode: "freeze", runId: "r1", projectRoot: "$(pwd)" });
+  assert.deepEqual(contractStepCall(`${w} --close --run-id r1 --project-root /a/b`, SCRIPTS), { mode: "close", runId: "r1", projectRoot: "/a/b" });
+  for (const bad of [
+    `${w} --abandon --run-id r1`,
+    `${w} --freeze --abandon --run-id r1 --allowlist '[]'`,
+    `${w} --freeze --close --run-id r1 --allowlist '[]'`,
+    `${w} --freeze --allowlist '[]'`,
+    `${w} --freeze --run-id r1 --allowlist '[]'; rm -rf src`,
+    `${w} --freeze --run-id r1 --allowlist '[]' && ${w} --close --run-id r1`,
+    `node "/elsewhere/write-contract.mjs" --freeze --run-id r1 --allowlist '[]'`,
+    `node "${SCRIPTS}/mmo-log.mjs" --event=run.start --run-id=r1`,
+  ]) assert.equal(contractStepCall(bad, SCRIPTS), null, bad);
+});
+
+test("every model-server tool that takes a policy file reaches the stamp exactly once: the released matcher's tools at the stamp's hook, any other at the hook that sees every call", { skip: serverBuilt() ?? false }, async () => {
   const home = mkdtempSync(join(tmpdir(), "zt-own-steps-"));
   const p = spawn(process.execPath, [join(PLUGIN, "mcp", "model-dispatch", "dist", "server.js")], { env: { PATH: process.env.PATH, HOME: home, MMO_HANDOFF_TOOLS: "on" }, stdio: ["pipe", "pipe", "pipe"] });
   try {
@@ -154,11 +190,14 @@ test("every model-server tool that takes a policy file reaches the stamp: the pl
     const groups = JSON.parse(readFileSync(join(ROOT, "zero-touch", "hooks", "hooks.json"), "utf8")).hooks.PreToolUse;
     const stamp = groups.find((g) => g.hooks.some((h) => /\bpre-dispatch$/.test(h.command)));
     assert.ok(stamp, "the zero-touch plugin registers the stamp's hook");
+    assert.equal(stamp.matcher, RELEASED_STAMP_MATCHER, "the stamp's matcher is kept exactly as released");
     for (const name of takesPolicy) {
       for (const full of [`mcp__plugin_mmo_model-dispatch__${name}`, `mcp__model-dispatch__${name}`]) {
-        assert.match(full, new RegExp(`^(?:${stamp.matcher})$`), `${full} reaches the stamp's hook`);
-        assert.match(full, STAMPED_TOOLS, `${full} is left to the stamp's hook`);
+        assert.match(full, STAMPED_TOOLS, `${full} is stamped`);
+        const atStampHook = new RegExp(`^(?:${RELEASED_STAMP_MATCHER})$`).test(full);
+        assert.equal(PRE_DISPATCH_TOOLS.test(full), atStampHook, `${full}: answered by ${atStampHook ? "the stamp's hook" : "the hook that sees every call"}, never by both`);
       }
     }
+    assert.ok(takesPolicy.includes("execute_batch"), "the tool the released matcher does not name is among them");
   } finally { p.kill(); rmSync(home, { recursive: true, force: true }); }
 });

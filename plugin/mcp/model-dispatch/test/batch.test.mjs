@@ -127,14 +127,17 @@ test("batchPacketsFromArgs reads packets_path (array or {packets}), narrows by p
   }
 });
 
-test("compactBatchReceipt trims applied+verified items, keeps failures and non-routine fields whole", () => {
+// The outcome here has the keys the server's apply loop returns (apply.ts ApplyOutcome): the end-of-run checks are not
+// an outcome field, they come from the packets and sit on the batch result (runBatch verify_deferred, batchSettle.test).
+test("compactBatchReceipt trims applied+verified items, keeps failures and the batch's end-of-run checks", () => {
   const ok = { id: "a", status: "applied", artifact_path: "src/a.ts", cost_usd: 0.01, attempts: 1,
-    outcome: { status: "applied", decision: { modelId: "m" }, apply: { lines: 12 }, verify: { ok: true, ran: 2 }, tokens: {}, verify_deferred: ["pnpm typecheck"] } };
+    outcome: { status: "applied", decision: { modelId: "m" }, apply: { lines: 12 }, verify: { ok: true, ran: 2 }, attempts: [{}], tokens: {}, cost_usd: 0.01, events_written: 1 } };
   const bad = { id: "b", status: "verify_failed", cost_usd: 0.02, attempts: 2, outcome: { status: "verify_failed", verify: { ok: false, tail: "x" } } };
-  const out = compactBatchReceipt({ status: "partial", counts: {}, cost_usd: 0.03, duration_ms: 1, max_parallel: 4, items: [ok, bad] }, ["t"]);
-  assert.deepEqual(out.items[0], { id: "a", status: "applied", path: "src/a.ts", lines: 12, cost_usd: 0.01, attempts: 1, verify: { ok: true, ran: 2 }, verify_deferred: ["pnpm typecheck"] });
+  const out = compactBatchReceipt({ status: "partial", counts: {}, cost_usd: 0.03, duration_ms: 1, max_parallel: 4, verify_deferred: ["pnpm typecheck"], items: [ok, bad] }, ["t"]);
+  assert.deepEqual(out.items[0], { id: "a", status: "applied", path: "src/a.ts", lines: 12, cost_usd: 0.01, attempts: 1, verify: { ok: true, ran: 2 } });
   assert.deepEqual(out.items[1], { id: "b", status: "verify_failed", cost_usd: 0.02, attempts: 2 }, "a failed packet: the decision fields only; its detail is in the full receipt");
   assert.deepEqual(out.skipped_no_apply, ["t"]);
+  assert.deepEqual(out.verify_deferred, ["pnpm typecheck"]);
 });
 
 // The receipt as sent stays within greenfield's stated bound (executor/run.ts RECEIPT_MAX_BYTES): the orchestrator

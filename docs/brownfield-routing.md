@@ -1,40 +1,46 @@
 # Model-per-task routing
 
-> **For:** understanding which model runs each phase and why the mechanical tier can drop cost ~10×. **Also see:** [architecture.md](architecture.md) · [brownfield.md](brownfield.md).
+> **For:** understanding which model runs each phase, and what moving mechanical work off Opus measured. **Also see:** [architecture.md](architecture.md) · [brownfield.md](brownfield.md).
 
 Where each kind of work runs. Explicit — because "which model handled this" is the top
 question when reviewing a run's cost, quality, or failure.
 
 ## The rule of thumb
 
-Routing is **phase-based**, not per-intent by default. Same rule applies to greenfield and
-brownfield:
+Routing is **phase-based**, and the same rule applies to greenfield and brownfield:
 
 | Kind of work | Tier | Model in the default `opus-plus-flash` policy |
 |---|---|---|
-| **Judgment** — discovery, requirements, architecture / change_plan, packet planning, senior code review, security review | premium | Claude Opus |
-| **Mechanical** — codegen packets, doc packets, test-code packets, debug packets | mechanical | Gemini Flash |
-| **Escalation** — after 2 mechanical retries fail on a packet | premium | Claude Opus (auto) |
-| **Test execution** — running your test command | local | Bash on your machine, no model call |
+| **Judgment** — discovery, requirements, architecture (greenfield's typed spec, brownfield's typed change spec), senior code review, security review | premium | Claude Opus |
+| **Mechanical** — typing each file: code, tests, docs, and the fixes of a repair round | mechanical | Gemini Flash |
+| **Last attempt** — a file whose routed attempts all failed | premium | Claude Opus, through the lean `claude -p` typist |
+| **Packet planning** — one packet per file, from the spec | local | Code, no model call |
+| **Checks and tests** — your repository's own commands | local | Your machine, no model call (brownfield: each file's checks in the model server, the project checks with Bash) |
 
-Only which phases FIRE changes per intent (per the intent matrix in
-`plugin/skills/pipeline/SKILL.md`). Tier assignment stays stable.
+Every brownfield job runs every phase. Jobs differ in what the change spec holds and in whether Gate 2 opens;
+the tier of each kind of work stays the same.
 
-## Per intent — which phases fire, at which tier
+## Per job
 
-| Intent | Judgment phases (premium) | Mechanical phases (Flash) |
+Every job: requirements, the architect's change spec, senior review and security review on the premium tier;
+code derives one packet per file from the spec, and the typists type them. What each spec holds and the rules
+code checks for it are in ["The jobs"](../plugin/skills/pipeline/brownfield-runs.md#the-jobs). Each packet
+carries a label (`subtype`) that code sets from its unit; routing does not read it. A packet is routed by its
+stage (`phase`) and retry count, and by its job (`intent`) when a policy rule names one.
+
+| Job | Gate 2 | Typed files, by packet label |
 |---|---|---|
-| `docs` | requirements, senior review, security review | doc_addition, doc_update |
-| `bugfix` | requirements (reproduce + diagnose), senior review, security review | bug_reproduce, bug_diagnose, bug_fix_apply, test_add |
-| `feature-extend` | requirements, architecture (change_plan), senior review, security review | mixed `existing_file_edit` + `new_file_add` |
-| `feature-new` | requirements, architecture (full subsystem design), senior review, security review | full codegen mix (`new_file_add`, `test_add`, `doc_addition`, wiring packets) |
-| `refactor` | requirements (delta), architecture (refactor plan), senior review, security review | `refactor_extract`, `patch_apply` |
-| `test` | requirements (coverage target), senior review, security review | `test_backfill`, `test_add` |
-| `deps` | requirements (upgrade list), architecture (dep-swap plan), senior review, security review | `dependency_add`, adjacent-code patches |
+| `docs` | no | `doc_addition` (a new file), `doc_update` (an edited one: a doc, or the docstrings of a source file) |
+| `bugfix` | when design-affecting | `bug_reproduce` (the test that reproduces the bug, typed first), then the fix: `existing_file_edit`, `new_file_add` |
+| `feature-extend` | yes | `existing_file_edit`, `new_file_add`, `test_add`, `doc_addition`, `doc_update` |
+| `feature-new` | yes | `new_file_add`, `test_add`, `doc_addition`, and the wiring edits (`existing_file_edit`) |
+| `refactor` | yes | `new_file_add` (the extracted module), `existing_file_edit` (every call site) |
+| `test` | no | `test_add` (a new test file), `existing_file_edit` (cases added to one) |
+| `deps` | yes | `existing_file_edit` (the manifest and the code the upgrade breaks); the install is a `tooling` step the package manager runs, no model |
 
 ## Cost impact
 
-Three shipped policies cover the trade-off:
+The two policies the studies compare:
 
 | Policy | Where the judgment tier runs | Where the mechanical tier runs |
 |---|---|---|
@@ -55,11 +61,10 @@ each run under every policy, dispatched cost summed from `telemetry.jsonl`:
 
 Three things the table shows:
 
-1. **The completion door saves 25–60%, not 10×.** In `opus-plus-flash` the five judgment phases
-   (requirements, change plan, packet plan, senior review, security review) cost the same as they
-   do under `opus-only` — the policy only moves codegen and tests, and those were 35–50% of an
-   `opus-only` run, not 60–80%. On the runs above the Opus phases were 85–90% of the
-   `opus-plus-flash` dispatched total; Flash was $0.03–0.62.
+1. **The completion door saved 25–59% of the dispatched cost.** In `opus-plus-flash` the judgment
+   phases cost the same as they do under `opus-only` — the policy only moves the typing of files,
+   and on these runs code and tests were 35–50% of an `opus-only` run. On the runs above the Opus
+   phases were 85–90% of the `opus-plus-flash` dispatched total; Flash was $0.03–0.62.
 2. **The agent door can cost more than `opus-only`.** `flash-agsdk-worker` re-sends the whole
    conversation every turn and re-reads the repo per packet: 1.7–2.9M fresh plus 4–9M cached input
    tokens per run, with the tests phase alone at $1.6–2.9 against $0.05–0.15 on the completion door.
@@ -68,7 +73,7 @@ Three things the table shows:
    the most recent `opus-plus-flash` run (dispatched $2.39) reconstructed the driver session from
    its transcripts: 211 API messages, 27.6M cached-read tokens, 0.87M cache writes, 112k output —
    **$22.26 of session on top of $0.29 of Flash**, true total $22.55. The session, not the
-   packets, is 93% of a run.
+   packets, is 99% of the true total.
 
 ### What that means for the policy choice
 
@@ -76,8 +81,6 @@ Three things the table shows:
 |---|---|
 | Fewer driver turns — bookkeeping chained into one Bash call per packet (the brownfield-orchestrator's rule 9) | each turn removed saves one full context re-read at the cache-read rate, ~$0.07 on Opus at 130k tokens |
 | Reviewers read diffs, not trees (the brownfield-orchestrator's rule 9, reviewer contract) | the two reviews read 56–87k tokens each on the measured run; the diff was under 15k |
-| `light` security review when the touched set has no security surface (pipeline Phase 8) | skips one judgment-tier phase on presentation-only changes |
-| Codegen output ceiling 6000 instead of 3000 | no doublings on the measured run instead of 4; a ceiling is free until used |
 
 A policy that splits the judgment tier across Opus and Sonnet is refused under `estimated` — a
 single environment variable cannot honor it — and runs only under `vendor`.
@@ -92,7 +95,10 @@ is explicitly `estimated`. The driver session's cost lands beside the dispatch e
 
 ## Escalation
 
-The policy YAML supports a rule matching on `retry_count`:
+Every typed file follows one ladder, greenfield's and brownfield's alike: every attempt but the last goes to
+the model the policy routes, and the last goes to the lean Opus typist (the policy's default model when it is a
+Claude model, else its first reachable Claude model; a policy with no Claude model keeps its own routes). A rule
+on `retry_count` changes which model a routed attempt goes to:
 
 ```yaml
 - when: { phase: debug, retry_count: { gte: 2 } }
@@ -100,9 +106,8 @@ The policy YAML supports a rule matching on `retry_count`:
   reason: "Escalation: 2 mechanical-tier attempts failed"
 ```
 
-Behavior: a `debug` packet dispatched to Gemini Flash that fails validation twice
-auto-escalates to Opus on the third attempt. Prevents infinite mechanical-tier retries when
-Flash can't solve a particular puzzle.
+A reply cut off at a model's documented output limit goes to the next model in the ladder and never adds an
+attempt. This keeps a file Flash cannot type from being retried on the mechanical tier forever.
 
 ## How to configure
 
@@ -115,7 +120,7 @@ Five ways to change routing:
    uses it until changed again.
 3. **Pick a different shipped policy for one run** — pass `--policy <name>` to `/mmo:pass`,
    or type it at Gate 0 in `/mmo:brownfield`. Alternatives include `opus-only` (no Gemini
-   needed, ~10× more per run). v1.5 will ship `ci-strict` (blocks writes unless
+   needed; it cost more per run on every measured study above). v1.5 will ship `ci-strict` (blocks writes unless
    `--allow-write`), `bedrock-claude-only`, `vertex-mixed`, and `self-hosted-only`.
 4. **Author a custom policy in the browser console** — the recommended path for new
    customizations, and the same console setup uses. `plugin/policy-console/` is a single HTML
@@ -133,30 +138,22 @@ then the shipped default. Gate 0 always shows which policy is active before the 
 
 ## Preflight refuses to start if the cheap tier isn't reachable
 
-`preflight_dispatch` runs before the first paid call. It constructs each adapter and verifies
-credentials are usable. If the mechanical tier isn't reachable (missing key, wrong project,
+`preflight_dispatch` runs before any phase. It constructs each adapter and verifies credentials are
+usable, then sends one minimal call through every typist the run types with (`probe_typists`; a few cents,
+logged as the run's `preflight` events) and halts on one that cannot answer, naming what to fix. If the mechanical tier isn't reachable (missing key, wrong project,
 network unreachable), preflight **halts the run cleanly** — because the whole point of routing
 is falling to the cheap tier, and if that's broken, every packet escalates to premium and the
 run costs MORE than opus-only while appearing to succeed. That's the one outcome the plugin
 exists to disprove.
 
-## Advanced — per-task-type overrides (v1.5)
+## Advanced — rules on task type or module
 
-The policy YAML supports rules matching on `task_type` in addition to `phase`, so you can
-route a specific task inside a "mechanical" phase to premium:
-
-```yaml
-# Example — not shipping in v1
-- when:
-    phase: codegen
-    task_type: bug_diagnose
-  use: opus
-  reason: "Diagnosis is judgment work, not codegen"
-```
-
-v1 uses phase-level defaults only. If you want per-task-type overrides, add them to your own
-policy YAML. Rules are evaluated top-to-bottom, first match wins — put more-specific rules
-above less-specific ones.
+A policy rule may also name a `task_type`, a `module` or a job (`intent`). Brownfield reads the policy the way
+greenfield's executor and the run-start probe do (`executorView`), so a custom policy sends a file to the same model
+in both flows: a typed file's packet has an empty `task_type`, as greenfield's do, and a rule that narrows a stage by
+task type or module is read by its stage alone, or set aside when a plain rule already routes that stage.
+Pre-flight's `policy_notes` name every rule read that way. A rule that names a job still routes that job's files (a
+brownfield packet carries its job; greenfield's carry none). Rules are evaluated top-to-bottom, first match wins.
 
 ## Where to look after a run
 

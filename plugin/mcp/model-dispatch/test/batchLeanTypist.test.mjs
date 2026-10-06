@@ -1,5 +1,5 @@
 /**
- * execute_batch through the real server with a feature run's Claude leaf: the lean Opus typist types every packet
+ * execute_batch through the real server with a brownfield run's Claude leaf: the lean Opus typist types every packet
  * (applyTypist.ts), and the inputs every packet carries (the plan's House style) are its cached system-prompt file,
  * sent once per call, while each packet's own unit section stays in the packet (batch.ts markSharedInputs).
  * A stand-in `claude` on PATH records what it was sent: no model is called, $0.
@@ -37,12 +37,17 @@ UNIT-A1-SPEC
 UNIT-A2-SPEC
 `;
 
-/** A stand-in claude: answers --version/--help, records the system file and the prompt of each call, prints a receipt. */
+/**
+ * A stand-in claude: answers --version/--help, records the system file and the prompt of each call, and prints a
+ * receipt whose answer names the file the prompt asks for (the server refuses an answer that names another file, as
+ * greenfield's executor does: executor/checks.ts checkAnswer).
+ */
 function standInClaude() {
   const bin = mkdtempSync(join(tmpdir(), "lean-batch-bin-"));
-  const receipt = { type: "result", subtype: "success", is_error: false, result: '{"path":"src/a.ts","content":"export const x = 1;\\n"}', usage: { input_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 20 }, modelUsage: { "claude-opus-5": { inputTokens: 100, outputTokens: 20, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } } };
+  const receipt = (path) => ({ type: "result", subtype: "success", is_error: false, result: JSON.stringify({ path, content: "export const x = 1;\n" }), usage: { input_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 20 }, modelUsage: { "claude-opus-5": { inputTokens: 100, outputTokens: 20, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } } });
   writeFileSync(join(bin, "help.txt"), HELP + "\n");
-  writeFileSync(join(bin, "receipt.json"), JSON.stringify(receipt));
+  writeFileSync(join(bin, "receipt.json"), JSON.stringify(receipt("src/a.ts")));
+  writeFileSync(join(bin, "receipt-b.json"), JSON.stringify(receipt("src/b.ts")));
   writeFileSync(join(bin, "claude"), `#!/bin/sh
 case "$1" in
   --version) echo "2.1.300 (Claude Code)"; exit 0;;
@@ -52,9 +57,12 @@ while [ $# -gt 0 ]; do
   if [ "$1" = "--append-system-prompt-file" ]; then cat "$2" >> "${bin}/systems.log"; printf '\\n=====\\n' >> "${bin}/systems.log"; fi
   shift
 done
-cat >> "${bin}/prompts.log"
+prompt=$(mktemp)
+cat > "$prompt"
+cat "$prompt" >> "${bin}/prompts.log"
 printf '\\n=====\\n' >> "${bin}/prompts.log"
-cat "${bin}/receipt.json"
+if grep -q 'Implement src/b.ts' "$prompt"; then cat "${bin}/receipt-b.json"; else cat "${bin}/receipt.json"; fi
+rm -f "$prompt"
 `);
   chmodSync(join(bin, "claude"), 0o755);
   return bin;
@@ -94,7 +102,7 @@ async function batchOnce(policyYaml, extraArgs = {}) {
 }
 const cleanup = (...dirs) => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); };
 
-test("execute_batch, feature run, Claude leaf: the lean typist gets the shared House style as its system file and each unit in its packet", async () => {
+test("execute_batch, brownfield run, Claude leaf: the lean typist gets the shared House style as its system file and each unit in its packet", async () => {
   const { root, bin, receipt, text, progress } = await batchOnce(POLICY, () => ({}));
   try {
     assert.equal(receipt.counts?.applied ?? receipt.applied?.length, 2, text);
@@ -137,9 +145,9 @@ test("execute_batch: every lean typist call writes one vendor-priced event namin
 });
 
 // The agent door, greenfield's way: the Antigravity agent answers from its own scratch folder and the server writes the
-// file through the apply loop (write contract, provenance, checks), so a feature run can route to it. A stand-in for the
+// file through the apply loop (write contract, provenance, checks), so a brownfield run can route to it. A stand-in for the
 // worker's Python writes the receipt the real worker writes (typist_worker.py: finish_output, usage): no model, $0.
-test("execute_batch, feature run, agent-door leaf: greenfield's agent typist answers and the server writes the file", async () => {
+test("execute_batch, brownfield run, agent-door leaf: greenfield's agent typist answers and the server writes the file", async () => {
   const fake = mkdtempSync(join(tmpdir(), "agy-fake-"));
   const py = join(fake, "python");
   writeFileSync(py, `#!/bin/sh

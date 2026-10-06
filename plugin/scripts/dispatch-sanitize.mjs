@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * Dispatch sanitizer. Runs on every dispatch input before it leaves the
- * machine — regex sweep for concrete secret patterns; blocks (throws in
- * library use, exits 1 in CLI use) when any is found. Per plan §19: no
- * secret ever crosses the wire to a model provider.
+ * The secret-pattern registry: lib/log.mjs redacts log lines with it (the
+ * server's redact.ts is its port), and the CLI scans a file. No dispatch path
+ * runs it on a model's inputs: what keeps a secret out of a prompt is the read
+ * rule, which never reads an off-limits file into one (the server's
+ * hydrateInputs, plan-lint, findings-to-packets).
  *
  * Deliberately narrow. We only match patterns with very-low false-positive
  * rates (known vendor prefixes, PEM headers, explicit-assignment lines).
@@ -11,10 +12,8 @@
  * IDs, would train users to bypass the check, and would produce a
  * false-sense-of-security. Narrow and precise > broad and noisy.
  *
- * Programmatic use (imported by MCP adapters):
- *   import { scan, assertSafe } from ".../dispatch-sanitize.mjs";
- *   const findings = scan(text);
- *   if (findings.length) throw new Error(formatFindings(findings));
+ * Programmatic use: `scan(text)` returns the findings, `assertSafe(text)`
+ * throws when there are any (lib/log.mjs imports only PATTERNS).
  *
  * CLI use (for testing / auditing an input file):
  *   node dispatch-sanitize.mjs path/to/file.txt

@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "_comment": "Brownfield write contract: refuses Write/Edit outside the confirmed allowlist when brownfield mode is active. Silent no-op (allow) when .sdlc/local/write-contract.json is absent or its active flag is false, so greenfield /mmo:greenfield behavior is unchanged.",
+        "_comment": "Brownfield write contract: refuses Write/Edit outside the confirmed allowlist while a run's contract binds (the contract at the root of the target's git project, its run live by its own log), and every write while a live run's contract no longer matches its freeze record. Without a binding contract it allows everything but the always-off-limits list (credentials, MCP config, other AI tools' rules, git's own store), so greenfield /mmo:greenfield behavior is unchanged. No time limit of its own: Claude Code lets a write through when its hook times out, and every read in it is non-blocking, so it answers well inside the default.",
         "matcher": "Write|Edit",
         "hooks": [
           {

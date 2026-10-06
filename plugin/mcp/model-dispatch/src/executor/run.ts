@@ -27,7 +27,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
-import type { FileSlice, ModelConfig, Phase, Policy, Rule, RuleMatcher, TaskPacket, TelemetryEvent } from "../types.js";
+import type { FileSlice, ModelConfig, Phase, Policy, RetryReason, Rule, RuleMatcher, TaskPacket, TelemetryEvent } from "../types.js";
 import { pickModel } from "../routing.js";
 import type { SelectOverrides } from "../types.js";
 import { cacheWriteBuckets } from "../telemetry.js";
@@ -495,7 +495,9 @@ export async function executeStage(spec: Spec, opts: StageOptions, deps: StageDe
   // No task type: the policy routes an executor job by its stage alone (executorView).
   const route = (job: Job, retry: number) => pickModel({ phase: job.phase, task_type: "", module: "spec", retry_count: retry }, opts.policy, opts.overrides ?? {});
 
-  const event = (job: Job, typist: Typist, decision: ReturnType<typeof pickModel> | null, r: TypistResult, attempt: number, ok: boolean, why?: string, retryReason?: string): TelemetryEvent => ({
+  // The retry reason is typed as types.ts RetryReason, the reasons both flows write (a wait's `transport`, `refused`,
+  // `error`), so the event is checked field by field as a TelemetryEvent instead of cast to one.
+  const event = (job: Job, typist: Typist, decision: ReturnType<typeof pickModel> | null, r: TypistResult, attempt: number, ok: boolean, why?: string, retryReason?: RetryReason): TelemetryEvent => ({
     ts: new Date().toISOString(),
     pass: opts.passId,
     phase: job.phase,
@@ -527,7 +529,7 @@ export async function executeStage(spec: Spec, opts: StageOptions, deps: StageDe
     retry_reason: retryReason,
     error: ok ? undefined : why,
     price_basis: r.price_basis as any,
-  } as TelemetryEvent);
+  });
 
   // Warm the cache first. A lean Opus typist whose cache has gone cold sends
   // one job alone; the others wait for it and then read the shared block from

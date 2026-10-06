@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -33,8 +33,13 @@ function runHook(cwd, payload) {
   });
 }
 
+/**
+ * A test project. A git project, as every brownfield project is: the hook reads only the contract at the root of the
+ * git project that holds the target (the nearest folder with a `.git`), so a contract anywhere else binds nothing.
+ */
 function makeRepo(contract) {
   const dir = mkdtempSync(join(tmpdir(), "write-contract-test-"));
+  mkdirSync(join(dir, ".git"));
   if (contract !== undefined) {
     mkdirSync(join(dir, ".sdlc", "local"), { recursive: true });
     writeFileSync(join(dir, ".sdlc", "local", "write-contract.json"), JSON.stringify(contract));
@@ -97,20 +102,23 @@ test("denies a path that is not in the allowlist (allowlist-default-deny)", asyn
   } finally { cleanup(dir); }
 });
 
+// A contract's own off-limits hit, under strict=false (--strict-write=off), is a warning. The always-off-limits list
+// (credentials, MCP config, git's own store) is not the contract's to relax: it is refused whatever the contract says,
+// as the server's writer refuses it (the test after this one).
 test("strict=false downgrades an off_limits hit to WARN + allow", async () => {
   const dir = makeRepo({
     schema_version: 1, active: true, strict: false,
-    allowlist: [], off_limits: [".env*"],
+    allowlist: [], off_limits: ["secrets/**"],
   });
   try {
-    const r = await runHook(dir, { tool_input: { file_path: ".env" } });
+    const r = await runHook(dir, { tool_input: { file_path: "secrets/key.pem" } });
     assert.equal(r.code, 0, "strict=false must allow even off-limits");
     assert.match(r.stderr, /WARN/, "must warn instead of denying");
   } finally { cleanup(dir); }
 });
 
 test("fails open when the contract file is not valid JSON", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "write-contract-test-"));
+  const dir = makeRepo(undefined);
   try {
     mkdirSync(join(dir, ".sdlc", "local"), { recursive: true });
     writeFileSync(join(dir, ".sdlc", "local", "write-contract.json"), "this is not json {[}");
@@ -314,6 +322,7 @@ test("a project reached through a linked folder: writes inside it are judged ins
   const outside = join(base, "elsewhere");
   try {
     mkdirSync(join(real, ".sdlc", "local"), { recursive: true });
+    mkdirSync(join(real, ".git"));
     mkdirSync(outside, { recursive: true });
     symlinkSync(join(base, "real"), link);
     writeFileSync(join(real, ".sdlc", "local", "write-contract.json"), JSON.stringify({ schema_version: 1, active: true, strict: true, run_id: "r1", allowlist: ["src/**"], off_limits: [".env"] }));
@@ -463,3 +472,168 @@ test("an ended run's contract in the session's folder does not refuse a write in
     assert.equal(r.code, 0, `stderr=${r.stderr}`);
   } finally { cleanup(contracted); cleanup(other); }
 });
+
+// ── What a refusal says ──────────────────────────────────────────────────────────────────────────────────────────────
+// The refusal is fed back to the model. It says what was refused and why, and that a wider scope is the person's
+// decision; it never names a way past it (editing the contract, strict = false, --strict-write=off, re-opening
+// Gate 0): a contract changed mid-run refuses every write, and Gate 0 is not re-opened mid-run.
+test("a refusal says what was refused and that scope is the person's decision; it never names a way past it", async () => {
+  const dir = makeRepo({ ...RUN_DIR_CONTRACT, off_limits: ["secrets/**"] });
+  try {
+    for (const path of ["docs/x.md", "secrets/key.pem"]) {
+      const r = await runHook(dir, { tool_input: { file_path: path } });
+      assert.equal(r.code, 2, path);
+      // The refusal line itself (the hook's own log line on stderr carries the contract's fields, strict included).
+      const refusal = r.stderr.split("\n").find((l) => l.includes("DENY:")) ?? "";
+      assert.match(refusal, /person/, `${path}: the person decides`);
+      assert.doesNotMatch(refusal, /strict|re-open Gate 0|Gate 0 to/i, `${path}: no way around the refusal`);
+    }
+    // The always-off-limits net with no contract: no contract opens it (a later test), so its refusal sends the run to
+    // the person, never to a workflow that would "establish a contract" first.
+    const bare = makeRepo(undefined);
+    try {
+      const net = await runHook(bare, { tool_input: { file_path: ".env" } });
+      assert.equal(net.code, 2);
+      const refusal = net.stderr.split("\n").find((l) => l.includes("DENY:")) ?? "";
+      assert.match(refusal, /always-off-limits/);
+      assert.match(refusal, /person/);
+      assert.doesNotMatch(refusal, /mmo:setup|mmo:brownfield|re-issue/);
+    } finally { cleanup(bare); }
+    const own = await runHook(dir, { tool_input: { file_path: CONTRACT_FILE } });
+    assert.equal(own.code, 2);
+    assert.doesNotMatch(own.stderr, /mmo-log\.mjs only/, "the run's log is written by the plugin's scripts, not by one of them");
+    assert.match(own.stderr, /the plugin's scripts/);
+  } finally { cleanup(dir); }
+});
+
+// ── The project's contract is the one at the project's root ────────────────────────────────────────────────────────
+// A write-contract.json anywhere but the root of the git project that holds the target is ignored: one placed in a
+// subfolder (by the shell, or by a Write the root's allowlist covers) would otherwise take over every target below it.
+test("a contract placed below the project's root is ignored: the root's contract decides, also for a nested git project", async () => {
+  const dir = makeRepo({ ...RUN_DIR_CONTRACT, allowlist: ["src/**", "docs/**"], off_limits: ["docs/private/**"] });
+  try {
+    mkdirSync(join(dir, "docs", ".sdlc", "local"), { recursive: true });
+    writeFileSync(join(dir, "docs", ".sdlc", "local", "write-contract.json"), "not json at all");
+    let r = await runHook(dir, { tool_input: { file_path: "docs/private/x.md" } });
+    assert.equal(r.code, 2, `a nested non-JSON file frees nothing: ${r.stderr}`);
+    writeFileSync(join(dir, "docs", ".sdlc", "local", "write-contract.json"), JSON.stringify({ ...RUN_DIR_CONTRACT, run_id: "r5", allowlist: ["**"], off_limits: [] }));
+    r = await runHook(dir, { tool_input: { file_path: "docs/private/x.md" } });
+    assert.equal(r.code, 2, "a nested contract frees nothing either");
+    assert.match(r.stderr, /docs\/private\/x\.md matches off-limits pattern/);
+    // A nested git project (a submodule, or a .git placed by the run) inside the session's project: the session's
+    // project contract still decides what lands in it.
+    mkdirSync(join(dir, "docs", ".git"));
+    r = await runHook(dir, { tool_input: { file_path: "docs/private/x.md" } });
+    assert.equal(r.code, 2, `the session's project contract still applies: ${r.stderr}`);
+    assert.equal((await runHook(dir, { tool_input: { file_path: "docs/x.md" } })).code, 0, "and allows what it allows");
+  } finally { cleanup(dir); }
+});
+
+test("a contract in a folder that is no git project's root binds nothing (the pre-contract net still holds)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "write-contract-nogit-"));
+  try {
+    mkdirSync(join(dir, ".sdlc", "local"), { recursive: true });
+    writeFileSync(join(dir, ".sdlc", "local", "write-contract.json"), JSON.stringify(RUN_DIR_CONTRACT));
+    assert.equal((await runHook(dir, { tool_input: { file_path: "docs/x.md" } })).code, 0);
+    assert.equal((await runHook(dir, { tool_input: { file_path: ".env" } })).code, 2, "the always-off-limits net still refuses");
+  } finally { cleanup(dir); }
+});
+
+// ── Links are judged where they lead ───────────────────────────────────────────────────────────────────────────────
+// A link inside the allowlist that points outside it would carry a Write into an off-limits folder, or out of the
+// project, without touching the contract: the path is judged as written and as it resolves, and both must pass.
+test("a write through a link is judged where the link leads: outside the allowlist, or out of the project, is refused", async () => {
+  const dir = makeRepo({ ...RUN_DIR_CONTRACT, off_limits: [".sdlc/**", "src/secrets/**"] });
+  const away = mkdtempSync(join(tmpdir(), "write-contract-away-"));
+  try {
+    mkdirSync(join(dir, "src", "real"), { recursive: true });
+    mkdirSync(join(dir, "docs"));
+    mkdirSync(join(dir, "src", "secrets"));
+    symlinkSync(join(dir, "docs"), join(dir, "src", "d"));
+    symlinkSync(join(dir, "src", "secrets"), join(dir, "src", "s"));
+    symlinkSync(away, join(dir, "src", "out"));
+    symlinkSync(join(dir, "src", "real"), join(dir, "src", "l"));
+    for (const [path, code, what] of [
+      ["src/d/x.md", 2, "a link into a folder outside the allowlist"],
+      ["src/s/key.pem", 2, "a link into an off-limits folder"],
+      ["src/out/x.ts", 2, "a link out of the project"],
+      ["src/l/x.ts", 0, "a link that stays inside the allowlist"],
+    ]) {
+      const r = await runHook(dir, { tool_input: { file_path: path } });
+      assert.equal(r.code, code, `${what}: ${r.stderr}`);
+    }
+  } finally { cleanup(dir); cleanup(away); }
+});
+
+// A link whose target does not exist yet is followed by a write too: Write (as Node's writeFileSync does) creates the
+// file the link names. So a dangling link is judged where it leads, as one whose target exists is.
+test("a write through a link to a file that does not exist yet is judged where the link leads", async () => {
+  const dir = makeRepo({ ...RUN_DIR_CONTRACT, off_limits: [".sdlc/**", "secrets/**"] });
+  const away = mkdtempSync(join(tmpdir(), "write-contract-away-"));
+  try {
+    mkdirSync(join(dir, "src", "real"), { recursive: true });
+    mkdirSync(join(dir, "docs"));
+    mkdirSync(join(dir, "secrets"));
+    symlinkSync("../docs/new.md", join(dir, "src", "n.md"));
+    symlinkSync("../secrets/key.pem", join(dir, "src", "k.pem"));
+    symlinkSync(join(away, "o.txt"), join(dir, "src", "o.txt"));
+    symlinkSync("real/new.ts", join(dir, "src", "inside.ts"));
+    symlinkSync("../docs/nested/deeper.md", join(dir, "src", "deep.md"));
+    symlinkSync("hop.md", join(dir, "src", "chain.md"));
+    symlinkSync("../docs/chained.md", join(dir, "src", "hop.md"));
+    for (const [path, code, what] of [
+      ["src/n.md", 2, "a dangling link into a folder outside the allowlist"],
+      ["src/k.pem", 2, "a dangling link into an off-limits folder"],
+      ["src/o.txt", 2, "a dangling link out of the project"],
+      ["src/deep.md", 2, "a dangling link into a folder that does not exist yet, outside the allowlist"],
+      ["src/chain.md", 2, "a link to a dangling link outside the allowlist"],
+      ["src/inside.ts", 0, "a dangling link that stays inside the allowlist"],
+    ]) {
+      const r = await runHook(dir, { tool_input: { file_path: path } });
+      assert.equal(r.code, code, `${what}: ${r.stderr}`);
+    }
+  } finally { cleanup(dir); cleanup(away); }
+});
+
+// ── Off-limits ignore case, and the always-off-limits list applies under a contract too ─────────────────────────────
+// macOS disks ignore case, so src/SECRETS is src/secrets. And the server's writer refuses the always-off-limits list
+// at any depth whatever the contract says; the hook refuses the same, so solo and delegated writes get one answer.
+const { checkWriteContract } = await import(resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "mcp", "model-dispatch", "dist", "apply.js"));
+test("off-limits patterns match in any case; the always-off-limits list is refused at any depth under any contract, as the server refuses it", async () => {
+  const dir = makeRepo({ ...RUN_DIR_CONTRACT, allowlist: ["**"], off_limits: ["src/secrets/**"] });
+  const lax = makeRepo({ ...RUN_DIR_CONTRACT, strict: false, allowlist: ["**"], off_limits: [] });
+  const off = makeRepo({ ...RUN_DIR_CONTRACT, active: false });
+  try {
+    const r = await runHook(dir, { tool_input: { file_path: "src/SECRETS/key.pem" } });
+    assert.equal(r.code, 2, `the same folder on a disk that ignores case: ${r.stderr}`);
+    assert.equal(checkWriteContract(dir, "src/SECRETS/key.pem").allowed, false, "the server matches the contract's off-limits in any case too");
+    for (const path of ["src/.env", "src/.env.local", "src/.git/config", "src/.mcp.json", ".ENV", "src/.Git/config", ".env.example", "config/.env.staging", "SRC/.Env"]) {
+      for (const [root, what] of [[dir, "a strict contract"], [lax, "strict = false"], [off, "a switched-off contract"]]) {
+        const h = await runHook(root, { tool_input: { file_path: path } });
+        assert.equal(h.code, 2, `${path} under ${what}: ${h.stderr}`);
+        assert.equal(checkWriteContract(root, path).allowed, false, `${path} under ${what}: the server agrees`);
+      }
+    }
+  } finally { cleanup(dir); cleanup(lax); cleanup(off); }
+});
+
+// The hook (the chat's own Write and Edit) and the server's writer (a delegated model's file) give one answer for one
+// path: the same cases through both, allowed and refused alike, under a live frozen contract.
+test("the hook and the server's writer decide the same paths alike under a frozen contract", async () => {
+  const dir = makeRepo();
+  try {
+    const frozen = spawnSync(process.execPath, [join(HOOK, "..", "write-contract.mjs"), "--freeze", "--run-id", "r1", "--allowlist", '["src/**", "config/**", ".env.example"]', "--off-limits", '["config/secrets.json", ".sdlc/**"]'], { cwd: dir, encoding: "utf8" });
+    assert.equal(frozen.status, 0, frozen.stderr);
+    for (const [path, allowed] of [
+      ["src/a.ts", true], ["config/app.json", true], [".sdlc/runs/r1/report.json", true],
+      [".env.example", false], ["config/.env.staging", false], ["src/.env", false], ["src/.ENV.local", false],
+      ["config/secrets.json", false], ["config/SECRETS.json", false], ["Config/Secrets.JSON", false],
+      ["docs/x.md", false], [".sdlc/local/write-contract.json", false], [".sdlc/runs/r1/orchestrator.log", false],
+    ]) {
+      const h = await runHook(dir, { tool_input: { file_path: path } });
+      assert.equal(h.code === 0, allowed, `${path}, the hook: ${h.stderr}`);
+      assert.equal(checkWriteContract(dir, path).allowed, allowed, `${path}, the server: ${checkWriteContract(dir, path).reason}`);
+    }
+  } finally { cleanup(dir); }
+});
+

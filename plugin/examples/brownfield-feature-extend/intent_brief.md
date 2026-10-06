@@ -13,9 +13,9 @@ returns an empty array (not 400).
 
 ## Files in scope
 
-- `src/index.js` — read query param, pass to store
-- `src/users.js` — extend `getUsers` to accept an optional role filter
-- `src/users.spec.js` — add tests for the new parameter
+- `src/index.js` (edit — read query param, pass to store)
+- `src/users.js` (edit — extend `getUsers` to accept an optional role filter)
+- `src/users.spec.js` (edit — add tests for the new parameter)
 
 ## Files off-limits
 

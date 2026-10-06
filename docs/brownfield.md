@@ -30,12 +30,21 @@ re-confirms scope either way; these are shortcuts into the same manual, not a se
 
 | # | Step | What it does |
 |---|---|---|
-| 1 | Session-hydrate | Shows prior runs, checks for resume state. |
+| 1 | Session-hydrate | Shows prior runs, and picks up an interrupted setup where it stopped. A run that never ended (its chat was closed, it crashed, it stopped before Gate 4) is not resumed: it still holds the project, and you decide whether to end it with `write-contract.mjs --abandon`. |
 | 2 | Pipeline pre-check | First time in this repo (or when the baseline is stale) — six offline smoke checks: Node, git, tests, credentials, MCP server build, policy pick. |
 | 3 | Discovery | Reads the repo. Tier 1 (~10s) for shipped stacks; Tier 2b adaptive when the stack is custom. |
 | 4 | Intent brief interview | Pick one of the seven job types and describe the task. Or supply a pre-written brief. |
 | 5 | Gate 0 | One confirmation screen: stack, test command, off-limits, intent, scope. |
-| 6 | Pipeline | Requirements → (architecture) → packet plan → execute → review → tests → security → report. |
+| 6 | Pipeline | Requirements → change spec (Gate 2 for feature-extend, feature-new, refactor and deps, and for a bugfix that code finds design-affecting) → packets → execute → review → tests → security → report. |
+
+**Every job runs one flow.** The architect hands over a typed change spec, checked against the files as each
+section arrives; code derives one packet per file from it; greenfield's typists type the packets under every
+policy, and the server writes and checks each file. Jobs differ only in what the spec holds and in a few rules
+code checks when it finalizes the spec: a bugfix starts with a test that reproduces the bug, which must fail
+before the fix and pass after it; refactor, test and deps runs must name at least one whole-project check for the
+end of the run (code checks that the list is not empty; the architect is told to name the full suite, and the
+end-of-run checks run what it names); a deps run installs through the package manager as its own step. The table is
+["The jobs" in brownfield-runs.md](../plugin/skills/pipeline/brownfield-runs.md#the-jobs).
 
 Two prompts total from installation to done: `Setup this plugin from…` then `/mmo:brownfield`. Every setup step (env checks, credential shepherd, discovery, pre-check, baseline save) folds into those two. Task-agnostic helpers exist for occasional use:
 
@@ -58,7 +67,7 @@ Gate 0 is the one confirmation between discovery reading your repo and the pipel
 - **Test command** — the command detected from `package.json` scripts / `pytest.ini` / equivalent. Accept or paste your own.
 - **Existing AI setup** — verbatim list of Cursor rules / `.mcp.json` / competing configs discovery found. **Default is OFF-LIMITS** for all of them — the plugin never touches them unless you explicitly move one into scope.
 - **Intent** — which of the seven job types.
-- **File scope** — the allowlist (paths the pipeline may write to) and off-limits (paths never touched). Two-tier: the constant off-limits from `.sdlc/project.json.off_limits_default` (`.env*`, `.mcp.json`, `node_modules/**`, etc., written once at setup time) are pre-merged; only ticket-specific paths appear as editable at Gate 0. Edit either the allowlist or the additions list.
+- **File scope** — the allowlist (paths the pipeline may write to) and off-limits (paths never touched). Two-tier: the constant off-limits from `.sdlc/project.json.off_limits_default` (`.env*`, `.mcp.json`, `node_modules/**`, etc., written once at setup time) are pre-merged; only ticket-specific paths appear as editable at Gate 0. Edit either the allowlist or the additions list. For a bugfix, the allowlist includes the test file (or the test folder's glob) the reproducing test needs: a bugfix plan without its reproducing test is refused at finalize.
 
 The flow:
 
@@ -70,7 +79,7 @@ discovery ──► Gate 0 ──► approve ──► freeze write-contract.jso
                  └── abort ──► clean exit (partial record kept, source tree untouched)
 ```
 
-Approve freezes the merged allowlist + off-limits into `.sdlc/local/write-contract.json`. The PreToolUse hook reads that file on every write and refuses anything outside the allowlist. See [brownfield-write-contract.md](brownfield-write-contract.md) for the enforcement details.
+Approve freezes the merged allowlist + off-limits into `.sdlc/local/write-contract.json` at the root of the git project, written by `write-contract.mjs`, which records a fingerprint of its bytes in the run's own log. The PreToolUse hook and the server's writer read that file on every write and refuse anything outside the allowlist, and while the run is live a contract changed any other way refuses every write. The scope is frozen for the run's whole life: a wider one is a new run with its own Gate 0. A run that stops without an end record (a halted start check, a closed chat, a crash) keeps the project held until you end it with `write-contract.mjs --abandon`. See [brownfield-write-contract.md](brownfield-write-contract.md) for the enforcement details.
 
 ---
 
@@ -78,12 +87,12 @@ Approve freezes the merged allowlist + off-limits into `.sdlc/local/write-contra
 
 The plugin will **never**:
 
-- Modify your `.env` or any file matching `.env.*` (values are yours; the plugin only appends
-  new required-key NAMES to `.env.example`).
+- Modify your `.env` or any file matching `.env.*`, `.env.example` included (values are yours; a
+  new required key is named for you to add).
 - Modify a `routing-policy.yaml` that already exists at repo root (it silently uses yours;
   Gate 0 always shows you when this happens).
-- Modify `.cursor/rules`, `.aider*`, `.continue/`, `.github/copilot-instructions.md`, or any
-  file inside `.mcp.json` unless you explicitly moved them into the allowlist at Gate 0.
+- Modify `.cursor/rules/**` or `.mcp.json` (always off-limits), or `.aider*`, `.continue/`,
+  `.github/copilot-instructions.md` unless you explicitly moved them into the allowlist at Gate 0.
 - Modify submodules, files marked by `.gitattributes` as LFS, or anything gitignored by your
   `.gitignore`.
 - Run other developers' tools on your behalf (`prettier --write`, `eslint --fix`, etc.) — the pipeline runs the project's own format command only on files the pipeline wrote, and only right after writing them. Never on your unmodified code.
@@ -123,7 +132,7 @@ The plugin's per-project state. Split into committed (team-shared) and gitignore
 │   ├── discovery.md
 │   └── stack-profile.md  — only when adaptive profile ran
 └── local/                — gitignored: personal per-developer state
-    ├── state.json        — live state machine
+    ├── state.json        — a greenfield run's gate state (a brownfield run's record is its own log)
     ├── setup-status.json — shepherd resume state
     ├── write-contract.json — the run's allowlist/off-limits; binds only while that run is live
     ├── user-policy.yaml  — personal policy override

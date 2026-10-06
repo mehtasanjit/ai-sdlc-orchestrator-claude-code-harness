@@ -18,6 +18,10 @@ You receive from the caller:
 - `sdlc_root` — repo-relative path to `.sdlc/` (always `.sdlc` in v1)
 - `mode` — `first-time` (no `.sdlc/baseline/current.json` exists yet) or `refresh` (baseline exists, staleness detection needed)
 - `intent_hint` (optional) — the intent the user picked, if already known at Gate 0
+- `adaptive_profile` (optional) — `true` when the person asked for the Tier 2b stack profile whatever the
+  stack (`/mmo:pass --adaptive-profile`)
+- `refresh_profile` (optional) — `true` when the person asked for a full re-scan, the stack profile included
+  (`/mmo:pass --refresh-profile`)
 
 You are **always** invoked from the repo root as cwd.
 
@@ -30,6 +34,13 @@ Before any other read, check `git rev-parse --is-inside-work-tree`. If it return
 > Then re-run `/mmo:brownfield`.
 
 …and exit without writing anything. Do not offer to auto-init — that is destructive and it is not your call to make.
+
+Then compare `git rev-parse --show-toplevel` with the current folder (`pwd -P`). If they differ, print:
+
+> ⚠️ Brownfield mode runs from the project's git root (<toplevel>): its write contract lives there, the only place
+> the write-contract hook reads it. Start the run from that folder.
+
+…and exit without writing anything.
 
 # Refresh vs first-time — decision at the top
 
@@ -54,7 +65,10 @@ It reads `.sdlc/baseline/current.json`, compares against current git HEAD and st
 Behavior per decision:
 - **`cached`** — nothing changed materially. Copy `baseline/current.json` to `runs/<run-id>/baseline.json` verbatim, generate a one-paragraph `discovery.md` that says "using cached baseline from ISO-timestamp; N days old, 0 commits behind", and exit. No re-scan.
 - **`incremental`** — small delta. Re-scan only the groups affected by the delta: if any stack manifest changed, re-do groups 3-4. If new AI-config files appeared, re-do group 6. Merge results into the existing baseline. Write both `runs/<run-id>/baseline.json` (the per-run snapshot) and update `baseline/current.json`.
-- **`full`** — new language appeared, or `.sdlc/policy.yaml` changed, or user forced `--refresh-profile`. Redo everything below.
+- **`full`** — new language appeared, or `.sdlc/policy.yaml` changed. Redo everything below.
+
+With `refresh_profile: true`, do not wait for the helper's decision: do the full scan below, and rebuild the
+stack profile when Tier 2b applies.
 
 When `mode: first-time`, always do the full scan below.
 
@@ -347,9 +361,9 @@ On `incremental` refresh, merge the delta into `current.json` in place; the per-
 **Trigger conditions (any of):**
 1. Group 3 detected a stack (or dominant stack) that has no matching pre-authored adapter in `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/stacks/`. In v1, we ship `generic.md`, `nest.md`, `python.md`. So a repo whose primary stack is React/Next.js, Go, Rails, Java, Rust, etc. triggers this step.
 2. Repo-root `CLAUDE.md` explicitly declares a custom framework — grep for phrases like `custom framework`, `internal framework`, `bespoke framework`, `in-house framework`, or a `## Framework:` heading pointing at something unfamiliar.
-3. The caller passed `--adaptive-profile` (forces the step regardless of stack detection).
+3. The caller passed `adaptive_profile: true` (forces the step regardless of stack detection).
 
-If none apply, skip this section entirely. The pre-authored adapter fragment is enough baseline for downstream phases.
+If none apply, skip this section entirely: the pre-authored adapter is the architect's baseline for the stack.
 
 **What the step does:** samples the actual repo to learn its conventions, rather than assuming from generic prompts. This is the primary quality mechanism per D1 (§21). Pre-authored adapters become optional baselines; the learned profile wins on conflict because it reflects reality.
 
@@ -426,23 +440,23 @@ Write a concise markdown document. Structure:
 - <specific tips for producing code that matches this repo's style>
 ```
 
-Real file snippets are the point — codegen packets receive this profile verbatim and pattern-match on the snippets. Prose descriptions alone are less useful.
+Real file snippets are the point: they are what the architect points typists at, through the change spec (below). Prose descriptions alone are less useful.
 
 ## Downstream consumption
 
-The packet planner (phase 4) receives both the pre-authored adapter fragment (if any) AND this stack profile. If both exist and disagree, the profile wins. Both are appended to codegen packet inputs, with the profile marked as authoritative.
+The architect reads this profile while it writes the change spec, with the pre-authored adapter for the stack (if any); where the two disagree, the profile wins. It carries the profile's rules into the spec's `conventions` and `decisions`, and points each unit's `style_from` at the real files the profile sampled. The typists never read the profile itself: a packet carries the shared brief, its unit's brief, its style and `uses` files and the file it edits, all from the spec.
 
 ## Freshness
 
 The profile is cached in `.sdlc/baseline/stack-profile.md` and reused across runs. It's refreshed when:
 - A stack manifest changed and `discovery-refresh.mjs` returned `full` (implies re-scan)
-- User passed `--refresh-profile` (forced)
+- The caller passed `refresh_profile: true` (forced)
 - More than 10 successful runs have elapsed since the profile was last built (conservative freshness bound)
 
 # Never do
 
 - Read the value side of any env file. Names only, ever.
 - Modify any file outside `.sdlc/`.
-- Emit anything from the user's source code to model dispatch (that's the packet planner's job later, and it uses `dispatch-sanitize.mjs`).
+- Emit anything from the user's source code to model dispatch (a typist's packet is built later by code from the change spec, and the server never reads an off-limits file into it).
 - Follow symlinks that point outside the repo root.
 - Call any tool outside your declared list (`Read`, `Glob`, `Grep`, `Bash`).

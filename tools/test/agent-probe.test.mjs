@@ -229,14 +229,17 @@ test("readFlag reads a value and tolerates its absence", () => {
 
 const AGENT_SELECTED = { MMO_SELECT: "gemini-flash=flash-agsdk-worker" };
 
-test("a green offline check on the agent path points at the live probe", () => {
+// The run's start check (preflight_dispatch with probe_typists) sends one test call through the agent, so a missing
+// entitlement, a region that does not serve the model or a dead credential stops the run before anything is billed.
+// A separate paid probe on top asks the person an extra question and pays twice for one answer.
+test("a green offline check on the agent path says what the run's start check tests, and offers no separate paid probe", () => {
   const hint = agentProbeHint("/plug", AGENT_SELECTED, true);
   assert.ok(hint);
-  assert.match(hint, /probe-agent-worker\.mjs/);
-  // Both invisible failure modes are named, because "run this too" without a
-  // reason is the kind of advice people skip.
+  assert.doesNotMatch(hint, /probe-agent-worker\.mjs|two cents/);
+  // Both invisible failure modes are named, so the person knows what the offline checks leave to the run.
   assert.match(hint, /entitlement/);
   assert.match(hint, /region/);
+  assert.match(hint, /start check/);
 });
 
 test("the model path is never told to run a paid probe", () => {

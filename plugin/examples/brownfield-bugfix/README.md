@@ -19,15 +19,19 @@ but doesn't.
 
 ## Try it
 
+A brownfield run's write contract lives at the root of the git project that holds the run, so the example runs as a
+git project of its own (inside a clone of this repository, the clone's root would hold it):
+
 ```bash
-cd plugin/examples/brownfield-bugfix
+cp -R plugin/examples/brownfield-bugfix ~/brownfield-bugfix && cd ~/brownfield-bugfix
+printf 'node_modules/\n' > .gitignore
 npm install
+git init && git add -A && git commit -m "the example as shipped"
 npm test    # 1 failing test: "returns 400 when password missing"
 
-# In Claude Code:
-/mmo:brownfield
-# Pick intent: bugfix
-# The pipeline runs reproduce (already reproduced!) → diagnose → fix → regression test
+# In Claude Code, in this folder:
+/mmo:bugfix
+# The run types the test that reproduces the bug first, then the fix
 ```
 
 ## Intent brief
@@ -36,8 +40,15 @@ See [intent_brief.md](intent_brief.md).
 
 ## Expected outputs
 
-- `src/auth.js` — edited: input validation added; returns 400 with a `{ error, field }` shape
-- `src/auth.spec.js` — the seeded failing test now passes (no changes needed)
-- Possibly `src/index.js` — edited if error handling was surfaced through the router
+The run types the test that reproduces the bug first, then the fix:
 
-Nothing outside `src/auth.js` (and possibly `src/index.js`) should be touched.
+- `src/auth.spec.js` — edited: a `returns 400 when username missing` case, typed before any fix. Its red check
+  runs that case alone (for example `node --test --test-name-pattern="username missing" {path}`) and must fail on
+  the code as it is. The file already fails on its seeded case, so a check of the whole file could not show that
+  the new case reproduces the bug: the server refuses that check.
+- `src/auth.js` — edited: checks both fields before the credential check and throws an error naming the missing one.
+- `src/index.js` — edited: answers that error with HTTP 400 `{ "error": "validation failed", "field": ... }`; any
+  other error stays a 500. The route answers every error with 500 today, so the handler alone cannot return 400.
+
+At the end the reproducing check passes, and so does the full suite (`npm test`), the seeded "returns 400 when
+password missing" case included. Nothing outside these three files is written.

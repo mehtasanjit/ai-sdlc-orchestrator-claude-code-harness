@@ -217,17 +217,17 @@ test("checkWriteContract: a live run may not write its own contract or log, what
   rmSync(root, { recursive: true, force: true });
 });
 
-test("applyContent writes the file, returns a receipt, and records provenance when a run_id is given", () => {
+test("applyContent writes the file, returns a receipt, and records provenance when a run_id is given", async () => {
   const root = tmpRoot();
   assert.ok(existsSync(provenanceScriptPath()), `provenance script must resolve from dist: ${provenanceScriptPath()}`);
-  const r1 = applyContent(root, "src/new.ts", "export const a = 1;\n", { packetId: "tp_1" });
+  const r1 = await applyContent(root, "src/new.ts", "export const a = 1;\n", { packetId: "tp_1" });
   assert.deepEqual(
     { ...r1, sha16: r1.sha16.length },
     { path: "src/new.ts", bytes: 20, lines: 2, sha16: 16, existed_before: false, provenance: "skipped" },
   );
   assert.equal(readFileSync(join(root, "src", "new.ts"), "utf8"), "export const a = 1;\n");
 
-  const r2 = applyContent(root, "src/new.ts", "export const a = 2;\n", { packetId: "tp_2", runId: "run-x" });
+  const r2 = await applyContent(root, "src/new.ts", "export const a = 2;\n", { packetId: "tp_2", runId: "run-x" });
   assert.equal(r2.existed_before, true);
   assert.equal(r2.provenance, "recorded");
   const prov = JSON.parse(readFileSync(join(root, ".sdlc", "runs", "run-x", "provenance.json"), "utf8"));
@@ -239,36 +239,42 @@ test("applyContent writes the file, returns a receipt, and records provenance wh
   rmSync(root, { recursive: true, force: true });
 });
 
-test("runVerify substitutes {path}, stops at the first failure, and tails the output", () => {
+test("runVerify substitutes {path}, stops at the first failure, and tails the output", async () => {
   const root = tmpRoot();
   writeFileSync(join(root, "ok.txt"), "x");
-  assert.deepEqual(runVerify(undefined, root, "ok.txt"), { ok: true, ran: 0, duration_ms: 0 });
-  const pass = runVerify(["test -f {path}", "echo fine"], root, "ok.txt");
+  assert.deepEqual(await runVerify(undefined, root, "ok.txt"), { ok: true, ran: 0, duration_ms: 0 });
+  const pass = await runVerify(["test -f {path}", "echo fine"], root, "ok.txt");
   assert.equal(pass.ok, true);
   assert.equal(pass.ran, 2);
-  const fail = runVerify(["echo first", "sh -c 'echo boom-{path} >&2; exit 3'", "echo never"], root, "ok.txt");
+  const fail = await runVerify(["echo first", "sh -c 'echo boom-{path} >&2; exit 3'", "echo never"], root, "ok.txt");
   assert.equal(fail.ok, false);
   assert.equal(fail.ran, 2);
   assert.equal(fail.exit_code, 3);
   assert.match(fail.failed_command, /boom-\{path\}|boom-ok\.txt/);
   assert.match(fail.output_tail, /boom-ok\.txt/);
-  const slow = runVerify(["sleep 5"], root, "ok.txt", 1);
+  const slow = await runVerify(["sleep 5"], root, "ok.txt", 1);
   assert.equal(slow.ok, false);
   assert.equal(slow.exit_code, null);
+  assert.equal(slow.timed_out, true);
   assert.match(slow.output_tail, /timed out/);
   rmSync(root, { recursive: true, force: true });
 });
 
-test("refinePacket bumps retry_count, re-ids the packet and appends the failure; re-refining replaces the suffix", () => {
+// A retry keeps the planned packet's id, so every attempt at one file is one task in telemetry with attempt numbers by
+// the ladder's slot, as greenfield records a job (this test used to pin a new "-rN" id per retry, which split one
+// file's attempts into separate one-attempt tasks).
+test("refinePacket bumps retry_count, keeps the packet's id, says why, and appends the failure", () => {
   const p = basePacket();
   const r1 = refinePacket(p, "verify failed: tsc");
-  assert.equal(r1.id, "tp_codegen_001-r1");
+  assert.equal(r1.id, "tp_codegen_001");
   assert.equal(r1.retry_count, 1);
+  assert.equal(r1.retry_reason, "verify");
   assert.match(r1.instruction, /Previous attempt failed verification \(attempt 1\)/);
   assert.match(r1.instruction, /verify failed: tsc/);
-  const r2 = refinePacket(r1, "still failing");
-  assert.equal(r2.id, "tp_codegen_001-r2");
+  const r2 = refinePacket(r1, "still failing", "content", "error");
+  assert.equal(r2.id, "tp_codegen_001");
   assert.equal(r2.retry_count, 2);
+  assert.equal(r2.retry_reason, "error");
   assert.equal(r2.artifact_path, "src/out.ts");
 });
 
@@ -307,7 +313,10 @@ function stubModel(replies) {
       const r = replies.shift() ?? { content: "fallback\n" };
       return {
         decision: { modelId: "flash", reason: "stub", ruleIndex: 0 },
-        result: {
+        result: r.attempt
+          // A typist's failed attempt (applyTypist.ts typistResult): no usable answer, its reason, and whether a reply came.
+          ? { success: false, error: r.attempt.error, result: null, tokens: { input: 10, input_cached: 0, output: r.attempt.replied ? 5 : 0 }, cost_usd: 0, terminal_reason: r.attempt.replied ? "invalid_answer" : "no_answer" }
+          : {
           success: r.fail !== true,
           error: r.fail ? "vendor down" : undefined,
           result: r.fail ? undefined : r,
@@ -407,8 +416,8 @@ test("runApplyLoop: a packet that ends without its write leaves a provenance rec
   assert.equal(o1.status, "verify_failed");
   assert.equal(readFileSync(join(root, "src", "out.ts"), "utf8"), "line1\nline2\n", "the original is back");
   assert.equal(record().sha_after, record().sha_before, "the record says the file is as it was");
-  // A failed dispatch: nothing written.
-  const failed = stubModel([{ fail: true }]);
+  // A failed dispatch on every attempt (each one is an attempt, as in greenfield's stage runner): nothing written.
+  const failed = stubModel([{ fail: true }, { fail: true }, { fail: true }]);
   const o2 = await runApplyLoop({ packet: basePacket({ id: "tp_codegen_002" }), apply: normalizeApply({ write: true }), projectRoot: root, runId: "run-1", keepEvents: true, route: flashUntil(5), dispatch: failed.dispatch, log: silent });
   assert.equal(o2.status, "dispatch_failed");
   assert.equal(record().sha_after, record().sha_before);
@@ -434,17 +443,22 @@ test("runApplyLoop: a rate-limited or dropped call is waited out and sent again,
   rmSync(root, { recursive: true, force: true });
 });
 
-test("runApplyLoop: waits stop at the stated bound, and a pause longer than one rate-limit window ends the packet", async () => {
+// Greenfield's ladder (executor/run.ts call and typeJob): each attempt waits out a busy vendor up to the stated bound;
+// past it, or for a pause longer than one rate-limit window, the failure is that attempt's, and the packet ends only
+// when its attempts run out. (This test used to pin the old rule, where either ended the whole packet at once.)
+test("runApplyLoop: waits stop at the stated bound per attempt, and a pause longer than one rate-limit window is an attempt", async () => {
   const root = tmpRoot();
   const s = sleeps();
-  const busy = stubModel([{ fail: true, status: 503 }, { fail: true, status: 503 }, { fail: true, status: 503 }]);
+  const busy = stubModel(Array.from({ length: 9 }, () => ({ fail: true, status: 503 })));
   const a = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: busy.dispatch, log: silent, transport: TRANSPORT_FAST, sleep: s.sleep, random: () => 0.5 });
   assert.equal(a.status, "dispatch_failed");
-  assert.equal(busy.calls.length, 3, "maxWaits 2: two waits, then the third failure ends it");
-  const long = stubModel([{ fail: true, status: 429, retryAfter: 120_000 }]);
+  assert.equal(busy.calls.length, 9, "maxWaits 2 per attempt: two waits, then the third failure is the attempt's, three attempts");
+  assert.equal(a.attempts.length, 3);
+  assert.equal(a.transport_waits, 6);
+  const long = stubModel([1, 2, 3].map(() => ({ fail: true, status: 429, retryAfter: 120_000 })));
   const b = await runApplyLoop({ packet: basePacket(), apply: normalizeApply({ write: true }), projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: long.dispatch, log: silent, transport: TRANSPORT_FAST, sleep: s.sleep, random: () => 0.5 });
   assert.equal(b.status, "dispatch_failed");
-  assert.equal(long.calls.length, 1);
+  assert.equal(long.calls.length, 3, "each long pause is an attempt");
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -462,7 +476,7 @@ test("runApplyLoop: credentials refused (401, 403) end the packet with a halt th
 });
 
 // The in-server ladder (greenfield's rule): when the policy routes a retry to another model the server can type with
-// (the lean Opus typist for a feature run's Claude leaf), the loop carries on with it instead of handing the file back
+// (the lean Opus typist for a brownfield run's Claude leaf), the loop carries on with it instead of handing the file back
 // to the orchestrator to type in its own long context. Only a model it cannot type with is an `escalate`.
 test("runApplyLoop: a retry the policy routes to a model the server can type with stays in the loop", async () => {
   const root = tmpRoot();
@@ -582,7 +596,9 @@ test("runApplyLoop: max_retries bounds the loop when the policy never re-routes"
   rmSync(root, { recursive: true, force: true });
 });
 
-test("runApplyLoop: a write outside the contract is refused, not retried; a dispatch failure stops the loop", async () => {
+// The write contract is checked before any typist is paid: its answer does not depend on the reply (this test used to
+// pin one paid call before the refusal). A failed dispatch is an attempt, as in greenfield's stage runner.
+test("runApplyLoop: a write outside the contract is refused before any call, not retried; failed dispatches end the loop when the attempts run out", async () => {
   const root = tmpRoot();
   const model = stubModel([{ content: "x" }]);
   const refused = await runApplyLoop({
@@ -593,15 +609,18 @@ test("runApplyLoop: a write outside the contract is refused, not retried; a disp
   assert.equal(refused.status, "refused");
   assert.match(refused.refusal, /off-limits/);
   assert.equal(existsSync(join(root, ".env")), false);
-  assert.equal(model.calls.length, 1);
+  assert.equal(model.calls.length, 0);
 
-  const down = stubModel([{ fail: true }]);
+  // One model for every attempt (a route to a model the server cannot type with would end it as an escalation).
+  const down = stubModel([{ fail: true }, { fail: true }, { fail: true }]);
   const failed = await runApplyLoop({
     packet: basePacket(), apply: normalizeApply({ write: true }),
-    projectRoot: root, keepEvents: true, route: flashUntil(2), dispatch: down.dispatch, log: silent,
+    projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: down.dispatch, log: silent,
   });
   assert.equal(failed.status, "dispatch_failed");
+  assert.equal(down.calls.length, 3);
   assert.equal(failed.attempts[0].failure, "vendor down");
+  assert.match(down.calls[1].instruction, /the previous attempt failed: vendor down/, "each attempt is retried with its reason");
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -614,6 +633,39 @@ test("runApplyLoop: a reply without content is retried with that told to the mod
   });
   assert.equal(out.status, "applied");
   assert.match(model.calls[1].instruction, /no `content` string/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// A typist's failed attempt (no reply, or a reply in no contract) is an attempt as in greenfield's stage runner: retried
+// with its own reason, recorded as failed (never a success with an empty answer), and when the attempts run out the
+// packet ends as a dispatch failure (no reply) or as no content (a reply in no contract).
+test("runApplyLoop: a typist's failed attempt is recorded as failed and retried with its reason", async () => {
+  const root = tmpRoot();
+  const model = stubModel([{ attempt: { error: "success: Failed to authenticate: OAuth session expired" } }, { content: "ok\n" }]);
+  const out = await runApplyLoop({
+    packet: basePacket(), apply: normalizeApply({ write: true }),
+    projectRoot: root, keepEvents: true, route: flashUntil(2), dispatch: model.dispatch, log: silent,
+  });
+  assert.equal(out.status, "applied");
+  assert.equal(out.attempts[0].dispatch_ok, false, "the failed call is recorded as failed");
+  assert.match(out.attempts[0].failure, /Failed to authenticate/);
+  assert.match(model.calls[1].instruction, /Failed to authenticate/, "the retry carries the reason");
+
+  const dead = stubModel([1, 2, 3].map(() => ({ attempt: { error: "success: Failed to authenticate" } })));
+  const failed = await runApplyLoop({
+    packet: basePacket(), apply: normalizeApply({ write: true, max_retries: 2 }),
+    projectRoot: root, keepEvents: true, route: flashUntil(9), dispatch: dead.dispatch, log: silent,
+  });
+  assert.equal(failed.status, "dispatch_failed", "no reply in any attempt: a failed dispatch, not 'no content'");
+  assert.equal(dead.calls.length, 3, "max_retries bounds it");
+  assert.ok(failed.attempts.every((a) => a.dispatch_ok === false));
+
+  const garbled = stubModel([1, 2, 3].map(() => ({ attempt: { error: "the reply was not one JSON object", replied: true } })));
+  const noContent = await runApplyLoop({
+    packet: basePacket(), apply: normalizeApply({ write: true, max_retries: 2 }),
+    projectRoot: root, keepEvents: true, route: flashUntil(9), dispatch: garbled.dispatch, log: silent,
+  });
+  assert.equal(noContent.status, "no_content", "a reply in no contract every time: no content");
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -714,9 +766,9 @@ test("the compiled server wires the apply loop and stops before a routed model c
   assert.ok(src.indexOf("runBatch({", src.indexOf('case "execute_batch"')) > 0, "execute_batch schedules through runBatch");
 });
 
-test("applyContent runs format commands before provenance, and the receipt describes the formatted file", () => {
+test("applyContent runs format commands before provenance, and the receipt describes the formatted file", async () => {
   const root = tmpRoot();
-  const r = applyContent(root, "src/f.ts", "export const a = 1;   \n", {
+  const r = await applyContent(root, "src/f.ts", "export const a = 1;   \n", {
     packetId: "tp_f",
     runId: "run-f",
     format: ["perl -pi -e 's/[ \\t]+$//' {path}", "false"],
@@ -729,7 +781,7 @@ test("applyContent runs format commands before provenance, and the receipt descr
   rmSync(root, { recursive: true, force: true });
 });
 
-// Typed checks (a feature run's change spec): each check's run and its own write form, so no command is guessed from
+// Typed checks (a brownfield run's change spec): each check's run and its own write form, so no command is guessed from
 // another's text; a packet with no format and no checks runs no formatter.
 test("a check's output is kept up to greenfield's receipt bound, the most any receipt carries", async () => {
   const { VERIFY_OUTPUT_TAIL_CHARS } = await import(join(DIST, "apply.js"));
@@ -799,5 +851,69 @@ test("runApplyLoop: a check that passed before the change still judges the answe
   assert.equal(out.status, "applied");
   assert.equal(model.calls.length, 2);
   assert.equal(out.set_aside, undefined);
+  rmSync(root, { recursive: true, force: true });
+});
+
+// A bugfix's reproducing test (a check typed `expect: "fail"`; plan-to-packets makes one from the spec's red_checks).
+// It is written before the fix, so it must fail on the bug: its exit 0 is the failure (a test that passes before the
+// fix does not reproduce the bug). It is not tried on the file before the change, as the baseline rule tries the checks
+// that must pass. A command the shell cannot run, or one that does not finish, gives no verdict at all.
+const REPRODUCES = "node -e \"process.exit(require('fs').readFileSync(process.argv[1],'utf8').includes('reproduces')?1:0)\" {path}";
+test("normalizeApply: a check typed expect fail is a reproducing check, kept apart from the checks that must pass", () => {
+  const a = normalizeApply({ write: true, checks: [{ id: "lint", run: "lint '{path}'", fix: "lint --write '{path}'" }, { id: "test", run: "t '{path}'", fix: "t --fmt '{path}'", expect: "fail" }], baseline_from: "src/style.ts" });
+  assert.deepEqual(a.verify, ["lint '{path}'"]);
+  assert.deepEqual(a.red, ["t '{path}'"]);
+  assert.deepEqual(a.checks.map((c) => c.id), ["lint"], "the baseline rule tries only the checks that must pass");
+  // A formatter must not rewrite the test that judges the fix: a reproducing check's write form never runs (this used
+  // to include it, and whether it ran then hung on whether some other check was set aside).
+  assert.deepEqual(a.format, ["lint --write '{path}'"], "the write forms of the checks that must pass, and only theirs");
+  const only = normalizeApply({ write: true, checks: [{ id: "test", run: "t '{path}'", expect: "fail" }] });
+  assert.deepEqual([only.verify, only.red, only.checks], [[], ["t '{path}'"], []]);
+  assert.equal(normalizeApply({ write: true, checks: [{ id: "t", run: "t", expect: "pass" }] }).red, undefined, "only 'fail' makes a reproducing check");
+});
+
+test("runApplyLoop: a reproducing test that passes before the fix is retried with the reason; one that fails on the bug is applied", async () => {
+  const root = tmpRoot();
+  const model = stubModel([{ content: "it('passes')\n" }, { content: "it('reproduces')\n" }]);
+  const out = await runApplyLoop({
+    packet: basePacket({ artifact_path: "test/bug.test.ts" }),
+    apply: normalizeApply({ write: true, checks: [{ id: "test", run: REPRODUCES, expect: "fail" }] }),
+    projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: model.dispatch, log: silent,
+  });
+  assert.equal(out.status, "applied", JSON.stringify(out.attempts));
+  assert.equal(model.calls.length, 2);
+  assert.match(model.calls[1].instruction, /\(exit 0\)/);
+  assert.match(model.calls[1].instruction, /must fail before the fix: it passed, so it does not reproduce the bug/);
+  assert.deepEqual(out.attempts.map((x) => x.verify_ok), [false, true]);
+  assert.equal(out.verify.ran, 1);
+  assert.equal(out.set_aside, undefined);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("runApplyLoop: a reproducing check the shell cannot run, or that does not finish, is no verdict", async () => {
+  for (const [run, timeout, why] of [["definitely-not-a-command-mmo {path}", 30, /could not run \(exit 127\)/], ["node -e \"setTimeout(()=>process.exit(1),5000)\" {path}", 1, /did not finish within 1s/]]) {
+    const root = tmpRoot();
+    const out = await runApplyLoop({
+      packet: basePacket({ artifact_path: "test/bug.test.ts" }),
+      apply: normalizeApply({ write: true, checks: [{ id: "test", run, expect: "fail" }], max_retries: 0, verify_timeout_sec: timeout }),
+      projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: stubModel([{ content: "x\n" }]).dispatch, log: silent,
+    });
+    assert.equal(out.status, "verify_failed", run);
+    assert.match(out.attempts[0].failure, why);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runApplyLoop: the checks that must pass judge first; the reproducing test runs only on an answer that passes them", async () => {
+  const root = tmpRoot();
+  const NO_BAD = "node -e \"process.exit(require('fs').readFileSync(process.argv[1],'utf8').includes('bad')?1:0)\" {path}";
+  const out = await runApplyLoop({
+    packet: basePacket({ artifact_path: "test/bug.test.ts" }),
+    apply: normalizeApply({ write: true, checks: [{ id: "lint", run: NO_BAD }, { id: "test", run: `${MARK("red-ran")} && exit 1`, expect: "fail" }], max_retries: 0 }),
+    projectRoot: root, keepEvents: true, route: flashUntil(5), dispatch: stubModel([{ content: "bad\n" }]).dispatch, log: silent,
+  });
+  assert.equal(out.status, "verify_failed");
+  assert.match(out.attempts[0].failure, /exit 1/);
+  assert.equal(existsSync(join(root, "red-ran")), false, "the reproducing check never ran on an answer that failed lint");
   rmSync(root, { recursive: true, force: true });
 });

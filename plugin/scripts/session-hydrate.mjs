@@ -22,12 +22,23 @@
  *     baseline: { present, git_head, built_at, staleness_hint } | null,
  *     recent_runs: [{ run_id, intent, started_at, outcome, files_touched, spend_usd }, …],
  *     recent_runs_total: N,
- *     resume: { pending: bool, run_id, section, checkpoint, at, staleness } | null,
+ *     resume: { pending: true, kind: "setup", section, at }
+ *           | { pending: true, kind: "run", run_id, phase, status: "live", at }
+ *           | null,
  *     concurrent: { possible: bool, pid, run_id, started_at } | null }
+ *
+ * A pending run is a brownfield run that never ended: its write contract's freeze record is still live
+ * (lib/contract-lock.mjs frozenBy, read from the run's own log), so the contract its Gate 0 froze still holds the
+ * project. `phase` is the last phase.start in that log (null before one), `at` the log's last event time. Why not
+ * .sdlc/local/state.json: a brownfield run writes none (its contract refuses every write under .sdlc/ outside the run's
+ * own folder), and a greenfield state.json is not a brownfield run. The brownfield guide's step 1 reads this to find a
+ * run that never ended before anything is written.
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
+import { frozenBy } from "./lib/contract-lock.mjs";
+import { readRunLog } from "./ambient/lib/workflow-log.mjs";
 
 const MMO_REL = ".sdlc";
 const MAX_RECENT_RUNS = 3;
@@ -116,7 +127,6 @@ function baselineHint(sdlc) {
 // ─── resume state ────────────────────────────────────────────────────
 
 function readResume(sdlc) {
-  const s = safeReadJson(join(sdlc, "local", "state.json"));
   const setup = safeReadJson(join(sdlc, "local", "setup-status.json"));
 
   // Setup-status is checked first; an interrupted setup is more urgent than an
@@ -131,15 +141,20 @@ function readResume(sdlc) {
     };
   }
 
-  if (s && s.status && s.status !== "complete" && s.status !== "aborted") {
+  // A run that never ended: its contract's live freeze record (header). Read without blocking (a pipe where a log
+  // should be is no log), the log's rotated pieces included.
+  const live = frozenBy(dirname(sdlc));
+  if (live) {
+    const events = readRunLog(join(sdlc, "runs", live.run_id));
+    const phase = events.filter((e) => e.event === "phase.start" && e.fields.phase).pop()?.fields.phase ?? null;
+    const last = events[events.length - 1];
     return {
       pending: true,
       kind: "run",
-      run_id: s.run_id ?? null,
-      phase: s.phase ?? null,
-      checkpoint: s.checkpoint ?? s.next_packet_index ?? null,
-      status: s.status,
-      at: s.timestamp ?? s.updated_at ?? null,
+      run_id: live.run_id,
+      phase,
+      status: "live",
+      at: last ? new Date(last.ms).toISOString() : null,
     };
   }
 
@@ -199,7 +214,7 @@ function buildMarker({ recentRuns, recentRunsTotal, baseline, resume, concurrent
 
   if (resume?.pending) {
     if (resume.kind === "setup") parts.push(`interrupted setup at section ${resume.section ?? "?"}`);
-    else parts.push(`resume: run ${resume.run_id ?? "?"} at ${resume.phase ?? "?"}`);
+    else parts.push(`run ${resume.run_id ?? "?"} never ended${resume.phase ? ` (last at ${resume.phase})` : ""}`);
   } else {
     parts.push("no open resume checkpoint");
   }

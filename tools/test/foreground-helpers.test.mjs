@@ -67,7 +67,7 @@ test("inside the plugin's own orchestrator a bare helper name is the pipeline's 
   assert.ok(denied(decide(launch("architect", true, "Agent", fromAgent("orchestrator")), project)), "the clone route's orchestrator");
   // The hook reads the project folder from the payload's cwd when it is not handed one.
   assert.ok(denied(decide({ ...launch("architect", true, "Agent", fromAgent("orchestrator")), cwd: project })), "project from the payload's cwd");
-  // A feature run's orchestrator is the plugin's copy brownfield-orchestrator: its helpers stay in the foreground too,
+  // A brownfield run's orchestrator is the plugin's copy brownfield-orchestrator: its helpers stay in the foreground too,
   // under the plugin's name and on the clone route.
   for (const t of ["brownfield-architect", "brownfield-senior-reviewer", "brownfield-security-reviewer"]) {
     assert.ok(denied(decide(launch(t, true, "Agent", fromAgent("mmo:brownfield-orchestrator")), project)), `mmo:brownfield-orchestrator launching ${t}`);

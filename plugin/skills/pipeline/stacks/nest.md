@@ -4,8 +4,8 @@ Detected by: `package.json` with `@nestjs/core` (or `@nestjs/common`) in `depend
 paired with Prisma, TypeORM, or Sequelize; those are detected separately and produce hints
 below.
 
-Carries over the existing greenfield NestJS expertise the plugin ships with. Brownfield use
-still relies on the adaptive stack profile as ground truth — the snippets and conventions in
+Carries over the existing greenfield NestJS expertise the plugin ships with. The architect reads it
+while it writes a brownfield change spec, and still relies on the adaptive stack profile as ground truth — the snippets and conventions in
 that profile OVERRIDE what's in this file when they disagree (the profile reflects the actual
 repo; this adapter reflects idiomatic Nest in general).
 
@@ -39,55 +39,55 @@ src/
 
 **Framework-owned wiring** — Nest requires every new `@Controller` and `@Injectable` to be
 declared in a `@Module`'s `controllers: [...]` and `providers: [...]` arrays. A file that isn't
-wired does nothing. The packet planner MUST emit paired packets for any new controller/service:
+wired does nothing. So for any new controller or service the spec holds, in order:
 
-- Packet A: `new_file_add` for `<feature>.controller.ts`
-- Packet B: `new_file_add` for `<feature>.module.ts` (or `existing_file_edit` if the feature's
-  module already exists, adding to its `controllers: [...]` array)
-- Packet C: `existing_file_edit` for `app.module.ts` — add the feature module to `imports: [...]`
+- the unit that creates `<feature>.controller.ts` (and its service);
+- the unit that creates `<feature>.module.ts`, or an `edit` unit of the feature's existing module
+  whose site adds to its `controllers: [...]` / `providers: [...]` arrays, `depends_on` the units it
+  declares;
+- an `edit` unit of `app.module.ts` whose site adds the feature module to `imports: [...]`,
+  `depends_on` the module's unit.
 
-All three are one atomic unit — if any fails, roll back the others within the packet execution
-(the write-contract hook + provenance recording handle this at the file layer).
+Each wiring edit is typed after the file it registers. A wiring edit that fails its checks goes to a
+fix round like any other file; nothing already written is undone.
 
-## Task-type subtypes
+## File kinds
 
-Nest-specific hints that the packet planner attaches as `subtype` on stack-agnostic packets:
+What a unit's file holds for each Nest kind (its `behaviour` and `rules` say which):
 
-| Base task_type | Nest subtype | What the packet produces |
-|---|---|---|
-| `new_file_add` | `nest_controller` | Class annotated `@Controller('<path>')` with `@Get`/`@Post`/etc. handler methods |
-| `new_file_add` | `nest_service` | Class annotated `@Injectable()`, injected into controller/other services |
-| `new_file_add` | `nest_module` | `@Module({...})` class wiring controllers + providers + imports |
-| `new_file_add` | `nest_guard` | `@Injectable()` implementing `CanActivate` |
-| `new_file_add` | `nest_interceptor` | `@Injectable()` implementing `NestInterceptor` |
-| `new_file_add` | `nest_filter` | `@Catch(...)` implementing `ExceptionFilter` |
-| `new_file_add` | `nest_dto` | Class with `class-validator` decorators (`@IsString`, `@MinLength`, etc.) |
-| `existing_file_edit` | `module_wiring` | Add a controller / service to a `@Module`'s arrays |
-| `new_file_add` | `prisma_schema_addition` | Add a Prisma model to `schema.prisma` (if Prisma detected) |
-| `new_file_add` | `prisma_migration` | New migration file under `prisma/migrations/<timestamp>_<name>/` |
-| `test_add` | `nest_unit_test` | `@nestjs/testing`'s `Test.createTestingModule` with mocked deps |
-| `test_add` | `nest_integration_test` | Same + supertest against a `NestFactory.create()` app instance |
+| Kind | What the file holds |
+|---|---|
+| controller | Class annotated `@Controller('<path>')` with `@Get`/`@Post`/etc. handler methods |
+| service | Class annotated `@Injectable()`, injected into controller/other services |
+| module | `@Module({...})` class wiring controllers + providers + imports |
+| guard | `@Injectable()` implementing `CanActivate` |
+| interceptor | `@Injectable()` implementing `NestInterceptor` |
+| filter | `@Catch(...)` implementing `ExceptionFilter` |
+| DTO | Class with `class-validator` decorators (`@IsString`, `@MinLength`, etc.) |
+| module wiring | An `edit` site adding a controller / service to a `@Module`'s arrays |
+| Prisma model | An `edit` site adding a model to `schema.prisma` (if Prisma detected) |
+| Prisma migration | A new migration file under `prisma/migrations/<timestamp>_<name>/`, a `create` unit that `depends_on` the schema edit |
+| unit test | `@nestjs/testing`'s `Test.createTestingModule` with mocked deps |
+| integration test | Same + supertest against a `NestFactory.create()` app instance |
 
-## Codegen packet hints
+## What each unit points its typist to
 
-When packing a Nest packet, include in `instruction`:
-- The relevant profile snippet (or a Nest idiom snippet if no profile)
-- The `@Module` file the new class will be registered in
-- The DTO files if the packet is a controller (so parameter types resolve)
-- The service interface if the packet is a controller/service pair
-- Any existing base classes / interfaces the file will implement
+- `style_from` — the profile's snippet file of the same kind (or the nearest existing one)
+- `uses` — the `@Module` file the new class is registered in, the DTO files of a controller (so
+  parameter types resolve), the service a controller calls, and any base class or interface the file
+  implements
 
-Don't include the entire `app.module.ts` file if it's just being edited to add one line — use
-`patch_apply` with a small diff instead.
+An edit of `app.module.ts` that adds one line is one site at the `imports: [...]` array, not a rewrite of
+the file.
 
 ## Config & env handling (Nest specifics)
 
 Nest apps that use `ConfigModule.forRoot({ validationSchema })` require every referenced env
 var to be present at boot. Discovery already recorded env-var references in
-`baseline.env_keys_by_file` and `baseline.env_keys_referenced_in_code`. When a codegen packet
+`baseline.env_keys_by_file` and `baseline.env_keys_referenced_in_code`. When a unit
 introduces a new required env var:
 
-1. Add it to `.env.example` (via `existing_file_edit` with append semantics — never overwrite)
+1. Add it to `.env.example` (an `edit` unit whose site appends the key — never overwrite)
 2. **Never** modify `.env` — that's off-limits and belongs to the user
 3. Add it to `.env.test` if that file exists in the repo AND `intent ∈ (feature-new,
    feature-extend)`. Otherwise the test-runner probe (§7.4 step 2) will report the missing key
@@ -96,6 +96,5 @@ introduces a new required env var:
 ## Test-runner (Nest)
 
 Discovery detected the test command. Nest projects almost always use Jest via `npm test` or
-`pnpm test`. The `test_add` and `test_backfill` packets produce files compatible with the
-runner the Gate 0 confirmed test command uses; the adapter itself doesn't override that
-choice.
+`pnpm test`. A `tests` unit produces a file compatible with the runner the Gate 0 confirmed test
+command uses; the adapter itself doesn't override that choice.

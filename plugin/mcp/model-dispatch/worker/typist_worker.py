@@ -30,7 +30,10 @@ Contract:
 
 Receipt: {"finish_output", "text", "usage", "sdk", "sdk_version",
 "vertex_project", "vertex_location", "thinking", "tool_calls" (names only),
-"seconds", "error", "error_type"}. Cost is NOT computed here: token counts are
+"seconds", "error", "error_type", "error_status"}. "error_status" is the HTTP
+status the SDK's error carries (google.genai's APIError `.code`), present only
+when it carries one: the executor reads a refused login (401, 403) and a busy
+vendor (429, 5xx) from it, as on the other doors. Cost is NOT computed here: token counts are
 recorded raw and priced by the executor with the policy leaf's rates, reading
 the usage totals by the SDK version recorded here (AGY_USAGE_SEMANTICS).
 
@@ -72,6 +75,32 @@ ANSWER_SCHEMA = {
 
 async def _maybe(v):
     return await v if inspect.isawaitable(v) else v
+
+
+def _http_status(err):
+    """The HTTP status a vendor SDK error carries, or None.
+
+    Why: the executor classifies a failed call from the vendor's own fields,
+    never from an error's words (executor/typists.ts), and the agent door's
+    errors are the only ones that reached it with no status. google.genai's
+    APIError holds the status in `.code`; the SDK may raise another error that
+    wraps it, so the chain of causes is followed. An error of any other class
+    is not read, whatever attributes it has.
+    """
+    try:
+        from google.genai import errors as genai_errors
+    except Exception:  # the SDK's errors module is not there: no status to read
+        return None
+    seen = set()
+    e = err
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, genai_errors.APIError):
+            code = getattr(e, "code", None)
+            if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599:
+                return code
+        e = e.__cause__ or e.__context__
+    return None
 
 
 async def run(a) -> dict:
@@ -117,8 +146,11 @@ async def run(a) -> dict:
                     out["finish_output"] = (d.get("args") or {}).get("output_string")
         except asyncio.TimeoutError:
             out["error"], out["error_type"] = f"the session did not finish within {a.timeout} s", "TimeoutError"
-        except Exception as e:  # recorded with its class; the executor counts it as an attempt
+        except Exception as e:  # recorded with its class (and its HTTP status, when it carries one)
             out["error"], out["error_type"] = f"{type(e).__name__}: {e}", type(e).__name__
+            status = _http_status(e)
+            if status is not None:
+                out["error_status"] = status
         try:
             u = agent.conversation.total_usage
             out["usage"] = u.model_dump() if hasattr(u, "model_dump") else (dict(u) if u else None)
@@ -148,6 +180,9 @@ def main() -> None:
         receipt = asyncio.run(run(a))
     except Exception as e:  # the receipt always gets written, with the reason
         receipt = {"finish_output": None, "usage": None, "tool_calls": [], "error": f"{type(e).__name__}: {e}", "error_type": type(e).__name__}
+        status = _http_status(e)
+        if status is not None:
+            receipt["error_status"] = status
     receipt.update({"sdk": "google-antigravity", "sdk_version": SDK_VERSION, "thinking": a.thinking.upper(), "seconds": round(time.time() - started, 1)})
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(receipt, f, indent=2, default=str)

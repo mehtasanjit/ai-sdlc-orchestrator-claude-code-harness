@@ -9,8 +9,8 @@
  * Never write to stdout: irrelevant for this file's own callers, but kept
  * true to the contract the TS twin exists under.
  */
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { PATTERNS } from "../dispatch-sanitize.mjs";
 import { resolveLogLevel } from "./env.mjs";
 
@@ -98,6 +98,27 @@ function appendAtomic(path, line) {
   }
 }
 
+/**
+ * Moves the full log aside as `<log>.1`, first shifting the pieces earlier rotations made up by one (.<n> to .<n+1>,
+ * the highest first), so every piece is kept: a run's log is its record, and its start, its gates and its write
+ * contract's freeze record sit in its oldest piece (plugin/scripts/lib/contract-lock.mjs). Overwriting `.1` dropped
+ * that piece at the second rotation. Readers take the pieces highest number first, then the live file
+ * (plugin/scripts/ambient/lib/workflow-log.mjs readRunLogText). Runs under the rotation lock. A piece is made only
+ * per 5 MB a run logs, so a run keeps what it logged and no more.
+ */
+function shiftPieces(path) {
+  const dir = dirname(path);
+  const base = basename(path);
+  const numbers = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.startsWith(`${base}.`)) continue;
+    const n = name.slice(base.length + 1);
+    if (/^[1-9]\d{0,5}$/.test(n)) numbers.push(Number(n));
+  }
+  for (const n of numbers.sort((a, b) => b - a)) renameSync(`${path}.${n}`, `${path}.${n + 1}`);
+  renameSync(path, `${path}.1`);
+}
+
 /** Rotate under an exclusive lock; skip (keep appending) if another process holds it. */
 function rotateIfNeeded(path) {
   let size = 0;
@@ -124,7 +145,7 @@ function rotateIfNeeded(path) {
     return; // lost the race — someone else is rotating
   }
   try {
-    renameSync(path, `${path}.1`);
+    shiftPieces(path);
   } catch {
     /* best-effort */
   } finally {

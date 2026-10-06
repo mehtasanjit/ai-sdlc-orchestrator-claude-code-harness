@@ -75,8 +75,10 @@ test("zero-touch hooks only the moments it needs: eleven for workflow routing, f
     "SessionStart::session-start",
     "UserPromptSubmit::prompt",
     // A run zero-touch started has the person's policy stamped on every model-server call that takes one,
-    // and /clear releases a workflow it abandons (zero-touch-routing tests).
-    "PreToolUse:mcp__(plugin_mmo_)?model-dispatch__(load_policy|preflight_dispatch|execute_with_model|execute_batch|simulate_policy):pre-dispatch",
+    // and /clear releases a workflow it abandons (zero-touch-routing tests). The stamp's matcher stays exactly as
+    // released: a stamped tool added later (execute_batch) is stamped by mmo's pre-any, which every zero-touch fires
+    // (zero-touch-own-steps.test.mjs).
+    "PreToolUse:mcp__(plugin_mmo_)?model-dispatch__(load_policy|preflight_dispatch|execute_with_model|simulate_policy):pre-dispatch",
     "SessionEnd:clear:session-end",
     // Hand-off mode keeps a chat on its pinned model (zero-touch-handoff-chat.test.mjs), and a workflow zero-touch
     // started keeps the chat on the model its helpers follow (ambient-routing-hooks.test.mjs).

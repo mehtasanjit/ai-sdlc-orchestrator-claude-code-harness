@@ -1,5 +1,5 @@
 /**
- * src/applyTypist.ts: greenfield's typists (executor/typists.ts) typing a brownfield feature run's apply packets, one
+ * src/applyTypist.ts: greenfield's typists (executor/typists.ts) typing a brownfield run's apply packets, one
  * machine for both flows. The adapter sends a packet to a typist in greenfield's answer contract for its mode, the
  * batch's shared inputs as the typist's shared block, with greenfield's warm gate for the lean Opus typist, and reports
  * the call the way the apply loop reads any adapter. Stand-in typists and a recording Gemini transport: no model is called.
@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DIST = join(dirname(fileURLToPath(import.meta.url)), "..", "dist");
-const { TypistApplyAdapter, usesServerTypist, typistResult, contractFor, splitShared } = await import(join(DIST, "applyTypist.js"));
+const { TypistApplyAdapter, usesServerTypist, typistResult, contractFor, splitShared, BROWNFIELD_INTENTS } = await import(join(DIST, "applyTypist.js"));
 const { EDIT_ANSWER_SCHEMA, FILE_ANSWER_SCHEMA } = await import(join(DIST, "executor", "brief.js"));
 const { FlashCompletionTypist } = await import(join(DIST, "executor", "typists.js"));
 const { LEAN_OPUS_CACHE_TTL_MS } = await import(join(DIST, "executor", "run.js"));
@@ -29,9 +29,14 @@ function fakeTypist(door, results) {
   return { reqs, door, modelId: "m", modelName: "m", type: async (req) => { reqs.push({ ...req, sharedFileText: readFileSync(req.sharedFile, "utf8") }); return results.shift() ?? { answer: { path: "src/a.ts", content: "x\n" }, transport: false, tokens: TOK, cost_usd: 0.01, latency_ms: 5 }; } };
 }
 
-test("usesServerTypist: any leaf greenfield has a typist for, in a feature run whose start check recorded the billing", () => {
+// Every brownfield job runs the same packet flow (skills/pipeline/brownfield-runs.md), so every job's packets are typed by
+// greenfield's typists; a packet with no brownfield intent (greenfield's, or one naming no job) is dispatched as before.
+test("usesServerTypist: any leaf greenfield has a typist for, in a brownfield run of any job whose start check recorded the billing", () => {
+  const ids = JSON.parse(readFileSync(join(DIST, "..", "..", "..", "config", "intents.json"), "utf8")).intents.map((i) => i.id);
+  assert.deepEqual([...BROWNFIELD_INTENTS].sort(), [...ids].sort(), "the server's list is the job list of config/intents.json");
   for (const leaf of [OPUS, FLASH, AGY]) assert.equal(usesServerTypist(leaf, packet(), { authMode: "estimated" }), true, leaf.id);
-  assert.equal(usesServerTypist(OPUS, packet({ intent: "bugfix" }), { authMode: "estimated" }), false, "other brownfield jobs as develop sends them");
+  for (const intent of ids) assert.equal(usesServerTypist(OPUS, packet({ intent }), { authMode: "estimated" }), true, intent);
+  assert.equal(usesServerTypist(OPUS, packet({ intent: "greenfield" }), { authMode: "estimated" }), false, "not a brownfield job");
   assert.equal(usesServerTypist(OPUS, packet({ intent: undefined }), { authMode: "estimated" }), false);
   assert.equal(usesServerTypist(OPUS, packet(), undefined), false, "no run state: as before");
   assert.equal(usesServerTypist({ adapter: "something-else" }, packet(), { authMode: "estimated" }), false);
@@ -68,10 +73,21 @@ test("a typist's failures reach the loop as greenfield's runner treats them: cut
   assert.equal(busy.attempts[0].retry_after_ms, 2000);
   const refused = typistResult(p, { answer: null, transport: false, error_status: 401, tokens: TOK, cost_usd: 0, latency_ms: 1, error: "unauthorized" });
   assert.equal(refused.attempts[0].error_status, 401, "the loop halts the batch");
+  // A reply in no contract is a failed attempt, recorded as failed (greenfield's runner logs it `success: false`), which
+  // the loop retries with the reason.
   const garbled = typistResult(p, { answer: null, transport: false, tokens: TOK, cost_usd: 0.01, latency_ms: 1, error: "the reply was not an object in the {path, content} contract" });
-  assert.equal(garbled.success, true, "an answer in no contract is an attempt the loop retries with the reason");
+  assert.equal(garbled.success, false, "no usable answer: the attempt failed");
+  assert.equal(garbled.attempts[0].success, false, "the telemetry event says so");
+  assert.equal(garbled.terminal_reason, "invalid_answer", "the model replied, outside the contract");
   assert.equal(garbled.result, null);
   assert.equal(garbled.cost_usd, 0.01, "billed");
+  // A call that produced no reply at all (a crash, a timeout, a login the CLI could not use, reported with no HTTP
+  // status) is a failed attempt too, never a success with an empty answer.
+  const noLogin = typistResult(p, { answer: null, transport: false, tokens: { input: 0, input_cached: 0, output: 0 }, cost_usd: 0, latency_ms: 1, error: "success: Failed to authenticate: OAuth session expired and could not be refreshed" });
+  assert.equal(noLogin.success, false);
+  assert.equal(noLogin.attempts[0].success, false);
+  assert.equal(noLogin.terminal_reason, "no_answer", "no reply reached the loop");
+  assert.match(noLogin.attempts[0].error, /Failed to authenticate/, "the typist's own reason is kept");
 });
 
 test("Flash through greenfield's own typist: two packets of a batch reach Gemini with the same leading bytes", async () => {

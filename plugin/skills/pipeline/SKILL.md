@@ -12,7 +12,7 @@ This skill is the source of truth for the orchestrator. When invoked under `/mmo
 ## State machine
 
 ```
--1. preflight_dispatch              → prove every model this run dispatches to is reachable (free, no API call)
+-1. preflight_dispatch              → prove every model this run dispatches to is reachable (free checks, then one test call through each typist)
 0. read_brief
 1. requirements_analysis           → requirements.md
    ── GATE 1 ─────────────────────────────────────
@@ -72,8 +72,9 @@ applies.
     failures routed "repair"              → execute_stage repair (failures) → acceptance again
                                             (at most three re-checks; the executor refuses a further call)
    ── GATE 3 ─────────────────────────────────────
-9. generate_final_report                  (write-manifest.mjs writes manifest.json from the run's records;
-                                            the collector puts acceptance.md into SUMMARY.md)
+9. generate_final_report                  (write-manifest.mjs writes manifest.json and SUMMARY.md from the
+                                            run's records; the collector adds the true total and acceptance.md
+                                            to SUMMARY.md)
    ── GATE 4 ─────────────────────────────────────
 ```
 
@@ -109,7 +110,8 @@ Rules for executor mode:
     repair rounds. Read the failing output yourself: never start other helpers (general-purpose,
     Explore) to investigate failures — the executor guard refuses a helper outside the pipeline.
   - A failure that is not in the project's files — a tool that asks for a person's permission
-    before it runs, or a command this machine cannot run (its program not found) — is not yours to
+    before it runs, a command this machine cannot run (its program not found), or one the person's Claude
+    settings deny — is not yours to
     fix: tell the person that reason, with the command, at the next gate. Do not change the project
     to get around it.
   - After the senior review, call `execute_stage` with `stage: "repair"` and `review_paths` (the
@@ -133,7 +135,8 @@ Rules for executor mode:
 - **Acceptance:** after the security review, call `execute_stage` with `stage: "acceptance"`,
   `spec_path` and `code_dir`. Code runs every command of the spec's acceptance list in order, with
   its whole output kept, and marks every acceptance criterion pass, fail or not checked (a command the
-  machine cannot run — its program not found, or stopped at the plan's time limit — is listed under
+  machine cannot run — its program not found, stopped at the plan's time limit, or denied by the person's
+  Claude settings — is listed under
   `not_run`, leaves its criteria not checked with that reason, and is routed nowhere). Each failure
   in the receipt names its route. `architect` means an install or audit failed (a version choice):
   invoke the `architect` subagent with the words "acceptance fix", the receipt's failure and its
@@ -145,17 +148,28 @@ Rules for executor mode:
   the acceptance stage's.
 - **Final report:** `<output_dir>/acceptance.md` is the report's acceptance table; the collector
   copies it into SUMMARY.md between markers at Phase 9, and again when it is re-run after the
-  session closes. In SUMMARY.md, link it and do not write your own pass/fail statements about the
-  brief's acceptance criteria.
+  session closes. In your final message, link it and do not write your own pass/fail statements about
+  the brief's acceptance criteria.
 
-## Phase -1 — preflight_dispatch (MANDATORY, before anything else)
+## Phase -1 — preflight_dispatch (MANDATORY, before any phase)
 
-Call `preflight_dispatch` with the run's `auth_mode` and the same `policy_name` / `project_root` /
-`policy_path` you will use for the run, and **read the result before doing anything else**.
+Under `estimated`, the orchestrator's driver-model check (rule 0) runs first: it is free, and a run it
+stops needs no test call to know it. Then call `preflight_dispatch` with the run's `auth_mode` and the
+same `policy_name` / `project_root` / `policy_path` you will use for the run, and **read the result
+before doing anything else**.
 
 `auth_mode` is required and is the mode already resolved for this run (rule 6) — do not omit it, do not
 guess it. It changes the answer: it is what tells pre-flight which models this run actually dispatches
 through the server.
+
+Pass `probe_typists: true`, with the run's `telemetry_path` and `run_id`, on every run: after the free
+checks pass, pre-flight sends one minimal call through every model that types this run's files (the
+same door, login and model as the run's own calls; cents at most, each call in the run's telemetry). A
+login that exists but cannot be used — under `estimated`, the lean Opus typist runs this computer's own
+Claude login, not a token the chat was started with — then stops the run here, with what to fix, instead
+of failing every file after the requirements and design are paid for. On a brownfield run, also pass the run's
+`intent` (its job): a policy rule scoped to that job may route its files to another typist, and the probe then
+tests that one too.
 
 Pass `executor` too: `executor: true` on every new-app (greenfield) run, whose files `execute_stage`
 types (executor mode), and `executor: false` on a brownfield run, which does not use the executor.
@@ -194,11 +208,12 @@ do not try to "fix" it, and do not offer to install anything on its behalf.
 **If `ok` is true**, report the configuration to the user in one line before phase 1 — the policy name,
 each model, and on the Google Cloud path the resolved project and region — then the result's
 `policy_notes` (when there are any) and its `executor.claude_cli`, one short line each, then continue. This is the only point in
-the run where the operator can see what is about to be billed and to which project, while it is still
-free to stop.
+the run where the operator can see what is about to be billed and to which project, before any paid
+phase starts.
 
 This call constructs each adapter, which is where credential discovery happens and where a missing or
-unusable credential throws. It makes no model call and costs nothing. It exists because that
+unusable credential throws; its free part makes no model call, and `probe_typists` adds the one test call
+per typist. It exists because that
 construction used to happen lazily at the first mechanical packet — phase 4 of 9, after the premium
 phases were already billed — which is the worst possible moment to discover a setup problem.
 
@@ -261,41 +276,10 @@ briefs only: the shipped policies route code by phase alone, whatever the file's
 
 When the app uses a validating `ConfigModule` (or Joi / Zod / envalid equivalent), packets for `env_docs` and `env_test_fixture` are **required** — omitting either is a senior-reviewer blocker. The two files must be internally consistent: every key listed in `.env.example` must appear in `.env.test` with a schema-valid value.
 
-### Brownfield-mode task types (v1)
-
-The table above is greenfield-Nest-centric. In brownfield mode (`mode: brownfield`), packets use a **stack-agnostic** base set of primitives plus an optional `subtype` hint that the loaded stack adapter (`${CLAUDE_PLUGIN_ROOT}/skills/pipeline/stacks/*.md`) resolves to concrete codegen guidance.
-
-| task_type | Purpose | Common `subtype` values |
-|---|---|---|
-| `new_file_add` | Create a file that didn't exist at discovery time | `nest_controller` · `nest_service` · `django_view` · `fastapi_router` · `test` (see adapter) |
-| `existing_file_edit` | Modify a file that already existed | `module_wiring` · `url_registration` · `router_wiring` · `django_settings` |
-| `patch_apply` | Apply a specific unified diff | (rare — usually `existing_file_edit` is enough) |
-| `doc_addition` | New doc under docs/ or module README | `readme` · `adr` · `runbook` · `api` |
-| `doc_update` | Update an existing doc | — |
-| `test_add` | New test file for new source | `unit` · `integration` · `e2e` |
-| `test_backfill` | Add tests for existing untested code | Same as `test_add` |
-| `bug_reproduce` | Failing test that captures the bug | — |
-| `bug_diagnose` | Root-cause analysis — emit a note, not code | — |
-| `bug_fix_apply` | Apply the fix identified by `bug_diagnose` | — |
-| `refactor_extract` | Extract shared logic into a new utility | — |
-| `dependency_add` | Add a dep + adjacent-code adjustments | `patch` · `minor` · `major` |
-
-**Framework-owned wiring** — new controllers/routes/views usually need a corresponding
-registration edit in a wiring file (Nest module, Django urls.py, FastAPI main.py's
-include_router). Emit these as **paired packets** with the same `pass_id` — atomic per-pair:
-if the wiring edit fails, roll back the new-file packet within the same pair.
-
-**Every brownfield packet MUST set `artifact_path`** (§7.1) so the write-contract validator can
-reject off-limits paths at dispatch time. Missing `artifact_path` is a planner bug.
-
-**`doc_addition` vs `doc_update` — read from the brief, don't infer.** When `intent_brief.md`
-carries a "## Task type" heading (only present when the chosen intent declares `task_types` in
-`intents.json` — currently just `docs`), every packet you plan for this run uses that exact
-`task_type` value. Do not infer `doc_addition` vs `doc_update` from file existence or context —
-the user already chose it at brief-collection time (`brownfield-guide/SKILL.md` step 4b), and a
-per-project policy may route the two differently (an update is a smaller edit than fresh
-authoring, and might reasonably go to a cheaper model). When the heading is absent — every
-non-docs intent, and `docs` runs from before this existed — infer as before.
+**In brownfield, code derives every packet from the architect's change spec**, one per unit, and nothing in
+this section applies: a derived packet's `task_type` is empty and its `subtype` is a label code sets from its unit
+(an edited doc is `doc_update`, a new one `doc_addition`); the policy routes it by its stage, and by the run's
+`intent` when a rule names one.
 
 ### TaskPacket initial output-ceiling budgets
 
@@ -375,7 +359,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/write-manifest.mjs" <output_dir> --pass <run
 
 It reads `<output_dir>/telemetry.jsonl`, builds the manifest with the server's `buildManifest` (the shape the collector reads), records the run log's gate answers and the file and line counts — for a new app, the product's files under `<code_dir>`; in brownfield, the files the run's record lists (`provenance.json`, `written-files.json`), left out when there is no record — and writes `<output_dir>/manifest.json` with `status: "provisional"`. At Gate 4, `accept` runs the same command again with `--status accepted`; `reject` leaves the status as it is. If write-manifest prints a `note:` line saying the collector's figures are left out (the dispatched total changed since the collector ran, for example after a Gate 4 `reject: <comments>` round), run the collector again (the note prints its command) before you quote a true total.
 
-Then write a brief `<output_dir>/SUMMARY.md`: total cost and breakdown by phase and model, read from `manifest.json`, and links to the key files this run wrote (requirements, design or change plan, reviews, `manifest.json`). In executor mode (greenfield), also link the spec and `acceptance.md`, and do not write your own pass/fail statements about the acceptance criteria: the collector below puts code's acceptance table into SUMMARY.md. In every other run there is no spec and no `acceptance.md`, and the collector adds no acceptance table: link only the files that exist, and do not promise an acceptance table.
+SUMMARY.md is code's: do not write it yourself. Claude Code refuses a helper's Write of a report file (`SUMMARY*.md`), and you run as one, so the call would be paid for and refused. `write-manifest.mjs` writes `<output_dir>/SUMMARY.md` beside the manifest — the cost by phase and model, read from `manifest.json`, and links to the key files this run wrote that exist (requirements, design or change plan, reviews, `manifest.json`; in executor mode also the spec and `acceptance.md`) — and the collector rewrites it with the true total and, in executor mode, code's acceptance table. Your own account of the run — what was built, what still fails and why, what was set aside or could not be routed — goes in your final message, which the session shows the person. In executor mode, make no pass/fail statements of your own there about the acceptance criteria: the acceptance table is code's. In every other run there is no spec and no `acceptance.md`: do not promise an acceptance table.
 
 Then, **after** the manifest is on disk, run the orchestrator-overhead collector — telemetry holds dispatched work only, and this session's own loop is invisible to it in both auth modes:
 
@@ -383,7 +367,7 @@ Then, **after** the manifest is on disk, run the orchestrator-overhead collector
 node "${CLAUDE_PLUGIN_ROOT}/scripts/collect-orchestrator-usage.mjs" <output_dir> --project-root "$(pwd)"
 ```
 
-`--project-root` must be the same directory the run's `mmo-log.mjs` calls used: the collector reads this run's `run.start` and `run.end` lines from `<project-root>/.sdlc/runs/<run-id>/orchestrator.log` to find the run's own command turn in the session transcript, which is where its window opens (the manifest's `started_at` is only the first dispatched event, after the driver's own setup work; without the log the window is approximate and labelled so). On success it appends one `tier: "orchestrator"` event and patches the manifest with `orchestrator_overhead` + `true_total_cost_usd`; quote the **true total** in SUMMARY.md and label the dispatched figure as such. The figure is **provisional** — you run the collector from inside a session that has not ended, so it misses this session's own tail. Print the command with `<output_dir>` and `$(pwd)` resolved to real paths, in your final message and in SUMMARY.md, under **Provisional — re-run after closing this session**. On failure (non-zero exit), do not block the run: label every cost in SUMMARY.md *dispatched work only — excludes orchestrator overhead* and note the collector command. Never blend the two figures. Keep the run's `claude -p --output-format json` result beside the manifest as `claude-session.json` when you have it: the collector checks itself against it model by model, books the receipt's token counts at the price list when the window is provably the invocation the receipt billed (reporting the share Claude Code billed but never logged), and exits 3 (nothing written) otherwise.
+`--project-root` must be the same directory the run's `mmo-log.mjs` calls used: the collector reads this run's `run.start` and `run.end` lines from `<project-root>/.sdlc/runs/<run-id>/orchestrator.log` to find the run's own command turn in the session transcript, which is where its window opens (the manifest's `started_at` is only the first dispatched event after pre-flight (its typist probe calls count as spend but never open the window), which comes after the driver's own setup work; without the log the window is approximate and labelled so). On success it appends one `tier: "orchestrator"` event, patches the manifest with `orchestrator_overhead` + `true_total_cost_usd` and rewrites SUMMARY.md with them; quote the **true total** in your final message and label the dispatched figure as such. The figure is **provisional** — you run the collector from inside a session that has not ended, so it misses this session's own tail. Print the command with `<output_dir>` and `$(pwd)` resolved to real paths in your final message, under **Provisional — re-run after closing this session** (SUMMARY.md carries the same command, written by code). On failure (non-zero exit), do not block the run: label every cost in your final message *dispatched work only — excludes orchestrator overhead* and note the collector command. Never blend the two figures. Keep the run's `claude -p --output-format json` result beside the manifest as `claude-session.json` when you have it: the collector checks itself against it model by model, books the receipt's token counts at the price list when the window is provably the invocation the receipt billed (reporting the share Claude Code billed but never logged), and exits 3 (nothing written) otherwise.
 
 ---
 
@@ -406,13 +390,12 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/collect-orchestrator-usage.mjs" <output_dir>
 }
 ```
 
-**Set `intent` on every brownfield packet, from the confirmed value in `intent_brief.md`.** A
-policy may route the same `phase` differently per intent (e.g. `refactor`'s Tests phase to a
+**Every brownfield packet carries `intent`, the job confirmed at Gate 0** (code sets it on every packet it
+derives). A policy may route the same `phase` differently per intent (e.g. `refactor`'s Tests phase to a
 different model than `docs`'s) via a rule matching on both `phase` and `intent` — the router
-falls back to the phase's blanket rule when no intent-specific one exists. Omitting `intent`
-silently drops the packet out of every intent-scoped rule and back onto the blanket rule, which
-is exactly greenfield's existing behavior — so this is safe to skip on greenfield packets, but
-never skip it on brownfield.
+falls back to the phase's blanket rule when no intent-specific one exists. Greenfield packets carry no `intent`
+and route by the blanket rules, and the server refuses an apply-form packet that names no job before any model is
+called: an apply packet names its job, so one without it is never typed.
 
 ---
 
@@ -463,8 +446,10 @@ message shaped as a fenced `> ⏸ **HITL Gate <N> — <Title>**` block (see temp
 main-loop Claude Code session displays verbatim and waits for user input on. The user's reply
 comes back to the subagent as a `{ gate_response: "approved" | "revise: <text>" | "abort" }`
 argument on the next invocation. **Persist the gate-pending state to `.sdlc/local/state.json`
-before emitting the message** — if the session dies mid-gate, session-hydrate detects a
-non-terminal state and re-prompts on next `/mmo:brownfield` invocation. No new command needed.
+before emitting the message** — except in brownfield, where the write contract refuses every Write under
+`.sdlc/` outside the run's own folder and the run's own log (`gate.open`, `gate.resolved`) is the record: a
+brownfield run that never ended is found from its contract's freeze record when the next `/mmo:brownfield`
+starts (the brownfield guide's step 1).
 
 ### Gate 0 — Brownfield only, before Gate 1
 
@@ -491,13 +476,13 @@ non-terminal state and re-prompts on next `/mmo:brownfield` invocation. No new c
 > - **Regulated-repo warning (when `baseline.regulated_repo_warning_required`):** *"This repo appears regulated (signals: `<kinds>`). Confirm the active policy uses only compliant endpoints, and that off-limits protects your regulated data folders."*
 > - **`.gitignore` needs `.sdlc/` entry (when `baseline.gitignore_covers_sdlc: false`):** *"Your .gitignore doesn't cover .sdlc/. Add `.sdlc/` to .gitignore as part of this run? [Y/n]"*  On yes, add `.gitignore` to the allowlist so the codegen phase can create-or-append it (a codegen packet or a small helper write, per intent). On no, note in the final report so the user gets the same follow-up prompt that surfaced in the docs-gen v1 run.
 >
-> Typical cost for a `<intent>` run on a repo this size: `$X.XX–$Y.YY`.
->
 > Reply: `approved`, `revise: <comments>`, or `abort`.
 
-On `approved`, freeze the write contract to `.sdlc/local/write-contract.json`
-(schema: `{schema_version:1, active:true, mode:"brownfield", run_id, strict:true, allowlist,
-off_limits}`). Build `off_limits` by concatenating `.sdlc/project.json.off_limits_default`
+On `approved`, freeze the write contract with `scripts/write-contract.mjs --freeze --run-id <run-id>
+--allowlist '<JSON array>' --off-limits '<JSON array>'`, never by writing the file: it writes
+`.sdlc/local/write-contract.json` (`{schema_version:1, active:true, mode:"brownfield", run_id, strict,
+allowlist, off_limits}`) and records a fingerprint of its bytes in the run's own log, and while the run is
+live a contract changed any other way refuses every write. Build `off_limits` by concatenating `.sdlc/project.json.off_limits_default`
 (the project-level constants — `.env*`, `.mcp.json`, `node_modules/**`, etc., written by setup)
 with the AI-configs from `baseline.ai_configs_detected` and any ticket-specific paths the user
 added at Gate 0. The PreToolUse hook and the packet validator both read the merged list — the

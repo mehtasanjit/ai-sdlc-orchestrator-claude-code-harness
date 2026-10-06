@@ -121,14 +121,16 @@ test("README documents all seven job commands with their intent id", () => {
   assert.match(readme, /Thirteen commands/, "README's command count was not updated for the seven new commands");
 });
 
-test("docs's task_types match the doc_addition/doc_update ids pipeline/SKILL.md's planner expects", () => {
+// A brownfield packet's label is code's: lib/change-spec.mjs derives it from the unit (an edited doc is doc_update,
+// a new one doc_addition), and the docs interview already asks whether docs are updated or written fresh. So the
+// guide asks no separate task-type question: its answer reached no packet and only added a turn.
+test("no job asks a task-type question: a docs packet's label comes from its unit", () => {
+  const guide = read("plugin", "skills", "brownfield-guide", "SKILL.md");
+  assert.doesNotMatch(guide, /task_types/, "the guide reads no task_types from intents.json");
+  assert.doesNotMatch(guide, /## Task type/, "the brief has no Task type heading");
+  const spec = read("plugin", "scripts", "lib", "change-spec.mjs");
+  assert.match(spec, /docs: "doc_addition"/, "a created doc is labelled doc_addition by code");
+  assert.match(spec, /docs: "doc_update"/, "an edited doc is labelled doc_update by code");
   const docs = INTENTS.intents.find((i) => i.id === "docs");
-  assert.ok(docs?.task_types, "the docs intent should declare task_types");
-  const ids = docs.task_types.map((t) => t.id).sort();
-  assert.deepEqual(ids, ["doc_addition", "doc_update"]);
-
-  const skill = read("plugin", "skills", "pipeline", "SKILL.md");
-  for (const id of ids) {
-    assert.match(skill, new RegExp("`" + id + "`"), `pipeline/SKILL.md no longer mentions task_type '${id}'`);
-  }
+  assert.ok(docs.interview.some((q) => /update/i.test(q)), "the docs interview asks whether docs are updated or written fresh");
 });

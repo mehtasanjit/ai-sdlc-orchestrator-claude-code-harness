@@ -3,7 +3,7 @@ description: "Run the AI-SDLC workflow end-to-end. Reads a project brief and dri
 argument-hint: "--auth=vendor|estimated [--policy=<name>] [--study=<study-id>] [--run-id=<run-id>] <path-to-brief.md>"
 ---
 
-Invoke the `orchestrator` subagent to execute one full SDLC run.
+Invoke the `orchestrator` subagent to execute one full SDLC run (with `--mode=brownfield`, follow **Brownfield-mode flags** below instead).
 
 **Arguments:** $ARGUMENTS
 
@@ -61,12 +61,29 @@ When invoked headlessly (e.g. via `claude --print "/mmo:pass ..." --output-forma
 
 ---
 
-## Brownfield-mode flags (added in v1)
+## Brownfield-mode flags
 
 When `--mode=brownfield` is set, the pipeline uses the brownfield entry (equivalent to
-`/mmo:brownfield` but flag-driven for scripted / CI use). With `--intent=feature-extend` or
-`--intent=feature-new`, invoke `brownfield-orchestrator` instead of `orchestrator`. Additional required + optional
-flags:
+`/mmo:brownfield` but flag-driven for scripted / CI use). Do not invoke `orchestrator`, and do not
+delegate any orchestrator straight away: the brownfield orchestrator starts after Gate 0, and the
+server writes no file of the run until Gate 0 has frozen the write contract. Instead, follow the brownfield guide
+(`${CLAUDE_PLUGIN_ROOT}/skills/brownfield-guide/SKILL.md`) yourself, in this session, from step 1 to step 7,
+with the handover `intent: <--intent>`. The flags answer its questions:
+
+1. `--brief` is step 4's "bring your own file": with it, there is no interview.
+2. `--auth` and `--policy` are Gate 0's auth mode and policy.
+3. `--gates` decides Gate 0 as it decides the other gates: `auto-approve` approves it without asking,
+   `prompt` asks the person.
+4. Gate 0's `approved` runs the guide's step 5 freeze, `write-contract.mjs --freeze` (with
+   `--strict-write=off` only when it was passed).
+5. Only then delegate `brownfield-orchestrator` (step 6), whatever the `--intent`, never `orchestrator`, and
+   close out as step 7 says.
+
+Step 1's question about a run that never ended is not a gate: ending a run is the person's decision, so
+`--gates` does not answer it, nor step 6's question about a run that stopped before its end, and a run with no
+person to ask stops there with the question.
+
+Additional required + optional flags:
 
 | Flag | Purpose |
 |---|---|
@@ -76,11 +93,11 @@ flags:
 | `--gates=<prompt\|auto-approve\|auto-abort>` | Gate behavior. `prompt` (default) is interactive; `auto-approve` accepts every gate (headless friendly); `auto-abort` **v1.5** — approves only when the run's fingerprint matches `.sdlc/project.json`, aborts otherwise. Recommended for CI so drift never silently proceeds. |
 | `--from-config=<path>` | **v1.5** — read gate answers from a committed team config file. Combined with `--gates=auto-abort`, this is the CI-safe flow. |
 | `--policy=<name>` | Same as greenfield. Overrides the setup-time project default (`.sdlc/project.json.default_policy`) and, if present, any repo-local `routing-policy.yaml` — the flag is passed to the MCP server as an explicit `policy_path`, which outranks the loader's project-override search (see **Policy resolution** above). |
-| `--strict-write=off` | Downgrade the write-contract PreToolUse hook from HARD-BLOCK to WARN. Every off-limits or not-in-allowlist write is logged but not refused. Use with care — this defeats the plugin's main safety guarantee. |
+| `--strict-write=off` | Downgrade the write-contract PreToolUse hook from HARD-BLOCK to WARN. Every off-limits or not-in-allowlist write is logged but not refused. Use with care — this defeats the plugin's main safety guarantee. It never opens the always-off-limits list (`.env` and `.env.*`, `.mcp.json`, `.cursor/rules/**`, `.claude/settings.local.json`, `.git/**`), and never the run's own contract or log once Gate 0 froze it. It is the person's flag at the start; a run never edits the contract. |
 | `--allow-dirty` | Bypass the git-clean check when the git contract's `commit_strategy != none`. |
 | `--recheck` | Force pre-check re-run even when the cached status is still valid. Useful after a plugin version bump. |
-| `--adaptive-profile` | Force Tier 2b adaptive stack profile even when a matching pre-authored adapter exists. Useful when the shipped adapter's conventions don't match this repo. |
-| `--refresh-profile` | Force stack-profile re-scan (implies `--recheck`). Use after a substantial repo restructure. |
+| `--adaptive-profile` | Discovery's `adaptive_profile` input (guide step 2's smoke or step 3, whichever runs discovery): build the Tier 2b stack profile even when a matching pre-authored adapter exists. Useful when the shipped adapter's conventions don't match this repo. |
+| `--refresh-profile` | Discovery's `refresh_profile` input (guide step 2's smoke or step 3, whichever runs discovery): a full re-scan, the stack profile included (implies `--recheck`). Use after a substantial repo restructure. |
 
 **Brownfield output paths:**
 - `run_id`: `<YYYYMMDD-HHMMSS>-<intent>-<slug>`
@@ -91,10 +108,12 @@ flags:
 
 **Brownfield requirements before starting:**
 - Everything greenfield requires, PLUS:
-- `.sdlc/local/write-contract.json` gets written after Gate 0 approval (before any packet
-  dispatches). The PreToolUse hook reads it on every `Write`/`Edit`.
-- The current directory MUST be a git repo (or an ancestor is). Brownfield refuses on non-git
-  folders with a clear message.
+- `.sdlc/local/write-contract.json` is written at Gate 0's approval (the guide's step 5, above), by
+  `scripts/write-contract.mjs --freeze`, which records a fingerprint of it in the run's log. The
+  PreToolUse hook and the server's writer read it on every write, and the server refuses every file of a
+  run without it.
+- The current directory MUST be the root of a git project (the folder holding `.git`). Brownfield refuses
+  a non-git folder, and a subfolder of a git project, with a clear message.
 - The pipeline pre-check (§7.4) must have passed or been skipped-with-user-consent for this
   run's inputs.
 

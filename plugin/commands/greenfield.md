@@ -168,17 +168,11 @@ can be reached two ways: as a model call, which is the default, or as an Antigra
 `MMO_SELECT` names `flash-agsdk-worker`, this install has chosen the agent — say so in one
 sentence: each file is typed by one short agent session, billed from Google's own token counts for
 that session, and every session appears in the run's telemetry and in the stage receipts. The
-rates above are unchanged. Do not raise any of this when `MMO_SELECT` is unset, which is the normal
-case — an unexplained aside about a path they are not on is noise, not transparency.
-
-**Offer the two-cent probe, on that path only, and only if they have not run it.** Pre-flight
-constructs the agent's adapter but never calls it, so three things stay unknown until the first
-delegated packet: whether the project carries the Antigravity entitlement, whether the region
-serves the model, and whether the credentials are still valid. All three fail *after* requirements
-and design are billed to the premium tier. Say that in one sentence and offer to run
-`${CLAUDE_PLUGIN_ROOT}/scripts/probe-agent-worker.mjs` first — one trivial delegation, about two
-cents, and it exits 0 or names the cause in words. If they decline, continue; the run is not
-blocked on it.
+rates above are unchanged. The run's start check sends one test call through the agent before
+anything else is paid, so a project without the Antigravity entitlement, a region that does not
+serve the model, or credentials that no longer work stop the run there, with what to fix; there is
+nothing to test separately beforehand. Do not raise any of this when `MMO_SELECT` is unset, which is
+the normal case — an unexplained aside about a path they are not on is noise, not transparency.
 
 This command runs whatever `project.default_policy` resolves to. To change it for this project,
 the user re-runs setup — `node "${CLAUDE_PLUGIN_ROOT}/scripts/setup-policy.mjs"` opens the

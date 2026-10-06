@@ -1,6 +1,6 @@
 {
   "name": "zero-touch",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "Zero-touch for the mmo plugin, in two modes, with no commands to learn. Workflow mode: a plain-words request for a job (a new app, a bug fix, a feature, tests, docs) starts its full workflow with approval steps. Hand-off mode: the chat's own model does the development, and new documents, tests and repeated changes are handed to the model you chose and checked automatically. Choose in the chat: type \"change zero-touch settings\" (the first chat after install asks). Enable or disable this plugin to switch zero-touch on or off; changes apply to new chats.",
   "author": {
     "name": "Tilicho Labs"

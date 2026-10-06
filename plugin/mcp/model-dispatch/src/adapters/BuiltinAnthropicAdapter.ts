@@ -269,7 +269,8 @@ const STABLE_INPUT_BASENAMES = new Set([
 export function isStableInput(input: { path: string; reason: string }): boolean {
   const basename = input.path.split("/").pop() ?? input.path;
   if (STABLE_INPUT_BASENAMES.has(basename)) return true;
-  // Explicit orchestrator marking per orchestrator.md rule 6.
+  // An input is cached here also when its reason contains the word stable (this adapter, the non-typist door); a
+  // brownfield run's apply packets are cached by execute_batch's shared-input mark instead (batch.ts markSharedInputs).
   return /\bstable\b/i.test(input.reason);
 }
 

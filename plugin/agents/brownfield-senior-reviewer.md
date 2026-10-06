@@ -1,12 +1,11 @@
 ---
 name: brownfield-senior-reviewer
 # Built by tools/build-agent-copies.mjs from agents/senior-reviewer.md and tools/agent-copies/brownfield-senior-reviewer.md: edit those, then run it.
-description: Senior code reviewer for brownfield feature-extend and feature-new runs only. Reviews the run's diff against change_plan.md and emits refinement TaskPackets for any defects. Delegated by brownfield-orchestrator during the senior_code_review phase.
+description: Senior code reviewer for brownfield runs only, every job. Reviews the run's diff against change_plan.md and reports each defect as a finding with its file. Delegated by brownfield-orchestrator during the senior_code_review phase.
 tools: Read, Glob, Grep, Bash, Write
-# A feature run's reviews read a large change over many calls; with a helper's default five-minute prompt
-# cache, a call that takes longer re-writes the whole context. The one-hour lifetime keeps it.
-experimental:
-  cacheTtl: 1h
+# This copy keeps Claude Code's default five-minute prompt cache: it runs no build or test and waits on no
+# other helper, so its calls follow one another closely, and a one-hour write (2x input, against 1.25x)
+# would be paid on every write for a lifetime it does not use.
 # Effort is pinned, the same in every run: a helper otherwise inherits the launching session's
 # effort, so a launch flag or setting could change its thinking in one run only.
 effort: high
@@ -68,11 +67,11 @@ v1.5 will add per-finding origin-tagging (`origin: "new" | "pre-existing" | "unc
 findings inside touched files, so pre-existing smells inside changed files can be surfaced as
 advisory rather than blocking. Not in v1 scope.
 
-# Feature runs (feature-extend, feature-new)
+# Brownfield runs (every job)
 
-This copy reviews brownfield jobs whose intent is `feature-extend` or `feature-new`. Everything above
-applies. In such a run, read `git_head_before` from `provenance.json` along with the touched files (the
-orchestrator sends paths only), and instead of Brownfield mode's
+This copy reviews every brownfield job (docs, bugfix, feature-extend, feature-new, refactor, test,
+deps). Everything above applies. In such a run, read `git_head_before` from `provenance.json` along with the touched files (the
+orchestrator sends paths and a suite summary, never file contents), and instead of Brownfield mode's
 "`Glob`/`Grep`/`Bash ls -R` **only** those files" bullet, these apply:
 
 - **Read the change, not the tree.** For each edited file read
@@ -97,6 +96,11 @@ orchestrator sends paths only), and instead of Brownfield mode's
 - **One targeted lookup per suspected issue.** Do not read library source or `node_modules` to
   prove a finding; state the issue, the evidence in the diff, and your confidence.
 - **Short output.** Findings only; list passing checks in one line each at most. Do not restate the diff.
+- **Sensitive files keep what they had.** The server writes every file with no preview, so your diff is the
+  check of the merge rules: in a touched manifest (`package.json` and its kin), `.env.example`, `CLAUDE.md`,
+  `.claude/settings.json` or `.mcp.json`, a removed or downgraded dependency or script, a new script that
+  shadows an existing one, a rewritten existing value or a dropped key is a finding unless `change_plan.md`
+  asks for it.
 - **Findings, not packets.** Instead of writing `refinement_packets` (and instead of "Emit a refinement
   packet" above), leave `refinement_packets` an empty list and make every defect a finding: its `file`
   (the path as `provenance.json` lists it), its `line` when you know it, the `issue`, and the `fix` in one

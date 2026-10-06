@@ -14,7 +14,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = join(HERE, "..", "..", "..", "scripts");
 const { repairPackets, main } = await import(join(SCRIPTS, "findings-to-packets.mjs"));
 const { finalize } = await import(join(SCRIPTS, "plan-to-packets.mjs"));
-const { HEADER, UNITS, project } = await import(join(HERE, "fixtures", "change-spec.mjs"));
+const { HEADER, UNITS, BUG_HEADER, BUG_UNITS, project } = await import(join(HERE, "fixtures", "change-spec.mjs"));
 const { executorRun } = await (await import(join(SCRIPTS, "lib", "server-lib.mjs"))).loadServerLib();
 
 /** The fixture project with its change spec finalized (briefs and packets.json written). */
@@ -112,6 +112,31 @@ test("each round is written to the run's repairs folder for one execute_batch ca
     assert.match(out.join(""), /repairs\/round-2\.json/);
     const round = JSON.parse(readFileSync(join(runDir(p), "repairs", "round-2.json"), "utf8"));
     assert.equal(round[0].id, "tp_debug_r2_001");
-    assert.equal(await main(["--run-id", "r1", "--project-root", p.root]), 2, "nothing to route");
+    assert.equal(await main(["--run-id", "r1", "--intent", "feature-extend", "--project-root", p.root]), 2, "nothing to route");
+    // The packets carry the job, which is what has the server type them with greenfield's typists.
+    assert.equal(await main(["--run-id", "r1", "--project-root", p.root, "--failures", failures]), 2, "no job");
+    assert.equal(await main(["--run-id", "r1", "--intent", "feature", "--project-root", p.root, "--failures", failures]), 2, "not a job");
+  } finally { p.done(); }
+});
+
+// A fix round runs after every file of the change is in, the fix included. A bugfix's reproducing test judges the fix,
+// so a failure it reports goes to the code under fault, never to the test: a typist that edited the test until it
+// passed would ship the bug green.
+test("a fix round after a bugfix's fix: the fix is judged, and the reproducing test is not a target", async () => {
+  const p = project();
+  try {
+    assert.equal((await p.check("header.json", BUG_HEADER)).ok, true);
+    assert.equal((await p.check("units-001.json", BUG_UNITS)).ok, true);
+    assert.equal((await finalize({ projectRoot: p.root, runId: "r1", intent: "bugfix" })).code, 0);
+    mkdirSync(join(p.root, "test"), { recursive: true });
+    writeFileSync(join(p.root, "test", "a.test.ts"), "it('a', () => {});\n");
+    const r = await repairPackets({ projectRoot: p.root, runId: "r1", intent: "bugfix", reviews: [], failures: [
+      { path: "test/a.test.ts", problem: "the assertion compares the wrong value" },
+      { path: "src/a.ts", problem: "a() still returns 1", context_paths: ["test/a.test.ts"] },
+    ] });
+    assert.deepEqual(r.packets.map((k) => k.artifact_path), ["src/a.ts"]);
+    assert.match(r.not_routed[0].reason, /the reproducing test judges the fix/);
+    assert.deepEqual(r.packets[0].apply.checks, [{ id: "lint", run: "test -s '{path}'", fix: "touch '{path}'" }]);
+    assert.ok(r.packets[0].inputs.some((i) => i.path === "test/a.test.ts"), "the test is shown beside the fix");
   } finally { p.done(); }
 });

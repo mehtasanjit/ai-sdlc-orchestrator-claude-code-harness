@@ -69,21 +69,24 @@ test("no active write contract: the apply form is refused before any model is ca
   }
 });
 
+// An apply packet that names no brownfield job is refused on every door before any call (server.ts runPacket), the
+// agent door included: it would otherwise edit the project folder itself, outside the write contract and the snapshots.
 test("an apply packet routed to an antigravity-worker leaf is refused", async () => {
   const root = project({ schema_version: 1, active: true, strict: true, allowlist: ["src/**"], off_limits: [] });
   try {
     const r = await callExecute(root, join(root, "policy.yaml"));
     assert.equal(r.isError, true);
-    assert.match(r.content[0].text, /do not run agent-door workers/);
+    assert.match(r.content[0].text, /an apply packet names its job/);
+    assert.match(r.content[0].text, /Nothing was typed/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-// A feature run's agent-door files are typed by greenfield's agent typist, which answers from a scratch folder while
+// A brownfield run's agent-door files are typed by greenfield's agent typist, which answers from a scratch folder while
 // the server writes; that needs the run's start check (preflight_dispatch). Without it the packet is refused, never sent
 // to an agent that would edit the project folder itself.
-test("a feature run's packet routed to the agent door is refused until the run's start check, and the refusal offers no way around the contract", async () => {
+test("a brownfield run's packet routed to the agent door is refused until the run's start check, and the refusal offers no way around the contract", async () => {
   const root = project({ schema_version: 1, active: true, strict: true, allowlist: ["src/**"], off_limits: [] });
   try {
     const r = await callExecute(root, join(root, "policy.yaml"), { intent: "feature-new" });

@@ -1,8 +1,8 @@
-# Feature runs (feature-extend, feature-new)
+# Brownfield runs (every job)
 
-This copy reviews brownfield jobs whose intent is `feature-extend` or `feature-new`. Everything above
-applies. In such a run, read `git_head_before` from `provenance.json` along with the touched files (the
-orchestrator sends paths only), and these apply:
+This copy reviews every brownfield job (docs, bugfix, feature-extend, feature-new, refactor, test,
+deps). Everything above applies. In such a run, read `git_head_before` from `provenance.json` along with the touched files (the
+orchestrator sends paths and a suite summary, never file contents), and these apply:
 
 - **Read the change, not the tree.** Edited files as `git diff <git_head_before> -- <path>`, new
   files in full. Open an untouched file only to trace a guard, serializer, or config the diff
@@ -22,8 +22,13 @@ orchestrator sends paths only), and these apply:
 - **One targeted lookup per suspected issue.** Do not read library source or `node_modules` to
   prove a finding; state the issue, the evidence in the diff, and your confidence.
 - **Short output.** Findings only; list passing checks in one line each at most. Do not restate the diff.
-- **Findings, not packets.** Instead of writing refinement packets, give every finding its file (the path
-  as `provenance.json` lists it), its line when you know it, the issue and the fix in one or two sentences.
-  The orchestrator sends the fixes the person accepts at Gate 3 through code (`findings-to-packets.mjs`).
+- **Every touched file by its kind, whatever the job.** Instead of "Intent-specific scoping" above: the
+  scope is the touched set, and each file is reviewed by what it is, not by the run's job (a test or docs run
+  may change source files too). A touched file that is not a test or a doc gets the full checklist; a test
+  file or fixture gets the check for real credentials in fixtures; a doc gets the check for secrets in
+  examples; a manifest or lockfile gets the dependency check.
+- **Findings, not packets.** Give every finding its file (the path as `provenance.json` lists it), its line
+  when you know it, the issue and the fix in one or two sentences. The orchestrator sends the fixes the
+  person accepts at Gate 3 through code (`findings-to-packets.mjs`).
 - **Skip checklist items the touched files cannot affect** (e.g. PII fields, audit tables or
   auth endpoints that the change does not touch): one line "n/a — not in the touched set".

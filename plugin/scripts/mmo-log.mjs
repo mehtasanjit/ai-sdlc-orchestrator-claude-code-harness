@@ -17,10 +17,18 @@
  *
  * Fail-open, like write-provenance.mjs: any error warns to stderr and exits
  * 0, because a logging failure must never stop a run.
+ *
+ * One refusal (exit 2): the write contract's freeze record (`contract.freeze`,
+ * lib/contract-lock.mjs). Why: that record is what the write-contract hook and
+ * the server's writer compare the contract with, and only write-contract.mjs
+ * writes it, at Gate 0. A run calls this logger many times; it must not be a
+ * second way to write one (the readers also treat a second record, or two live
+ * runs' records, as forged).
  */
 import { join } from "node:path";
 import { log, configureSinks } from "./lib/log.mjs";
 import { resolveProjectRoot } from "./lib/env.mjs";
+import { FREEZE_EVENT } from "./lib/contract-lock.mjs";
 
 const RESERVED = new Set(["event", "level", "project-root"]);
 
@@ -55,6 +63,11 @@ try {
   if (!event) {
     warn("--event is required, nothing logged");
     process.exit(0);
+  }
+  // Compared without case or surrounding blanks: no spelling of the event gets a record past this.
+  if (event.trim().toLowerCase() === FREEZE_EVENT) {
+    warn("the contract's freeze record is written only by write-contract.mjs, nothing logged");
+    process.exit(2);
   }
 
   const fieldObj = Object.fromEntries(fields);

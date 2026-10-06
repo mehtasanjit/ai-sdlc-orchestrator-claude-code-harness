@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * plan-lint — check one section of a brownfield feature run's change spec when the architect hands it over, or
+ * plan-lint — check one section of a brownfield run's change spec when the architect hands it over, or
  * print the spec's shape.
  *
  * Why: the plan used to be free-text change_plan.md, linted after the architect returned by counting fenced lines,
@@ -11,28 +11,42 @@
  * pointers checked against the files as they are (lib/change-spec.mjs checkUnits). An accepted section is copied
  * to the run's change.parts/ with the hash of every file it points into; plan-to-packets --spec builds from those.
  *
+ * Everything dispatch would refuse, or run without judging, is refused here instead, while one Edit fixes it:
+ *   - what the run may write and what a model may be sent (the write contract and the always-off-limits list), and the
+ *     server's bound on one input;
+ *   - each unit's file checks, run on the file as it is before the change (lib/change-spec.mjs baselineErrors): a check
+ *     that already fails there would be set aside at dispatch and judge nothing;
+ *   - a check, write form or red check the person's Bash deny rules forbid: the server refuses its packet, and plan-lint,
+ *     which runs checks where Claude Code's own Bash rules see only this script's call, never runs one (while deny
+ *     rules exist, a check the deny check cannot read through is left to dispatch, where the call keeps its prompt);
+ *   - a check on a file whose path holds a single quote: the server fills the path in as written, so it could not run;
+ *   - a typed unit at a tooling unit's path: that path is the file the step writes, which no model types;
+ *   - the job's rules (lib/change-spec.mjs unitJobErrors, headerJobErrors), once the run's job is known: Gate 0's record
+ *     in the run's intent_brief.md, or --intent, which must then name the same job.
+ *
  * Usage:
  *   node plan-lint.mjs --shape
- *   node plan-lint.mjs --section <file> --run-id <id> [--project-root <dir>]
+ *   node plan-lint.mjs --section <file> --run-id <id> [--intent <job>] [--project-root <dir>]
  *     <file>: header.json or units-NNN.json under <project>/.sdlc/runs/<id>/change.sections/
  *
  * Exit 0 = accepted (one summary line). 1 = refused (one line per problem, each naming the unit and field; nothing is
- * stored). 2 = usage, or a file outside the run's section folder.
+ * stored). 2 = usage, a file outside the run's section folder, or an --intent that is not the run's job.
  */
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadServerLib } from "./lib/server-lib.mjs";
-import { PARTS_DIR, SECTIONS_DIR, acceptedParts, changeSchemas, changeShape, checkUnits, runFolder } from "./lib/change-spec.mjs";
+import { PARTS_DIR, SECTIONS_DIR, acceptedParts, baselineErrors, changeSchemas, changeShape, checkUnits, headerErrors, headerJobErrors, runFolder, runJob } from "./lib/change-spec.mjs";
 
 function parseArgs(argv) {
-  const out = { shape: false, section: null, runId: null, projectRoot: process.cwd() };
+  const out = { shape: false, section: null, runId: null, intent: undefined, projectRoot: process.cwd() };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => (a.includes("=") ? a.slice(a.indexOf("=") + 1) : argv[++i]);
     if (a === "--shape") out.shape = true;
     else if (a.startsWith("--section")) out.section = val();
     else if (a.startsWith("--run-id")) out.runId = val();
+    else if (a.startsWith("--intent")) out.intent = val();
     else if (a.startsWith("--project-root")) out.projectRoot = val();
   }
   return out;
@@ -40,11 +54,14 @@ function parseArgs(argv) {
 
 /**
  * Checks one section file. Returns { ok, lines } — the lines to print; on success the section is stored.
- * A header section is named header*.json; every other section file holds units.
+ * A header section is named header*.json; every other section file holds units. `intent`: the run's job as the
+ * caller names it (--intent); Gate 0's record wins, and a different job is a usage error.
  */
-export async function checkSection(projectRoot, runId, file) {
+export async function checkSection(projectRoot, runId, file, { intent } = {}) {
   const run = runFolder(projectRoot, runId);
   if (run.error) return { ok: false, usage: true, lines: [run.error] };
+  const { job, error: jobError } = runJob(run.dir, intent);
+  if (jobError) return { ok: false, usage: true, lines: [jobError] };
   const { specSchema, specStore } = await loadServerLib();
   const { header: headerSchema, unit: unitSchema } = await changeSchemas();
   const sectionsDir = join(run.dir, SECTIONS_DIR);
@@ -61,6 +78,15 @@ export async function checkSection(projectRoot, runId, file) {
   if (kind === "header") {
     const schemaErrors = specSchema.validate(headerSchema, value);
     if (schemaErrors.length) return { ok: false, lines: schemaErrors.map((e) => `${name} ${e.path}: ${e.message}`) };
+    const own = [...headerErrors(value), ...(job ? headerJobErrors(value, job) : [])];
+    if (own.length) return { ok: false, lines: own.map((e) => `${name} ${e}`) };
+    // A header sent again after units were accepted: their checks run under its commands now, so a changed command
+    // is tried on every file it will judge before the header replaces the one they were accepted under.
+    const lines = [];
+    for (const part of parts.filter((p) => p.section === "units")) {
+      for (const e of await baselineErrors(part.value, { projectRoot: resolve(projectRoot), runDir: run.dir, header: value })) lines.push(`${part.source} ${e}`);
+    }
+    if (lines.length) return { ok: false, lines };
   } else {
     // Earlier = the units of section files named before this one; a re-sent section replaces its own earlier copy.
     const header = [...parts].reverse().find((p) => p.section === "header")?.value;
@@ -71,9 +97,13 @@ export async function checkSection(projectRoot, runId, file) {
     // are not reported twice).
     const schemaErrors = value.flatMap((u, i) => specSchema.validate(unitSchema, u, `/${i}`).map((e) => ({ i, e })));
     const bad = new Set(schemaErrors.map((x) => x.i));
-    const r = checkUnits(value.filter((_, i) => !bad.has(i)), { projectRoot: resolve(projectRoot), runId, header, earlier: [...earlier, ...value.filter((u, i) => bad.has(i) && u && typeof u.id === "string")] });
+    const r = checkUnits(value.filter((_, i) => !bad.has(i)), { projectRoot: resolve(projectRoot), runId, header, intent: job, earlier: [...earlier, ...value.filter((u, i) => bad.has(i) && u && typeof u.id === "string")] });
     const lines = [...schemaErrors.map(({ e }) => `${name} ${e.path}: ${e.message}`), ...r.errors.map((e) => `${name} ${e}`)];
     if (lines.length) return { ok: false, lines };
+    // Only a section that is right in every other way has its checks run: they take real time, and a refused section
+    // is checked again anyway.
+    const failing = await baselineErrors(value, { projectRoot: resolve(projectRoot), runDir: run.dir, header });
+    if (failing.length) return { ok: false, lines: failing.map((e) => `${name} ${e}`) };
     hashes = r.hashes;
   }
   mkdirSync(join(run.dir, PARTS_DIR), { recursive: true });
@@ -91,10 +121,10 @@ export async function main(argv = process.argv.slice(2)) {
     return 0;
   }
   if (!args.section || !args.runId) {
-    process.stderr.write("usage: plan-lint.mjs --shape | --section <change.sections/file.json> --run-id <id> [--project-root <dir>]\n");
+    process.stderr.write("usage: plan-lint.mjs --shape | --section <change.sections/file.json> --run-id <id> [--intent <job>] [--project-root <dir>]\n");
     return 2;
   }
-  const r = await checkSection(args.projectRoot, args.runId, args.section);
+  const r = await checkSection(args.projectRoot, args.runId, args.section, { intent: args.intent });
   (r.ok ? process.stdout : process.stderr).write(r.lines.join("\n") + "\n");
   return r.ok ? 0 : r.usage ? 2 : 1;
 }

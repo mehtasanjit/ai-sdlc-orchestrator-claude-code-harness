@@ -46,7 +46,7 @@ Reasoning-forward. Understand why the pieces are shaped the way they are.
 | [Methodology](methodology.md) | How tokens and costs are derived; vendor-authoritative vs estimated; what each plugin version changed about the numbers. |
 | [Two Gemini paths](two-gemini-paths.md) | Model door vs agent door, side-by-side on the same brief. |
 | [Brownfield write contract](brownfield-write-contract.md) | How the "never touch off-limits" guarantee is enforced at the tool boundary. |
-| [Brownfield model routing](brownfield-routing.md) | Which model runs which phase and why the mechanical tier can drop cost by ~10×. |
+| [Brownfield model routing](brownfield-routing.md) | Which model runs which phase, and what moving mechanical work off Opus measured. |
 | [Brownfield coexistence](brownfield-coexistence.md) | Living alongside Cursor, Aider, Copilot, and custom MCP servers. |
 | [Brownfield privacy](brownfield-privacy.md) | What leaves the machine, per phase. On-prem routing, PII handling, audit trail. |
 

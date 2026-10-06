@@ -254,7 +254,11 @@ test("a named project with no credential warns on the agent path, and does not b
   assert.ok(problem, "an unproven credential must still be reported");
   assert.equal(problem.severity, "warning");
   assert.match(problem.message, /'proj'/);
-  assert.match(problem.fix, /probe-agent-worker\.mjs/);
+  // The run's start check sends one test call through the agent; no separate paid probe is offered.
+  assert.doesNotMatch(problem.fix, /probe-agent-worker\.mjs|two cents/);
+  assert.match(problem.fix, /start check/);
+  const gemini = problems.find((p) => p.id === "gemini-credentials");
+  if (gemini) assert.doesNotMatch(gemini.fix, /probe-agent-worker\.mjs|two cents/);
 });
 
 test("a broken credential blocks, and says it is present rather than missing", () => {

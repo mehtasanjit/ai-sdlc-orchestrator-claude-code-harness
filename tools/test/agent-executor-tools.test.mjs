@@ -15,9 +15,9 @@ const tools = (name) =>
 const NEEDED = {
   orchestrator: ["execute_stage", "finalize_spec"],
   architect: ["submit_spec_section", "finalize_spec"],
-  // The copies brownfield feature runs use (tools/build-agent-copies.mjs): the originals' tools, and the batch.
+  // The orchestrator copy brownfield runs use (tools/build-agent-copies.mjs): its original's tools, and the batch. The
+  // brownfield architect copy drops the spec tools with greenfield's executor mode (agent-copies.test.mjs).
   "brownfield-orchestrator": ["execute_stage", "finalize_spec", "execute_batch"],
-  "brownfield-architect": ["submit_spec_section", "finalize_spec"],
 };
 
 for (const [agent, names] of Object.entries(NEEDED)) {
@@ -31,7 +31,7 @@ for (const [agent, names] of Object.entries(NEEDED)) {
   });
 }
 
-test("greenfield's orchestrator is not given the brownfield batch tool: only the feature-run copy has it", () => {
+test("greenfield's orchestrator is not given the brownfield batch tool: only the brownfield copy has it", () => {
   const have = tools("orchestrator");
   for (const prefix of ["mcp__model-dispatch__", "mcp__plugin_mmo_model-dispatch__"]) assert.ok(!have.has(prefix + "execute_batch"), prefix);
 });

@@ -302,6 +302,11 @@ test("a hand-off whose check command the person's Claude settings forbid is refu
     assert.equal(deniedBy("npm publish", s.repo, env), "Bash(npm publish)");
     assert.equal(deniedBy("npm test", s.repo, env), null, "anything else is left to the tool's own permission prompt");
     assert.equal(deniedBy("rmdir x", s.repo, env), null, "a prefix rule is a whole word");
+    // The shell splits words on a tab (or any run of blanks) as on one space, so the rule's command runs: it is denied.
+    assert.equal(deniedBy("rm\t-rf build", s.repo, env), "Bash(rm:*)", "a tab after the command's name");
+    assert.equal(deniedBy("curl\thttps://x.example", s.repo, env), "Bash(curl *)", "a tab where a wildcard rule has a space");
+    assert.equal(deniedBy("npm  publish", s.repo, env), "Bash(npm publish)", "two spaces where an exact rule has one");
+    assert.equal(deniedBy("rmdir\tx", s.repo, env), null, "still a whole word");
     await startOn(s, "d1");
     const TESTS = "mcp__plugin_mmo_model-dispatch__write_tests_from_cases";
     const r = await before(s, "d1", { file: "tests/a.test.js", target: "src/a.js", functions: ["f"], cases: ["x"], test_command: "node --test tests/a.test.js; rm -rf dist" }, {}, TESTS);

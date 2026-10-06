@@ -92,7 +92,9 @@ test("the hooks that run a script with node go through hooks/node.sh: without No
       const r = spawnSync("/bin/sh", ["-c", command.replaceAll(PLACEHOLDER, root)], { input: JSON.stringify({ hook_event_name: event, tool_name: "Write", tool_input: { file_path: "src/a.ts", content: "x" } }), encoding: "utf8", cwd: project, env: { PATH: bin, CLAUDE_PROJECT_DIR: project } });
       assert.deepEqual([r.status, r.stdout, r.stderr], [0, "", ""], `without node: ${command}`);
     }
-    // With node: the write contract's refusal is an exit code (2), and it must still reach Claude Code.
+    // With node: the write contract's refusal is an exit code (2), and it must still reach Claude Code. The project is a
+    // git project, as every brownfield project is: the hook reads only the contract at a git project's root.
+    mkdirSync(join(project, ".git"), { recursive: true });
     mkdirSync(join(project, ".sdlc", "local"), { recursive: true });
     writeFileSync(join(project, ".sdlc", "local", "write-contract.json"), JSON.stringify({ schema_version: 1, active: true, strict: true, run_id: "t1", allowlist: ["src/**"], off_limits: [] }));
     const write = viaShim.find((c) => c.command.includes("write-contract-check.mjs")).command;

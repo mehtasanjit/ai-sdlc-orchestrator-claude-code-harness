@@ -1,5 +1,5 @@
 /**
- * plan-lint.mjs: a brownfield feature run's change spec, checked one section at a time when the architect hands it
+ * plan-lint.mjs: a brownfield run's change spec, checked one section at a time when the architect hands it
  * over (greenfield's rule, spec/store.ts submitSpecSection), against the schema and against the files as they are.
  * A refusal names the unit, the field and, for a site, the file's actual text, so one Edit fixes it; nothing is
  * stored. Offline, $0: real files in a temporary project, no model.
@@ -14,7 +14,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = join(HERE, "..", "..", "..", "scripts");
 const { checkSection, main } = await import(join(SCRIPTS, "plan-lint.mjs"));
 const { changeShape } = await import(join(SCRIPTS, "lib", "change-spec.mjs"));
-const { HEADER, UNITS, project } = await import(join(HERE, "fixtures", "change-spec.mjs"));
+const { HEADER, UNITS, BUG_HEADER, BUG_UNITS, project } = await import(join(HERE, "fixtures", "change-spec.mjs"));
 
 test("--shape prints both section shapes, rendered from the schemas the check enforces", async () => {
   const shape = await changeShape();
@@ -157,5 +157,25 @@ test("only the run's own section folder: another file, or a run that does not ex
     const bad = await checkSection(p.root, "../x", "header.json");
     assert.match(bad.lines[0], /--run-id must be the run's id/);
     assert.equal(await main(["--section", "x.json"]), 2, "no run id");
+  } finally { p.done(); }
+});
+
+// red_checks: the checks of a test unit that must fail before the fix (a bugfix's reproducing test). They name the
+// header's file checks, only a test unit has them, and a check is either one that must pass or one that must fail.
+test("red_checks are checked on arrival: a test unit's, naming the header's file checks, never also among its checks", async () => {
+  const p = project();
+  try {
+    assert.equal((await p.check("header.json", BUG_HEADER)).ok, true);
+    assert.equal((await p.check("units-001.json", BUG_UNITS)).ok, true, "the bugfix fixture is accepted");
+    const bad = [
+      { ...BUG_UNITS[0], red_checks: ["nope"] },
+      { ...BUG_UNITS[1], red_checks: ["unit"] },
+    ];
+    const r = await p.check("units-002.json", [{ ...bad[0], id: "U03", path: "test/b.test.ts" }, { ...bad[1], id: "U04", path: "src/x.ts", sites: [{ id: "S1", at: "replace", from: 1, to: 1, first_line: "export const x = 1;", rule: "r" }], depends_on: [] }, { ...BUG_UNITS[0], id: "U05", path: "test/c.test.ts", checks: ["lint", "unit"], red_checks: ["unit"] }]);
+    assert.equal(r.ok, false);
+    const text = r.lines.join("\n");
+    assert.match(text, /U03\.red_checks: nope is not a file check in the header/);
+    assert.match(text, /U04 \(src\/x\.ts\): only a tests unit has red_checks/);
+    assert.match(text, /U05\.red_checks: unit is also among its checks; a check either must pass or must fail/);
   } finally { p.done(); }
 });

@@ -17,6 +17,8 @@ inline. Adding a third caller would triple the duplication. Extract it once to a
 - `src/signup.js` (edit — imports change, delete inline definition)
 - `src/invite.js` (edit — same)
 
+Read, not written: `src/validators.spec.js` (the suite that pins the behaviour)
+
 ## Files off-limits
 
 - Standard set. Everything else in the repo untouched.

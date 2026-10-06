@@ -5,10 +5,11 @@
  * cannot share one copy (§3). tools/test/logging.test.mjs runs the same
  * fixture strings against both and asserts identical findings.
  *
- * Different job from dispatch-sanitize.mjs: that one blocks a dispatch
- * outright when a secret-shaped string is found. This one never blocks —
- * a log line always gets written — it just replaces the match so the
- * secret itself never reaches disk or stderr.
+ * dispatch-sanitize.mjs holds the same registry and a command-line scanner;
+ * no dispatch path runs either on a model's inputs (the read rule keeps
+ * off-limits files out of a prompt). This port only redacts log lines: it
+ * never blocks, it replaces the match so the secret never reaches disk or
+ * stderr.
  */
 
 const PATTERNS: Array<{ name: string; re: RegExp }> = [

@@ -229,8 +229,8 @@ test("vendor and network failures are told apart from bad answers by the vendor'
   assert.deepEqual(flashOutcome({ error_status: 400 }), { transport: false, retry_after_ms: undefined, cut_off: false });
   assert.deepEqual(flashOutcome(undefined), { transport: false, retry_after_ms: undefined, cut_off: false });
 
-  // The agent door: the SDK retries transient API errors itself and its errors carry no HTTP status, so any error it
-  // raises is an attempt (fail closed), whatever its message says.
+  // The agent door: the SDK retries transient API errors itself, so any error that reaches the receipt is an attempt
+  // (fail closed), whatever its message says; the status it carries is reported (typistWorkerStatus.test.mjs).
   assert.equal(agyOutcome({ error: "AntigravityExecutionError: executor run failed: Resource exhausted", error_type: "AntigravityExecutionError" }).transport, false);
 });
 

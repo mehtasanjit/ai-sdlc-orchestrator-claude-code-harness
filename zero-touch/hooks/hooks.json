@@ -65,7 +65,7 @@
       },
       {
         "_comment": "Zero-touch: inside a workflow zero-touch started, every model-server call that takes a policy is stamped with the policy the person chose, as an explicit file, which wins over a project's routing-policy.yaml; helpers' calls included. A workflow the person typed keeps its own rules.",
-        "matcher": "mcp__(plugin_mmo_)?model-dispatch__(load_policy|preflight_dispatch|execute_with_model|execute_batch|simulate_policy)",
+        "matcher": "mcp__(plugin_mmo_)?model-dispatch__(load_policy|preflight_dispatch|execute_with_model|simulate_policy)",
         "hooks": [
           {
             "type": "command",
@@ -75,7 +75,7 @@
         ]
       },
       {
-        "_comment": "Zero-touch workflow routing (docs/ambient-mode.md). Acts only in a chat the zero-touch plugin marked at its start (or for one run under MMO_AMBIENT); otherwise the shim exits before node starts. Always exits 0; decisions are JSON on stdout. The five mmo agents run only inside a workflow, and not while the Queue-or-Replace question waits; in an ordinary chat the model hiring one is refused.",
+        "_comment": "Zero-touch workflow routing (docs/ambient-mode.md). Acts only in a chat the zero-touch plugin marked at its start (or for one run under MMO_AMBIENT); otherwise the shim exits before node starts. Always exits 0; decisions are JSON on stdout. The mmo agents run only inside a workflow, and not while the Queue-or-Replace question waits; in an ordinary chat the model hiring one is refused.",
         "matcher": "Agent|Task",
         "hooks": [
           {
