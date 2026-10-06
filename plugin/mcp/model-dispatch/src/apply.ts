@@ -241,6 +241,20 @@ export function hydrateInputs(packet: TaskPacket, projectRoot: string): { packet
     if (escapes(rel)) {
       throw new Error(`execute_with_model: input slice "${s.path}" resolves outside project_root.`);
     }
+    if (binding === undefined) binding = bindingContract(projectRoot);
+    const offLimits = (r: string) => {
+      const why = readOffLimits(r, binding ?? null);
+      if (why) {
+        throw new Error(
+          `execute_with_model: input slice "${s.path}" is never sent to a model (${why}${r !== rel ? `, reached through a symbolic link as ${r}` : ""}). ` +
+            "Whether a model may read it is the person's decision: stop and tell the person which file the work needs and why.",
+        );
+      }
+    };
+    // The path as written is judged before the disk is asked whether it exists, so the answer is the same on every
+    // disk: on a case-sensitive one (Linux's) `.ENV` is not `.env`'s file and may not exist, and an off-limits path
+    // refused as "does not exist" would also tell the caller whether an off-limits file is there.
+    offLimits(rel);
     if (!existsSync(abs)) {
       throw new Error(`execute_with_model: input slice "${s.path}" does not exist under project_root (${projectRoot}).`);
     }
@@ -251,16 +265,8 @@ export function hydrateInputs(packet: TaskPacket, projectRoot: string): { packet
       throw new Error(`execute_with_model: input slice "${s.path}" resolves outside project_root through a symbolic link.`);
     }
     if (!statSync(real).isFile()) throw new Error(`execute_with_model: input slice "${s.path}" is not a file.`);
-    if (binding === undefined) binding = bindingContract(projectRoot);
-    for (const r of new Set([rel, realRel])) {
-      const why = readOffLimits(r, binding);
-      if (why) {
-        throw new Error(
-          `execute_with_model: input slice "${s.path}" is never sent to a model (${why}${r !== rel ? `, reached through a symbolic link as ${r}` : ""}). ` +
-            "Whether a model may read it is the person's decision: stop and tell the person which file the work needs and why.",
-        );
-      }
-    }
+    // And the file it reaches through links, once it is known to be one.
+    if (realRel !== rel) offLimits(realRel);
     const text = readFileSync(abs, "utf8");
     let content: string;
     if (s.lines) content = sliceLines(text, s.lines);

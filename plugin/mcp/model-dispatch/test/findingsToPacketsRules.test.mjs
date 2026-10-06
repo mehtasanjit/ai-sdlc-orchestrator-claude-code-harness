@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -224,15 +224,30 @@ test("--intent is checked against the run's job as Gate 0 recorded it", async ()
   } finally { p.done(); }
 });
 
-// A file outside the spec, named in other letters (a case-insensitive disk, macOS's), is one file: it is judged and
-// routed under the disk's own spelling, so the writer's rule and the merge see the file as the server will write it.
+/** Whether the disk under `dir` ignores letter case (macOS's by default; Linux's does not): a probe file is found under another spelling. */
+function caseInsensitiveDisk(dir) {
+  const probe = join(dir, "case-probe-a");
+  writeFileSync(probe, "");
+  try { return existsSync(join(dir, "CASE-PROBE-A")); } finally { rmSync(probe, { force: true }); }
+}
+
+// A file outside the spec, named in other letters, is judged as the disk sees it. On a case-insensitive disk (macOS's)
+// the other spellings are one file: it is routed under the disk's own spelling, so the writer's rule and the merge see
+// the file as the server will write it. On a case-sensitive disk (Linux's) they are other files, which do not exist:
+// neither is routed. The test asserts whichever the disk it runs on does.
 test("a fix target outside the spec, spelled in other letters, is routed under the disk's own spelling", async () => {
   const p = await finalized();
   try {
     p.file("config/app.yml", "key: 1\n");
     p.contract({ allowlist: ["src/**", "config/**"], off_limits: [] });
     const r = await repair(p, [{ path: "CONFIG/app.yml", problem: "a key is missing" }, { path: "config/APP.yml", problem: "another key" }]);
-    assert.deepEqual(r.packets.map((k) => k.artifact_path), ["config/app.yml"], JSON.stringify(r.not_routed));
-    assert.match(r.packets[0].instruction, /a key is missing[\s\S]*another key/);
+    if (caseInsensitiveDisk(p.root)) {
+      assert.deepEqual(r.packets.map((k) => k.artifact_path), ["config/app.yml"], JSON.stringify(r.not_routed));
+      assert.match(r.packets[0].instruction, /a key is missing[\s\S]*another key/);
+    } else {
+      assert.deepEqual(r.packets, []);
+      assert.deepEqual(r.not_routed.map((n) => n.file), ["CONFIG/app.yml", "config/APP.yml"]);
+      for (const n of r.not_routed) assert.match(n.reason, /names no file under the code directory/);
+    }
   } finally { p.done(); }
 });

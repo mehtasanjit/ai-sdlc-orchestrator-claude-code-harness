@@ -78,7 +78,8 @@ Behavior:
    - The `allowlist` — allow if hit.
    - Otherwise (not in the allowlist, not off-limits) — deny.
 
-   Off-limits patterns match in any letter case, as macOS disks do. A path is judged as written and as it resolves
+   Off-limits patterns match in any letter case on every disk: on macOS's (case-insensitive by default) another
+   spelling is the same file, and on a case-sensitive disk (Linux's) the rule stays the stricter one. A path is judged as written and as it resolves
    through links: both must pass, so a project reached through a linked folder (macOS's `/tmp` and `/var`) is judged
    the same whichever form a path takes, and a link that leads out of the project is a write outside it.
 7. **`strict: false`.** `--strict-write=off`, passed by you at the start (Gate 0's freeze writes the contract with
@@ -135,7 +136,8 @@ the hook above never sees it. The server runs the same check itself
 run-end rule ([`runLog.ts`](../plugin/mcp/model-dispatch/src/runLog.ts), kept equal to the hook's by
 `test/apply.test.mjs`). Off-limits patterns match in any letter case. It reads a packet's inputs by the read rule
 (`hydrateInputs`): an off-limits path is never read into a model's prompt, judged as written and by the file it
-reaches through links.
+reaches through links. The path as written is judged before the server looks for the file, so an off-limits path is
+refused as off-limits whether or not it exists, on every disk, and the refusal never tells whether such a file is there.
 
 | Case | What the server does |
 |---|---|

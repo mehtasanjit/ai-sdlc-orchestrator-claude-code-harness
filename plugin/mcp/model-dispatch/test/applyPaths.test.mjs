@@ -2,8 +2,9 @@
  * The paths the brownfield writer reads into a model's prompt and writes (apply.ts hydrateInputs, checkWriteContract).
  * One read rule for everything sent to a model: never an off-limits file (the hardcoded list at any depth, the live
  * contract's off_limits), judged on the path as written and on the real path a symlink leads to, and never anything
- * outside the project. Off-limits matching ignores case, because the disks it runs on (macOS's by default) do: a
- * name in another case is the same file. Temp folders only.
+ * outside the project. Off-limits matching ignores case on every disk: on macOS's (case-insensitive by default) a
+ * name in another case is the same file, and on a case-sensitive one (Linux's, as CI runs) the rule stays the stricter
+ * one. The path as written is judged before the disk is asked whether it exists. Temp folders only.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -80,6 +81,19 @@ test("the live contract's off_limits are never read either; the live run's own f
   const ok = hydrateInputs(packet([slice(`.sdlc/runs/${RUN}/briefs/shared.md`), slice("src/a.ts")]), root);
   assert.deepEqual(ok.hydrated, [`.sdlc/runs/${RUN}/briefs/shared.md`, "src/a.ts"]);
   assert.throws(() => hydrateInputs(packet([slice(".sdlc/local/write-contract.json")]), root), /off-limits/);
+  rmSync(base, { recursive: true, force: true });
+});
+
+// The path as written is judged before the server looks for the file. Why: the answer must not depend on the disk. On
+// a case-sensitive disk (Linux's) `.ENV` is not `.env`'s file and may not exist, and an off-limits path that does not
+// exist would otherwise come back as "does not exist", which also tells the caller whether an off-limits file is there.
+test("an off-limits path is refused as off-limits before the server looks for it: missing or present, any disk", () => {
+  const { base, root } = setup({ allowlist: ["src/**"], off_limits: ["secrets/**"] });
+  for (const p of ["secrets/missing.pem", "SECRETS/missing.pem", ".env.production", ".ENV.production", ".git/HEAD", "apps/x/.Env"]) {
+    assert.throws(() => hydrateInputs(packet([slice(p)]), root), (e) => /off-limits/.test(e.message) && !/does not exist/.test(e.message), p);
+  }
+  // A path the rule allows still has to exist.
+  assert.throws(() => hydrateInputs(packet([slice("src/missing.ts")]), root), /does not exist/);
   rmSync(base, { recursive: true, force: true });
 });
 
