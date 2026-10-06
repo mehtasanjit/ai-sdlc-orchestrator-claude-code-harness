@@ -173,6 +173,17 @@ function main() {
   const relPath = relative(root, absPath);
 
   if (args.mode === "before") {
+    // One record per path per run: a retry or a second packet on the same file must keep the first
+    // backup and sha_before, or /mmo:revert restores a failed attempt instead of the original.
+    const earlier = prov.files_touched.find((r) => r.path === relPath);
+    if (earlier) {
+      earlier.sha_after = null;
+      earlier.written_at = null;
+      if (args.packetId) earlier.packet_id = args.packetId;
+      writeProv(provPath, prov);
+      log(`before ${relPath} (kept the run's first snapshot)`);
+      return;
+    }
     const existed = existsSync(absPath);
     const tracked = existed && isTracked(root, absPath);
     const dirtyOrUntracked = existed && (!tracked || isDirty(root, absPath));

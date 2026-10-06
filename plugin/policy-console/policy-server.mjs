@@ -39,28 +39,27 @@ const INTENTS = JSON.parse(readFileSync(INTENTS_PATH, "utf-8")).intents.map((i) 
 }));
 
 /**
- * Which phases the Intent matrix (plugin/skills/pipeline/SKILL.md, "Intent
- * matrix — brownfield only") marks SKIP for a given intent. Hand-synced with
- * that table — there is no machine-readable source for it yet, same
- * constraint as codegenTaskTypes' hand-sync with the policy YAML. A phase
- * missing from an intent's list here is never skipped for that intent.
- *
- * bugfix's architecture_design is conditional in the matrix ("SKIP unless
- * design-affecting"), not a flat skip — still listed here so the console
- * shows it disabled by default, with a note explaining the condition rather
- * than presenting it identically to docs/test's unconditional skip.
+ * Which phases a brownfield job skips, for the per-job grid: a skipped cell is
+ * shown as a dash and an override on it is refused, since it could never fire.
+ * Hand-synced with the brownfield flow (plugin/skills/pipeline/brownfield-runs.md,
+ * "The jobs") — there is no machine-readable source for it yet, same
+ * constraint as codegenTaskTypes' hand-sync with the policy YAML. Every job
+ * runs the same flow there: the architect hands over a change spec for every
+ * job (a bugfix's included, which opens Gate 2 only when code finds the spec
+ * design-affecting), so no job skips a phase. The table stays, with a note per
+ * conditional skip in CONDITIONAL_SKIP_NOTE, for a job that ever does.
+ * tools/test/policy-console-intents.test.mjs pins it.
  */
 const INTENT_SKIPPED_PHASES = {
-  docs: ["architecture_design"],
-  bugfix: ["architecture_design"],
+  docs: [],
+  bugfix: [],
   "feature-extend": [],
   "feature-new": [],
   refactor: [],
-  test: ["architecture_design"],
+  test: [],
   deps: [],
 };
 const CONDITIONAL_SKIP_NOTE = {
-  "bugfix:architecture_design": "Skipped unless the fix is design-affecting",
 };
 
 const KNOWN_ADAPTERS = [

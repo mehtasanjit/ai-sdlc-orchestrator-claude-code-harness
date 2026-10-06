@@ -33,7 +33,7 @@
  *   - No prompt text, file content or command output is ever stored. Paths, sizes, rule ids and numbers only.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, MODES } from "./lib/config.mjs";
@@ -49,9 +49,12 @@ import { PERSON_LINE as L, REFUSAL, NOT_A_JOB_NOTE, SAVED_WITH_GIT, STOP_NOTE, r
 import { acquire, heldByOther, lockOwner, pipelineRunOf, pipelineSinceOf, refreshOwner, release, runClaimedByOther } from "./lib/project-lock.mjs";
 import * as Q from "./lib/queue.mjs";
 import { handoffMessage } from "./lib/handoff-route.mjs";
-import { deniedBy, toolRuleFor } from "./lib/bash-rules.mjs";
+import { bashDenyRules, deniedBy, toolRuleFor } from "./lib/bash-rules.mjs";
 import { modeInForce } from "./lib/zt-saved.mjs";
-import { ownScriptCall, ownServerTool } from "./lib/own-steps.mjs";
+import { brownfieldRunAgent, contractStepCall, ownScriptCall, ownServerTool, PRE_DISPATCH_TOOLS, serverCommands, serverCommandUnchecked, STAMPED_TOOLS } from "./lib/own-steps.mjs";
+import { runEnded } from "../lib/run-log.mjs";
+import { runFreeze } from "../lib/contract-lock.mjs";
+import { SERVER_COMMAND_DENIED, serverCommandDeniedReason } from "./lib/route-flow.mjs";
 import { baseline, SAID as GIT_SAID } from "./git-baseline.mjs";
 const SAID_ALREADY = GIT_SAID.already;
 import * as H from "./lib/handoff.mjs";
@@ -286,16 +289,36 @@ function ownWorkflowState(ctx) {
  * other's. Until then the run is found by time, which can pick another chat's run started later in the same folder;
  * so stopping a run (/clear, "Replace it") needs a claimed one, and never guesses. A run id the model left as a shell
  * variable is not read. Nothing is emitted: the call runs as it is.
+ *
+ * A brownfield run's first line is Gate 0's contract freeze (`write-contract.mjs --freeze --run-id <run-id>`, the main
+ * chat's call, before the orchestrator logs run.start), so the freeze claims the run too: a run that stops between
+ * Gate 0 and run.start (its start check halts) is then ended by every zero-touch way out, and its freeze record never
+ * holds the project for good. A freeze claims only a fresh run (no run.start, no freeze record yet) and only while the
+ * chat has claimed none: a freeze can never move the chat's claim to another run. And once the chat's run has frozen a
+ * contract, no call moves the claim (a log line under a new run id included): a workflow freezes one contract as a step.
  */
 const RUN_LOGGER = /(?:^|[\s/"'])(?:mmo-log|write-provenance)\.mjs\b/;
-const RUN_ID_FLAG = /--run-id=(["']?)([^\s"'\\]+)\1(?=\s|\\|$)/;
+const CONTRACT_FREEZE = /(?:^|[\s/"'])write-contract\.mjs\b[^\n]*\s--freeze\b/;
+const RUN_ID_FLAG = /--run-id(?:=|\s+)(["']?)([^\s"'\\]+)\1(?=\s|\\|$)/;
 function claimRun(ctx) {
   if (!ctx.pipeline || String(ctx.input.tool_name ?? "") !== "Bash") return;
   const command = String(ctx.input.tool_input?.command ?? "");
-  if (!RUN_LOGGER.test(command)) return;
+  const freeze = CONTRACT_FREEZE.test(command);
+  if (!freeze && !RUN_LOGGER.test(command)) return;
   const id = RUN_ID_FLAG.exec(command)?.[2];
   const rec = pipelineRecord(ctx);
   if (!id || !RUN_ID.test(id) || !rec || rec.run_id === id) return;
+  if (freeze && (rec.run_id || runStartMs(ctx.projectDir, id) !== null || runFreeze(ctx.projectDir, id).records > 0)) {
+    appendEvent(ctx.sid, "session.run_not_claimed", { run_id: id, why: "a freeze claims only a fresh run, first" });
+    return;
+  }
+  // A run that froze a contract keeps the claim for the rest of the workflow, whatever its own log says since (it can
+  // log its own end): the claim decides which freeze is a step (contractStepAllowed), so a claim moved to a new run id
+  // would make a second, wider freeze a step. One workflow freezes one contract without a prompt.
+  if (rec.run_id && runFreeze(ctx.projectDir, rec.run_id).records > 0) {
+    appendEvent(ctx.sid, "session.run_not_claimed", { run_id: id, why: "the chat's run froze a contract: its claim never moves" });
+    return;
+  }
   // Only a run of this workflow: a run that started before this workflow did is an earlier workflow's, still logging
   // its last steps (its final report and gate, often from a helper in the background), and is never claimed. The
   // workflow's own run.start call claims a new run, and a reused id with it.
@@ -373,7 +396,6 @@ function stampRunCheck(ctx) {
 /** This plugin's scripts folder: the only place a step allowed without a prompt may run from. */
 const SCRIPTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OWN_STEP = "Zero-touch: a step of the workflow you asked for.";
-const STAMPED_TOOLS = /__(?:load_policy|preflight_dispatch|execute_with_model|simulate_policy)$/;
 
 /**
  * While a workflow runs in this chat, its own steps run without a permission prompt (lib/own-steps.mjs says which,
@@ -382,13 +404,71 @@ const STAMPED_TOOLS = /__(?:load_policy|preflight_dispatch|execute_with_model|si
 function allowOwnStep(ctx) {
   if (!ctx.pipeline) return false;
   const tool = String(ctx.input.tool_name ?? "");
-  // The four server tools a zero-touch run stamps with the person's models are answered by that stamp's own hook
-  // (pre-dispatch), so one call never gets two answers.
-  if (STAMPED_TOOLS.test(tool) && pipelineRecord(ctx)?.policy) return false;
+  // The server tools a zero-touch run stamps with the person's models (lib/own-steps.mjs STAMPED_TOOLS): those the
+  // released zero-touch matcher sends to the stamp's own hook (PRE_DISPATCH_TOOLS) are answered there, so one call
+  // never gets two answers; any other (execute_batch) never reaches that hook, so it is stamped and answered here.
+  if (STAMPED_TOOLS.test(tool) && pipelineRecord(ctx)?.policy) {
+    if (PRE_DISPATCH_TOOLS.test(tool)) return false;
+    handlers["pre-dispatch"](ctx);
+    return true;
+  }
   const command = ctx.input.tool_input?.command;
-  if (!(ownServerTool(tool) || (tool === "Bash" && ownScriptCall(command, SCRIPTS_DIR)))) return false;
+  // The write contract's own script: a step only as the guide runs it in the main chat (contractStepAllowed).
+  if (tool === "Bash" && contractStepAllowed(ctx, command)) {
+    emit({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: OWN_STEP } });
+    return true;
+  }
+  // A brownfield run's agents wrap and chain their step calls (lib/own-steps.mjs brownfieldRunAgent).
+  const joined = brownfieldRunAgent(ctx.input.agent_type);
+  if (!(ownServerTool(tool) || (tool === "Bash" && ownScriptCall(command, SCRIPTS_DIR, { joined })))) return false;
+  // A server call that would run a command the person's settings forbid, or whose commands cannot be read, is left to
+  // Claude Code's own permission prompt, as in a chat without zero-touch.
+  if (ownServerTool(tool) && serverCommandProblem(ctx)) return false;
   emit({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: OWN_STEP } });
   return true;
+}
+
+/**
+ * Whether a shell command is the write contract's own script run as a step of the workflow (lib/own-steps.mjs
+ * contractStepCall reads it): Gate 0's freeze or the close-out, by the main chat (never a helper: the guide runs both
+ * in the main chat), in the chat's own project folder (never another folder: a freeze there would hold that folder's
+ * writes in every chat), and a freeze only before the chat's run has started, for the run it claims (or before it has
+ * claimed one). So a live run cannot swap its frozen contract for a wider one without the person seeing the call:
+ * a freeze mid-run, or under a second run id, keeps Claude Code's prompt, also after the run has logged its own end,
+ * since the run that froze keeps the chat's claim (claimRun). --abandon never comes here: the person decides.
+ */
+function contractStepAllowed(ctx, command) {
+  if (ctx.agent) return false;
+  const call = contractStepCall(command, SCRIPTS_DIR);
+  if (!call) return false;
+  const cwd = resolve(ctx.cwd);
+  const root = call.projectRoot === null ? cwd : resolve(cwd, call.projectRoot.replaceAll("$(pwd)", cwd));
+  if (realOr(root) !== realOr(ctx.projectDir)) return false;
+  if (call.mode === "close") return true;
+  const claimed = pipelineRun(ctx);
+  if (claimed && claimed !== call.runId) return false;
+  return runStartMs(ctx.projectDir, call.runId) === null;
+}
+const realOr = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };
+
+/**
+ * What keeps a model-server call from running without Claude Code's prompt: a command it would make the server run that
+ * the person's Claude settings forbid (`{ command, rule }`), or a packets file it names that cannot be read while the
+ * settings forbid any command (`{ unreadable }`), or a command whose shell syntax the check cannot see through
+ * (`{ unchecked }`). Null when there is nothing to check or nothing is forbidden.
+ */
+function serverCommandProblem(ctx) {
+  if (!bashDenyRules(ctx.projectDir).length) return null;
+  const found = serverCommands(ctx.input.tool_name, ctx.input.tool_input, ctx.projectDir);
+  if (found.unreadable) return { unreadable: found.unreadable };
+  for (const command of found.commands) {
+    const rule = deniedBy(command.run, ctx.projectDir);
+    if (rule) return { command: command.run, rule };
+    // Shell syntax the deny check cannot see through, in the template or in the file path the server pastes into it
+    // (lib/own-steps.mjs serverCommandUnchecked): the command cannot be checked, so it is left to Claude Code's prompt.
+    if (serverCommandUnchecked(command)) return { unchecked: command.run };
+  }
+  return null;
 }
 
 /**
@@ -425,6 +505,14 @@ function endPipelineIfOver(ctx) {
   // The workflow reported that it stopped before its run began (ambient/workflow-stopped.mjs, seen at the "pre-any"
   // moment).
   if (pipelineRecord(ctx)?.stopped) {
+    // A run that stopped after Gate 0 froze its contract (the freeze claimed it, claimRun) is ended in its own log, as
+    // zero-touch's other stops end a claimed run (stopWorkflow): otherwise its live freeze record would hold the project
+    // for good. A run that has already ended by its own log is left as it ended.
+    const runId = pipelineRun(ctx);
+    if (runId && !runEnded(ctx.projectDir, runId)) {
+      const done = abortRun(ctx.projectDir, runId, "stopped");
+      appendEvent(ctx.sid, "route.stopped", { run_id: runId, why: "stopped-early", logged: done.logged, unlocked: done.unlocked });
+    }
     endPipeline(ctx);
     appendEvent(ctx.sid, "session.pipeline_ended", { outcome: "stopped" });
     dropQueueAfter(ctx, job, "stopped");
@@ -1216,7 +1304,7 @@ const handlers = {
       appendEvent(ctx.sid, "agent.mmo-ambient_request", { agent: type, blocked: true, held: true });
       return void emit(waiting ? refusalOutput(REFUSAL.waitAnswer, Q.askInstruction(waiting)) : refusalOutput(REFUSAL.hold, HOLD_REASON));
     }
-    // The five mmo agents belong to a workflow run. In ordinary chat the
+    // The mmo agents belong to a workflow run. In ordinary chat the
     // model picking one up on its own starts a gated run nobody asked for.
     const blocked = !ctx.pipeline && !ctx.agent;
     appendEvent(ctx.sid, "agent.mmo-ambient_request", { agent: type, blocked: blocked && acts(ctx) });
@@ -1345,7 +1433,7 @@ const handlers = {
   },
 
   "pre-dispatch"(ctx) {
-    // A model-server call (load_policy, preflight_dispatch, execute_with_model, simulate_policy) inside a run zero-touch
+    // A model-server call that takes a policy file (lib/own-steps.mjs STAMPED_TOOLS) inside a run zero-touch
     // started: it is stamped with that run's policy file, an explicit path, which the server and the
     // run-start check put ahead of everything else, a project's routing-policy.yaml included. So the run uses the
     // person's zero-touch choice whatever any instruction says, from the chat or from a helper (helpers make most of
@@ -1355,8 +1443,17 @@ const handlers = {
     if (!rec?.policy || !ctx.pipeline) return;
     const input = ctx.input.tool_input && typeof ctx.input.tool_input === "object" && !Array.isArray(ctx.input.tool_input) ? ctx.input.tool_input : {};
     const path = policyPath(rec.policy);
+    // The commands the call would make the server run (a written file's check and format commands) run outside
+    // Claude Code's Bash rules: one the person's settings forbid refuses the call; a packets file that cannot be read
+    // to check them, or a command whose shell syntax the check cannot see through, leaves the call to Claude Code's
+    // prompt (lib/own-steps.mjs serverCommands).
+    const problem = serverCommandProblem(ctx);
+    if (problem?.rule) {
+      appendEvent(ctx.sid, "route.server_command_denied", { tool: String(ctx.input.tool_name ?? ""), rule: problem.rule });
+      return void emit(refusalOutput(SERVER_COMMAND_DENIED, serverCommandDeniedReason(problem.command, problem.rule)));
+    }
     // A step of the person's own workflow: allowed without a permission prompt (lib/own-steps.mjs).
-    const allow = { permissionDecision: "allow", permissionDecisionReason: OWN_STEP };
+    const allow = problem ? {} : { permissionDecision: "allow", permissionDecisionReason: OWN_STEP };
     if (input.policy_path === path) return void emit({ hookSpecificOutput: { hookEventName: "PreToolUse", ...allow } });
     appendEvent(ctx.sid, "route.policy_stamped", { tool: String(ctx.input.tool_name ?? ""), policy: rec.policy, by: ctx.agent ? "helper" : "chat" });
     emit({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...input, policy_path: path }, ...allow } });

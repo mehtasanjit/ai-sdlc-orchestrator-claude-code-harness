@@ -73,10 +73,10 @@ The plugin coexists with your normal development tools too:
   use.
 - **Pre-commit hooks** — fire normally through `git commit` when `commit_strategy != none`.
   The plugin **never** uses `--no-verify`.
-- **CODEOWNERS** — parsed. If a packet targets a file with owners outside your declared team
-  (optional field in `.sdlc/project.json`), a mini-gate raises before the write. Merge
-  governance still stays with GitHub — the plugin surfaces the ownership; it doesn't enforce
-  it.
+- **CODEOWNERS** — read by discovery only for regulated-repo signals (owners such as a
+  security, compliance or privacy team), which Gate 0 then names. No step checks a packet's
+  file against its owners, and nothing is held for them: merge governance stays with GitHub,
+  and the plugin does not enforce ownership.
 - **Existing CI** — the plugin never installs workflow files unless the intent explicitly
   asks for it (e.g. `feature-new` intent producing `.github/workflows/deploy.yml`). When it
   does add CI, it deep-merges into existing files per the write-contract merge rules — never

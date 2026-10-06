@@ -106,8 +106,9 @@ export const CREDENTIAL_REQUIRED_FIELDS = {
  * `usable: false` only when CERTAIN (missing, unparseable, no type, or a
  * recognised type missing a required field). Unrecognised types come back
  * usable — a checker that invents failures is worse than one that misses them.
- * Expiry not checked (offline can't tell live from revoked; probe-agent-worker
- * covers that). Readers injected for offline testing.
+ * Expiry not checked (offline can't tell live from revoked; each run's start
+ * check, which sends one test call through every typist, covers that). Readers
+ * injected for offline testing.
  */
 export function inspectCredentialFile(path, { exists = existsSync, read = readFileSync } = {}) {
   if (!path) return { present: false, usable: false, type: null, detail: null };
@@ -375,7 +376,9 @@ export function evaluate({
     });
   }
 
-  // A warning, not a block: a brownfield run never starts the typist and runs with any CLI.
+  // A warning, not a block: every run whose files the typists type (a new-app build, a brownfield run) types its Claude
+  // attempts through this CLI, but whether a run types with Claude depends on its policy, which the run's own pre-flight
+  // checks (preflight_dispatch with executor: true halts such a run before anything is spent).
   if (hasClaudeCli && claudeHelp) {
     const missing = claudeHelp.error != null ? null : missingLeanOpusFlags(claudeHelp.text);
     if (missing === null || missing.length > 0) {
@@ -386,8 +389,9 @@ export function evaluate({
           (missing === null
             ? `\`claude --help\` failed (${String(claudeHelp.error).slice(0, 200)}), so this check cannot tell whether the claude CLI lists ${LEAN_OPUS_FLAGS.join(", ")}. `
             : `This machine's claude CLI lists no ${missing.join(", ")} flag${missing.length > 1 ? "s" : ""}. `) +
-          "A new-app build (execute_stage) types files with Claude through it — the lean Opus typist, also every job's last attempt " +
-          "when the policy has a Claude model — and cannot type with Claude until the CLI lists them. A brownfield run does not use the claude CLI.",
+          "A new-app build and a brownfield run type files with Claude through it — the lean Opus typist, also every file's last " +
+          "attempt when the policy has a Claude model — and cannot type with Claude until the CLI lists them; the run's pre-flight " +
+          "stops such a run before anything is spent.",
         fix: `Update Claude Code (\`claude update\`) until \`claude --help\` lists ${LEAN_OPUS_FLAGS.join(", ")}.`,
       });
     }
@@ -506,7 +510,8 @@ export function evaluate({
         `account has several projects. Or, for the AI Studio path, get a key at ` +
         `https://aistudio.google.com/app/apikey and put it in ${ENV_ADVICE}.` +
         (projectOnly
-          ? " If this machine runs inside Google Cloud, settle it for about two cents with scripts/probe-agent-worker.mjs rather than guessing."
+          ? " If this machine runs inside Google Cloud, it may be fine: each run's start check sends one test call through " +
+            "every model that types the run and stops the run there, before any paid phase, if the credential cannot be used."
           : ""),
     });
   }
@@ -533,15 +538,15 @@ export function evaluate({
         (unproven
           ? `This install names a project ('${realEnv.GOOGLE_CLOUD_PROJECT}') but has no credential this ` +
             "check can see. If it is not running inside Google Cloud, every delegated task will fail to " +
-            "authenticate — after the premium phases are billed."
+            "authenticate, and each run's start check stops the run on it."
           : "This install has no credential for it" +
             (realEnv.GEMINI_API_KEY
               ? " — GEMINI_API_KEY is the AI Studio path, and the agent worker has no way to use it."
               : ".") +
             " Every delegated task would fail to authenticate."),
       fix: unproven
-        ? "Settle it for about two cents before a real run: node scripts/probe-agent-worker.mjs. " +
-          `If it fails to authenticate, run ${gcloudLogin}.`
+        ? "Inside Google Cloud this may be fine: each run's start check sends one test call through the agent and stops " +
+          `the run there, before any paid phase, if it cannot authenticate. Anywhere else, run ${gcloudLogin}.`
         : `Run ${gcloudLogin}, and set GOOGLE_CLOUD_PROJECT if the account has several projects. ` +
           "To stay on the model path instead, which does work with an AI Studio key, re-run this " +
           "script with --disable-agent.",
@@ -751,9 +756,11 @@ export function buildWorkerEnvironment(pluginRoot, log = () => {}) {
 }
 
 /**
- * Point green agent-path installs at the probe — the offline checks here
- * can't see 403 (entitlement), 404 (region), 401 (stale credential). Null on
- * model-path or non-green installs.
+ * Tell a green agent-path install what the offline checks here leave to the run: they can't see 403
+ * (entitlement), 404 (region) or 401 (stale credential), and each run's start check (preflight_dispatch with
+ * probe_typists) sends one test call through the agent, which stops the run on any of them before any paid
+ * phase. No separate paid probe is offered: it would ask the person an extra question and pay twice for one
+ * answer. Null on model-path or non-green installs.
  */
 export function agentProbeHint(pluginRoot, env = {}, ok = true) {
   if (!ok || !selectsAgentWorker(env)) return null;
@@ -761,10 +768,9 @@ export function agentProbeHint(pluginRoot, env = {}, ok = true) {
     `\n  This install selects the agent path, and the checks above are all offline.\n` +
     `  They cannot tell whether this project carries the Antigravity entitlement,\n` +
     `  whether its region serves the model, or whether a well-formed credential is\n` +
-    `  still live — each fails at the first delegated packet, after the premium\n` +
-    `  phases are already billed. One trivial delegation settles all three for about\n` +
-    `  two cents:\n` +
-    `    node ${join(pluginRoot, "scripts", "probe-agent-worker.mjs")}`
+    `  still live. Each run's start check sends one test call through the agent\n` +
+    `  and stops the run there, before any paid phase, if any of them fails:\n` +
+    `  nothing to run beforehand.`
   );
 }
 

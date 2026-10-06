@@ -592,6 +592,16 @@ export function startProblem({ projectDir, policy, auth, job = null, chatModel =
 }
 
 /**
+ * A model-server call of a workflow zero-touch started is refused because a command it would make the server run (a
+ * written file's check or format command) is one the person's Claude settings forbid: the server runs it outside
+ * Claude Code's Bash rules (lib/own-steps.mjs serverCommands, lib/bash-rules.mjs).
+ */
+export const SERVER_COMMAND_DENIED = `${LABEL} this workflow step wasn't run, because it would run a command your Claude settings don't allow.`;
+export function serverCommandDeniedReason(command, rule) {
+  return `This call was refused: the model server would run \`${String(command).slice(0, 300)}\` in the project, which the person's Claude settings forbid (${rule}), and the server runs these commands outside your Bash tool's rules. Do not run that command another way. Say at the workflow's next approval step, in one sentence, which command the person's settings forbid.`;
+}
+
+/**
  * Shown to the person, not the model, when a typed workflow command is kept back because another chat in this
  * project is running a workflow: the prompt hook blocks the typed line, and Claude Code shows this reason.
  */

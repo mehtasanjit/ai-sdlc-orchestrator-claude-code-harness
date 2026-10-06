@@ -18,6 +18,9 @@ import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { moveAside, specKey, type Spec, type SpecCommand } from "../spec/store.js";
 import { insideCodeDir, RECEIPT_MAX_BYTES } from "./run.js";
+// apply.ts imports commandEnv from here and this file imports commandDeniedBy from there: each uses the other's export
+// only when called, never while the modules load, so the cycle is safe.
+import { commandDeniedBy } from "../apply.js";
 
 /**
  * A command's time limit is the plan's own (`timeout_s` on each command): the architect knows the
@@ -42,8 +45,9 @@ export interface CommandResult {
   passed: boolean; reason: string; forbidden_count: number; forbidden_lines: string[]; log_path: string | null;
   /**
    * The machine, not the project, decided this one: the shell found no such program (exit 127),
-   * the plan's time limit stopped it, the plan gives it no time limit, or the install it needs could not
-   * run. Its criteria are not checked, with the reason; nothing about it is sent for repair.
+   * the plan's time limit stopped it, the plan gives it no time limit, the person's Bash deny rules
+   * forbid it, or the install it needs could not run. Its criteria are not checked, with the reason;
+   * nothing about it is sent for repair.
    */
   not_run?: boolean;
 }
@@ -55,7 +59,7 @@ export interface AcceptanceFailure {
 export interface AcceptanceReceipt {
   stage: "acceptance"; round: number; final: boolean; rechecks_left: number;
   passed: number; failed: AcceptanceFailure[]; failed_not_listed?: number; not_checked: string[];
-  /** Commands the machine could not run (program not found, time limit, no limit stated, an install that could not run): their criteria are not checked. */
+  /** Commands the machine could not run (program not found, time limit, no limit stated, denied by the person's settings, an install that could not run): their criteria are not checked. */
   not_run?: { command: string; reason: string }[];
   table_path: string; results_path: string; refused?: string;
 }
@@ -102,6 +106,23 @@ function runCommand(run: string, cwd: string, env: Record<string, string>, logPa
     child.on("error", () => finish(null));
     child.on("close", (code) => finish(code));
   });
+}
+
+/**
+ * The person's Bash deny rule a plan command breaks, or null: the rules the server holds a brownfield packet's checks
+ * to (apply.ts commandDeniedBy: the organisation's managed settings, the person's own, and a project's .claude
+ * settings), read for the code directory and for the session's project (CLAUDE_PROJECT_DIR, else the folder Claude
+ * Code started this server in, as handoff/listing.ts reads it). Why: the server runs these commands itself, where
+ * Claude Code's own permission check for its Bash tool never sees them, so greenfield and brownfield hold their
+ * commands to the same rules.
+ */
+function deniedRule(run: string, codeDir: string, env: Record<string, string | undefined>): string | null {
+  const session = env.CLAUDE_PROJECT_DIR?.trim() || process.cwd();
+  for (const dir of new Set([resolve(codeDir), resolve(session)])) {
+    const rule = commandDeniedBy(run, dir, env as NodeJS.ProcessEnv);
+    if (rule) return rule;
+  }
+  return null;
 }
 
 /** The program a command line starts: its first word after any leading VAR=value assignments. */
@@ -182,8 +203,9 @@ export async function runAcceptance(spec: Spec, opts: AcceptanceOptions): Promis
 /**
  * Runs a list of the plan's commands in order, each in its folder under the code directory, each one's
  * whole output in its own log file under logDir, each judged by the pass rule the plan states. A command
- * whose folder leaves the code directory is never run; an install that does not finish stops the
- * commands after it (reported as not run).
+ * whose folder leaves the code directory is never run, nor is one the person's Bash deny rules forbid
+ * (deniedRule: not run, with the rule, its criteria not checked: the person's decision, not a failure to
+ * repair); an install that does not finish stops the commands after it (reported as not run).
  */
 export async function runCommandList(commands: SpecCommand[], o: { codeDir: string; logDir: string; env?: Record<string, string | undefined> }): Promise<CommandResult[]> {
   const env = commandEnv(o.env ?? process.env);
@@ -201,6 +223,9 @@ export async function runCommandList(commands: SpecCommand[], o: { codeDir: stri
     const dir = resolve(codeRoot, c.cwd);
     if (!existsSync(codeRoot) || !insideCodeDir(codeRoot, c.cwd)) { r.reason = `not run: ${c.cwd} is outside the code directory`; continue; }
     if (!existsSync(dir) || !statSync(dir).isDirectory()) { r.reason = `not run: no folder ${c.cwd} under the code directory`; continue; }
+    // A command the person's settings deny never runs, as a brownfield packet's checks never do.
+    const rule = deniedRule(c.run, codeRoot, o.env ?? process.env);
+    if (rule) { r.reason = `not run: the person's Claude settings deny it (${rule})`; r.not_run = true; if (c.role === "install") stoppedBy = { name: c.name, notRun: true }; continue; }
     // No limit is guessed: a command the plan gives no time limit is not run, and the result says so.
     if (!(Number.isInteger(c.timeout_s) && c.timeout_s > 0)) { r.reason = "not run: the plan states no time limit for this command (timeout_s)"; r.not_run = true; if (c.role === "install") stoppedBy = { name: c.name, notRun: true }; continue; }
     const timeoutMs = c.timeout_s * 1000;

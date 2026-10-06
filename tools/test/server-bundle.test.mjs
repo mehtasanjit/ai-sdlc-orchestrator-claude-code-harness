@@ -110,7 +110,21 @@ test("in that copy, the scripts that load the server's code work, and say nothin
     const out = mkdtempSync(join(c.dir, "run-"));
     run("write-manifest.mjs", [out, "--pass", "p1", "--policy", "opus-plus-flash-v38", "--project-root", c.dir]);
     assert.ok(existsSync(join(out, "manifest.json")), "the manifest is written");
+    // A brownfield run's spec check prints greenfield's schema shapes from the bundle.
+    assert.match(run("plan-lint.mjs", ["--shape"]), /^units-NNN\.json: \{id: /m, "plan-lint loads the spec schema from the bundle");
   } finally { c.cleanup(); }
+});
+
+// The scripts' bundle gained greenfield's spec schema and store for the brownfield run's change spec (lib.ts). Every
+// namespace the other scripts load must export exactly what its compiled module does, so nothing they use changed.
+test("each namespace of the scripts' bundle exports exactly its server module's names", { skip: existsSync(join(SERVER, "dist", "lib.js")) ? false : "NOT RUN: dist/ is not built (cd plugin/mcp/model-dispatch && npm run build)" }, async () => {
+  const lib = await import(pathToFileURL(join(SERVER, "bundle", "lib.mjs")).href);
+  const modules = { policy: "policy.js", routing: "routing.js", executorRun: "executor/run.js", telemetry: "telemetry.js", pricing: "pricing.js", prices: "prices.js", effectivePrice: "effectivePrice.js", adapters: "adapters/index.js", specSchema: "spec/schema.js", specStore: "spec/store.js" };
+  assert.deepEqual(Object.keys(lib).sort(), Object.keys(modules).sort());
+  for (const [ns, file] of Object.entries(modules)) {
+    const mod = await import(pathToFileURL(join(SERVER, "dist", file)).href);
+    assert.deepEqual(Object.keys(lib[ns]).sort(), Object.keys(mod).sort(), ns);
+  }
 });
 
 test("the manifest starts the shipped bundle, and an unset variable expands to empty instead of a plugin error", () => {

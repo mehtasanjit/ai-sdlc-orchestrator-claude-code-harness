@@ -18,13 +18,21 @@
  * record lists (written-files.json, provenance.json); with no such record the counts are left out.
  * A path that cannot be read never stops the manifest. Fields the collector added to an existing
  * manifest (orchestrator_overhead, true_total_cost_usd and its notes) are kept while the dispatched
- * total is the one they were computed from; when it changed they are left out until the collector
- * runs again. Prints one line with the dispatched total, then one line per note.
+ * total is the one they were computed from, and the helpers' measured phases they carry are put back
+ * into phase_breakdown (lib/helper-phases.mjs); when it changed they are left out until the collector
+ * runs again. Then it renders <output_dir>/SUMMARY.md from that manifest and the run's files
+ * (lib/run-summary.mjs) and copies the acceptance table code wrote into it (lib/acceptance-summary.mjs):
+ * the report is code's, because Claude Code refuses an orchestrator helper's Write of a report file. A
+ * SUMMARY.md that cannot be written never stops the manifest; a note says why. Prints one line with the
+ * dispatched total, then one line per note.
  */
 import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { writeAcceptanceSummary } from "./lib/acceptance-summary.mjs";
 import { resolveProjectRoot } from "./lib/env.mjs";
+import { applyHelperPhases, measuredHelperPhases } from "./lib/helper-phases.mjs";
+import { writeRunSummary } from "./lib/run-summary.mjs";
 import { loadServerLib } from "./lib/server-lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -250,6 +258,9 @@ export async function writeManifest(a) {
     const before = collectorBasis(existing);
     if (before !== undefined && Math.abs(before - built.total_cost_usd) < 1e-6) {
       for (const k of COLLECTOR_KEYS) if (existing[k] !== undefined) manifest[k] = existing[k];
+      // The helpers' measured phases the collector wrote go back into the rebuilt phase_breakdown, in place of the
+      // estimates buildManifest summed again (lib/helper-phases.mjs).
+      applyHelperPhases(manifest, events, measuredHelperPhases(existing));
     } else {
       // buildManifest's own overhead block comes from the same collector event, so it goes too.
       for (const k of COLLECTOR_KEYS) delete manifest[k];
@@ -260,6 +271,14 @@ export async function writeManifest(a) {
     }
   }
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  // SUMMARY.md from the manifest just written, then code's acceptance table into it (both keep the other's part). A
+  // summary that cannot be written is said, and the manifest stands: it is the run's record.
+  try {
+    writeRunSummary(outDir, manifest, { projectRoot: resolve(projectRoot) });
+    writeAcceptanceSummary(outDir);
+  } catch (e) {
+    notes.push(`SUMMARY.md was not written: ${e?.message ?? e}`);
+  }
   return { manifestPath, dispatched: built.total_cost_usd, events: events.length, gates: gates.length, status: manifest.status, notes };
 }
 

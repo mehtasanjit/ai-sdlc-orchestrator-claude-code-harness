@@ -16,14 +16,15 @@ contributors have to read the code to understand the contract.
 
 ## Files in scope
 
-- `README.md` (create)
+- `README.md` (edit — today it describes the example; rewrite it as the project's README)
 - `docs/auth.md` (create)
 - `src/auth.js` (edit — JSDoc only, no behavior change)
 
+Read, not written: `src/errors.js`, `src/index.js` (the error class and the routes the docs describe; outside the allowlist, so never written, and not off-limits, so the typists are shown them)
+
 ## Files off-limits
 
-- Everything else. `src/index.js`, `src/errors.js`, `package.json`, `.env*` — untouched.
-- Standard off-limits (`.env*`, competing AI configs) apply too.
+- Standard off-limits (`.env*`, other AI tools' configuration) apply. Everything outside the scope above is outside the allowlist, so the run cannot write it.
 
 ## Acceptance criteria
 

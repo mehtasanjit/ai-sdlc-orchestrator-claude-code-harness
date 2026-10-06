@@ -99,11 +99,11 @@ Every HITL gate auto-approves. The full transcript lands in `live-run.log`.
 | `--brief=<path>` | Optional pre-written intent brief (replaces the interactive interview). Format is in [docs/brownfield.md](brownfield.md). |
 | `--gates=<prompt\|auto-approve\|auto-abort>` | Gate behaviour. `prompt` (default) is interactive; `auto-approve` accepts every gate (headless); `auto-abort` (v1.5) approves only when the run's fingerprint matches `.sdlc/project.json`. |
 | `--from-config=<path>` | (v1.5) Read gate answers from a committed team config file. Pair with `--gates=auto-abort` for CI. |
-| `--strict-write=off` | Downgrade the write-contract PreToolUse hook from HARD-BLOCK to WARN. Every off-limits or not-in-allowlist write is logged but not refused. Defeats the plugin's main safety guarantee — use with care. |
+| `--strict-write=off` | Downgrade the write contract's own refusals (the PreToolUse hook and the server's writer) from HARD-BLOCK to WARN: every write outside the run's allowlist or in its `off_limits` is reported but not refused. The always-off-limits list (credentials, MCP config, other AI tools' rules, git's own store) stays refused, and so do the run's own contract and log while its freeze record is live. It applies when the run starts: Gate 0 freezes the contract with `strict: false`, and changing `strict` in a frozen contract refuses every write. Defeats the plugin's main safety guarantee — use with care. |
 | `--allow-dirty` | Bypass the git-clean check when `commit_strategy != none`. |
 | `--recheck` | Force pre-check re-run even when the cached status is still valid. Useful after a plugin version bump. |
-| `--adaptive-profile` | Force Tier 2b adaptive stack profile even when a matching pre-authored adapter exists. |
-| `--refresh-profile` | Force stack-profile re-scan (implies `--recheck`). Use after a substantial repo restructure. |
+| `--adaptive-profile` | Force Tier 2b adaptive stack profile even when a matching pre-authored adapter exists. It reaches discovery as its `adaptive_profile` input (the brownfield guide's step 3). |
+| `--refresh-profile` | Force stack-profile re-scan (implies `--recheck`). Use after a substantial repo restructure. It reaches discovery as its `refresh_profile` input (the brownfield guide's step 3). |
 
 Brownfield writes to `.sdlc/runs/<YYYYMMDD-HHMMSS>-<intent>-<slug>/` — `telemetry.jsonl`, `manifest.json`, `provenance.json`, `senior-review.md`, `security-review.md`, `final_report.md`. `provenance.json` is what `/mmo:revert` reads to undo a run.
 

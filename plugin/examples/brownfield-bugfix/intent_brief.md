@@ -24,20 +24,18 @@ Same for a missing `username`. Same status, same shape.
 
 ## Files in scope
 
-- `src/auth.js` — add input validation before the credential check
-- `src/auth.spec.js` — the failing test should pass unchanged; a new test for `username`
-  missing is welcome
+- `src/auth.spec.js` (edit — the reproducing case for a missing `username`, typed first; the seeded case stays as it is)
+- `src/auth.js` (edit — validate both fields before the credential check)
+- `src/index.js` (edit — answer the validation error with 400; the route answers every error with 500 today)
 
 ## Files off-limits
 
-- `src/index.js`, `package.json`, `node_modules/` — untouched unless the fix genuinely needs
-  a route-level change (the fix belongs in the handler, not the middleware)
-- Standard off-limits apply
+- Standard off-limits apply. Everything else is outside the allowlist, so the run cannot write it.
 
 ## Acceptance criteria
 
+- New test `returns 400 when username missing` fails before the fix and passes after it
 - Existing failing test `returns 400 when password missing` passes
-- New test `returns 400 when username missing` exists and passes
 - HTTP status is 400, not 500
 - Response body has both `error` and `field` fields
 - No changes to the credential check itself — that's still `admin`/`hunter2`

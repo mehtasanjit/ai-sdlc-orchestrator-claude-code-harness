@@ -1,6 +1,8 @@
 /**
- * Whether a run has ended, read from its own log: `.sdlc/runs/<run-id>/orchestrator.log`, which only mmo-log.mjs
- * writes (write-contract-check.mjs refuses a Write or Edit of it while the run's contract binds).
+ * Whether a run has ended, read from its own log: `.sdlc/runs/<run-id>/orchestrator.log`, which the plugin's own
+ * scripts write (mmo-log.mjs the run's events; write-contract.mjs the contract's freeze record and the end of a run the
+ * person abandons; zero-touch's stop the abort it records), and which write-contract-check.mjs refuses to a Write or
+ * Edit while the run's contract binds.
  *
  * Why: a brownfield write contract (.sdlc/local/write-contract.json) binds the run that froze it at Gate 0. Once that
  * run is over it must bind nothing, or every later edit in the project outside the old run's allowlist is refused, in
@@ -17,10 +19,12 @@
  *
  * The log is read with zero-touch's reader (plugin/scripts/ambient/lib/workflow-log.mjs, the same mmo plugin), which
  * also hands a chat back when a completed run stays quiet; a guard frees nothing on a timer, so that rule is not used
- * here. tools/test/run-log.test.mjs keeps the two in agreement on every explicit record.
+ * here. tools/test/run-log.test.mjs keeps the two in agreement on every explicit record. The whole log is read: the
+ * pieces the logger rotated out first, then the current file (readRunLog), and only regular files (a named pipe where
+ * the log should be is no log, and never stalls the reader).
  */
 import { join } from "node:path";
-import { readWorkflowLog, RUN_ID } from "../ambient/lib/workflow-log.mjs";
+import { readRunLog, RUN_ID } from "../ambient/lib/workflow-log.mjs";
 
 /** The final acceptance gate, which closes a completed run. */
 const FINAL_GATE = "gate-4";
@@ -51,5 +55,5 @@ export function eventsEnded(events) {
 /** Whether the run `runId` in the project at `repoRoot` has ended, by its own log. */
 export function runEnded(repoRoot, runId) {
   if (typeof runId !== "string" || !RUN_ID.test(runId)) return false;
-  return eventsEnded(readWorkflowLog(join(repoRoot, ".sdlc", "runs", runId, "orchestrator.log")));
+  return eventsEnded(readRunLog(join(repoRoot, ".sdlc", "runs", runId)));
 }

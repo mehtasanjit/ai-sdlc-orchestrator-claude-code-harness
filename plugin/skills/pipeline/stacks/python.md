@@ -8,13 +8,13 @@ one of these dependency signals:
 - None of the above → falls back to the generic adapter; adaptive stack profile is authoritative
 
 The three frameworks have very different conventions. This file describes each branch; the
-packet planner picks the branch based on which dependency was detected. If multiple are present
-(e.g. a Django project with an internal FastAPI service), the packet planner uses the framework
-of the file being edited (via the file's imports) or asks the user at Gate 0 for cross-cutting
-work.
+architect, which reads it while it writes a brownfield change spec, picks the branch based on which
+dependency was detected. If multiple are present (e.g. a Django project with an internal FastAPI
+service), it uses the framework of the file being edited (via the file's imports); cross-cutting work
+is settled at Gate 0.
 
-Brownfield use still defers to the adaptive stack profile as ground truth — snippets in the
-profile override anything below when they disagree.
+The adaptive stack profile stays the ground truth — snippets in the profile override anything below
+when they disagree.
 
 ---
 
@@ -47,33 +47,35 @@ profile override anything below when they disagree.
 ### Framework-owned wiring (Django)
 
 Every new view must be registered in the app's `urls.py`, AND the app's URL conf must be
-included in the project's root `urls.py`. Paired packets:
+included in the project's root `urls.py`. So the spec holds, in order:
 
-- Packet A: `existing_file_edit` on `<app>/views.py` (or `new_file_add` if new file)
-- Packet B: `existing_file_edit` on `<app>/urls.py` (add the URL pattern)
-- Packet C: `existing_file_edit` on `<project>/urls.py` (only if the app itself is new — one-shot
-  registration)
+- the unit for `<app>/views.py` (`edit`, or `create` for a new file);
+- an `edit` unit of `<app>/urls.py` whose site adds the URL pattern, `depends_on` the view's unit;
+- an `edit` unit of `<project>/urls.py` (only if the app itself is new — one-shot registration),
+  `depends_on` the app's `urls.py` unit.
 
-Also: new models require migrations. Emit a `new_file_add` packet with subtype `django_migration`
-pointed at `<app>/migrations/NNNN_<name>.py` — but let Django's `makemigrations` produce the
-content; the packet writes a placeholder and prints the exact command for the user to run.
+Each wiring edit is typed after the file it registers; one that fails its checks goes to a fix round
+like any other file.
 
-### Task-type subtypes (Django)
+Also: new models require migrations, and Django's `makemigrations` writes them, not a typist. Plan a
+`tooling` unit that runs `python manage.py makemigrations <app>` and `depends_on` the model's unit.
 
-| Base task_type | Django subtype | Produces |
-|---|---|---|
-| `new_file_add` | `django_view` | Function-based or class-based view |
-| `new_file_add` | `django_model` | `models.Model` subclass |
-| `new_file_add` | `django_serializer` | DRF serializer (if DRF detected) |
-| `existing_file_edit` | `url_registration` | Add path/pattern to urls.py |
-| `existing_file_edit` | `django_settings` | Add app to INSTALLED_APPS, middleware to MIDDLEWARE, etc. |
-| `test_add` | `django_view_test` | pytest-django or Django `TestCase` |
-| `new_file_add` | `django_migration` | Migration stub; user runs `makemigrations` |
+### File kinds (Django)
+
+| Kind | What the file holds |
+|---|---|
+| view | Function-based or class-based view |
+| model | `models.Model` subclass |
+| serializer | DRF serializer (if DRF detected) |
+| URL registration | An `edit` site adding a path/pattern to `urls.py` |
+| settings | An `edit` site adding the app to `INSTALLED_APPS`, middleware to `MIDDLEWARE`, etc. |
+| view test | pytest-django or Django `TestCase` |
+| migration | Not typed: the `tooling` unit above writes it |
 
 ### Django-specific test-runner
 
 Django projects almost always use pytest-django or `python manage.py test`. Discovery detected
-which. Packet's job is to produce a test file compatible with the detected runner.
+which. A `tests` unit produces a file compatible with the detected runner.
 
 ---
 
@@ -103,21 +105,21 @@ Alternative shapes to detect from the profile:
 ### Framework-owned wiring (FastAPI)
 
 Every new router must be `include_router`'d in `main.py` (or wherever the FastAPI app instance
-is constructed). Paired packets:
+is constructed). So the spec holds, in order:
 
-- Packet A: `new_file_add` on `routers/<feature>.py` (or `existing_file_edit`)
-- Packet B: `existing_file_edit` on `main.py` — add `from routers import <feature>` and
-  `app.include_router(<feature>.router, prefix="/<x>")`
+- the unit for `routers/<feature>.py` (`create`, or `edit`);
+- an `edit` unit of `main.py` whose sites add `from routers import <feature>` and
+  `app.include_router(<feature>.router, prefix="/<x>")`, `depends_on` the router's unit.
 
-### Task-type subtypes (FastAPI)
+### File kinds (FastAPI)
 
-| Base task_type | FastAPI subtype | Produces |
-|---|---|---|
-| `new_file_add` | `fastapi_router` | APIRouter with @router.get/@router.post handlers |
-| `new_file_add` | `fastapi_pydantic_model` | BaseModel subclass |
-| `new_file_add` | `fastapi_service` | Plain function or class; injected via Depends() |
-| `existing_file_edit` | `router_wiring` | Add include_router() call in main.py |
-| `test_add` | `fastapi_test` | pytest + httpx.AsyncClient or TestClient |
+| Kind | What the file holds |
+|---|---|
+| router | APIRouter with @router.get/@router.post handlers |
+| Pydantic model | BaseModel subclass |
+| service | Plain function or class; injected via Depends() |
+| router wiring | An `edit` site adding an include_router() call in main.py |
+| test | pytest + httpx.AsyncClient or TestClient |
 
 ---
 
@@ -126,20 +128,19 @@ is constructed). Paired packets:
 Flask is deliberately unopinionated. This adapter is thin — it relies almost entirely on the
 adaptive stack profile. Common patterns detected:
 
-- **Single-file app** — everything in `app.py`. Packets edit `app.py` directly.
+- **Single-file app** — everything in `app.py`. Units edit `app.py` directly.
 - **Application factory** — `create_app()` function; blueprints registered inside.
 - **Blueprints** — one folder per blueprint under `blueprints/` or similar.
 
 ### Framework-owned wiring (Flask)
 
-When blueprints are in use: new blueprint requires `app.register_blueprint(<bp>)` in the factory.
-Paired packet emitted only in that case.
+When blueprints are in use: a new blueprint requires `app.register_blueprint(<bp>)` in the factory,
+an `edit` unit of the factory's file that `depends_on` the blueprint's unit — only in that case.
 
-### Task-type subtypes (Flask)
+### File kinds (Flask)
 
-Minimal — the base primitives cover most Flask work. `subtype: flask_route` on `new_file_add`
-or `existing_file_edit` hints codegen to use `@bp.route` or `@app.route`. `test_add` produces
-files compatible with pytest + `app.test_client()`.
+Minimal — a route is `@bp.route` or `@app.route`, as the profile shows; say which in the unit's
+`rules`. A `tests` unit produces a file compatible with pytest + `app.test_client()`.
 
 ---
 
@@ -153,17 +154,17 @@ Python apps typically use one of:
 - `envalid` (rare in Python; more common in Node)
 - `dynaconf`, `viper`, etc.
 
-Discovery recorded which via `baseline.env_keys_referenced_in_code`. When a codegen packet
+Discovery recorded which via `baseline.env_keys_referenced_in_code`. When a unit
 introduces a new required env var:
-1. Append to `.env.example` if present
+1. Append to `.env.example` if present (an `edit` unit)
 2. **Never** modify `.env`
-3. If `pydantic-settings` is used, add the field to the Settings class (via `existing_file_edit`
-   on the settings module) — that's a code change, not just an env change
+3. If `pydantic-settings` is used, add the field to the Settings class (an `edit` unit of the
+   settings module) — that's a code change, not just an env change
 
 ### Test-runner
 
 Almost always `pytest` (with or without pytest-django). Discovery detected the exact command.
-Packets produce test files compatible with the runner Gate 0 confirmed. When `pytest-django`
+`tests` units produce files compatible with the runner Gate 0 confirmed. When `pytest-django`
 is present, use `django_db` fixture in tests that touch the DB.
 
 ### Type hints

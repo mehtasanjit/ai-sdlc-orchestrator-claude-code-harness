@@ -1,8 +1,9 @@
 /**
- * The setup check reads `claude --help` for the flags the greenfield executor's lean Opus typist passes
- * to `claude -p` (--tools, --append-system-prompt-file, --effort), not only whether `claude` exists. An
- * older CLI types nothing with Claude in a new-app build; a brownfield run never uses those flags, so
- * the finding is a warning with what to update, never a block. The rule is the server's own
+ * The setup check reads `claude --help` for the flags the lean Opus typist passes to `claude -p` (--tools,
+ * --append-system-prompt-file, --effort), not only whether `claude` exists. An older CLI types nothing with
+ * Claude, in a new-app build or a brownfield run alike; whether a run types with Claude depends on its policy,
+ * which the run's own pre-flight checks (it halts such a run before anything is spent), so here the finding is
+ * a warning with what to update, never a block. The rule is the server's own
  * (leanOpusCliProblem in executor/typists.ts), checked against it here when the server is built.
  * $0, offline: a fake `claude` on PATH stands in for the real one.
  */
@@ -42,13 +43,14 @@ test("a CLI whose help lists every flag the lean Opus typist needs adds nothing"
 
 test("a CLI missing one of them is a warning that names it and says to update Claude Code", () => {
   const state = evaluate({ ...healthy, claudeHelp: { text: NO_EFFORT } });
-  assert.equal(state.ok, true, "a brownfield run works without it, so the check still passes");
+  assert.equal(state.ok, true, "the run's pre-flight stops a run whose policy types with Claude, so the check still passes");
   const f = flagFinding(state);
   assert.ok(f, "no finding for a CLI without --effort");
   assert.equal(f.severity, "warning");
   assert.match(f.message, /claude CLI lists no --effort flag\b/);
   assert.match(f.message, /new-app build/);
-  assert.match(f.message, /brownfield run does not use/);
+  assert.match(f.message, /brownfield run/, "a brownfield run's packets are typed through the same CLI");
+  assert.doesNotMatch(f.message, /brownfield run does not use/);
   assert.equal(f.fix, "Update Claude Code (`claude update`) until `claude --help` lists --tools, --append-system-prompt-file, --effort.");
 });
 

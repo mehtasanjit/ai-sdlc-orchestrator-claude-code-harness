@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -129,5 +129,55 @@ test("tolerates corrupt project.json — treats it as absent, does not crash", a
     assert.equal(r.code, 0, "must not crash on corrupt project.json");
     const payload = JSON.parse(r.stdout);
     assert.equal(payload.project, null, "corrupt project.json → project null");
+  } finally { cleanup(dir); }
+});
+
+// ── A run that never ended, found from its contract's freeze record ─────────────────────────────────────────────────
+// A brownfield run writes no .sdlc/local/state.json (its write contract refuses every write under .sdlc/ outside its own
+// folder): the record of a run that never ended is its contract's live freeze record, in the run's own log. The
+// brownfield guide's step 1 reads it here to find a dead run before anything is written. A greenfield state.json is
+// not a brownfield run.
+const CONTRACT_SCRIPT = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "plugin", "scripts", "write-contract.mjs");
+const contract = (cwd, ...args) => spawnSync("node", [CONTRACT_SCRIPT, ...args], { cwd, encoding: "utf8" });
+function gitRepo() {
+  const dir = mkdtempSync(join(tmpdir(), "session-hydrate-test-"));
+  mkdirSync(join(dir, ".git"));
+  return dir;
+}
+
+test("a run whose Gate 0 froze its contract and that never ended is a pending run, until it is abandoned", async () => {
+  const dir = gitRepo();
+  try {
+    const frozen = contract(dir, "--freeze", "--run-id", "r1", "--allowlist", '["src/**"]', "--off-limits", "[]");
+    assert.equal(frozen.status, 0, frozen.stderr);
+    let payload = JSON.parse(run(dir).stdout);
+    assert.equal(payload.resume?.pending, true);
+    assert.equal(payload.resume.kind, "run");
+    assert.equal(payload.resume.run_id, "r1");
+    assert.equal(payload.resume.phase, null, "no phase logged yet");
+    assert.equal(payload.resume.status, "live");
+    assert.match(payload.marker, /run r1 never ended/);
+    // Its phase, from the run's own log.
+    const log = join(dir, ".sdlc", "runs", "r1", "orchestrator.log");
+    writeFileSync(log, `${readFileSync(log, "utf8")}MMO: 2026-10-06T10:00:00.000Z INFO   run.start run_id=r1\nMMO: 2026-10-06T10:05:00.000Z INFO   phase.start run_id=r1 phase=codegen\n`);
+    payload = JSON.parse(run(dir).stdout);
+    assert.equal(payload.resume.phase, "codegen");
+    assert.equal(payload.resume.at, "2026-10-06T10:05:00.000Z");
+    // Ended on purpose: nothing pending.
+    const ended = contract(dir, "--abandon", "--run-id", "r1");
+    assert.equal(ended.status, 0, ended.stderr);
+    payload = JSON.parse(run(dir).stdout);
+    assert.equal(payload.resume, null);
+    assert.match(payload.marker, /no open resume checkpoint/);
+  } finally { cleanup(dir); }
+});
+
+test("a state.json that says in progress, with no live freeze record, is no pending run", async () => {
+  const dir = gitRepo();
+  try {
+    mkdirSync(join(dir, ".sdlc", "local"), { recursive: true });
+    writeFileSync(join(dir, ".sdlc", "local", "state.json"), JSON.stringify({ run_id: "g1", status: "in_progress", phase: "codegen" }));
+    const payload = JSON.parse(run(dir).stdout);
+    assert.equal(payload.resume, null);
   } finally { cleanup(dir); }
 });

@@ -64,7 +64,11 @@ What to put in it (the exact shape of both files is in `submit_spec_section`'s d
   those lines, following the brief's own words; `timeout_s`, how long it may run before code stops
   it — your estimate for this stack's installs and suites, generous rather than tight (a command
   stopped at its limit is reported as not checked, never as a defect). Every command must finish by
-  itself (a server check is a script unit that starts the server, requests, and stops it). Every AC
+  itself (a server check is a script unit that starts the server, requests, and stops it). A command
+  that needs a database works on one it creates for that run (a new file or schema, with the app's
+  schema applied to it), never on an existing one it resets or wipes: a reset destroys data, and a
+  database tool may refuse a destructive action an AI agent runs until a person agrees, which nobody
+  is there to do while the checks run. Every AC
   id must be checked by some command. A check whose tool may be missing on this machine is still a
   command: code finds out when it runs, and a command the shell cannot find is reported as not
   checked, with that reason — never leave a criterion out because a tool might be absent. Only a

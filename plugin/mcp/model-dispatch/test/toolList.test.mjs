@@ -66,6 +66,7 @@ const listTools = async (env = { MMO_HANDOFF_TOOLS: "on" }) => (await ask("tools
 test("the server lists the pipeline's tools, the executor's and hand-off mode's, and nothing else", async () => {
   const names = (await listTools()).map((t) => t.name).sort();
   assert.deepEqual(names, [
+    "execute_batch",
     "execute_stage",
     "execute_with_model",
     "finalize_spec",

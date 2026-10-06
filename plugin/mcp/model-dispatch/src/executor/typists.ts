@@ -146,9 +146,11 @@ export function flashOutcome(a: (Pick<AttemptRecord, "error_status" | "error_cod
  * The agent door: the SDK retries transient API errors itself, with the
  * executor's retry count and first wait (its ModelAPIRetryConfig, set in
  * agyWorkerArgs: 6 retries, 2 s doubling to 64 s, no jitter — the SDK does not
- * document its jitter setting's units, so none is guessed), and
- * the errors it raises carry no HTTP status, so an error that reaches the
- * receipt — after those waits — is an attempt: fail closed.
+ * document its jitter setting's units, so none is guessed), so an error that
+ * reaches the receipt — after those waits — is an attempt, never a wait: fail
+ * closed. The HTTP status the error carries, when it carries one, still goes
+ * on (AgyTypist: `error_status`), so a refused login stops a stage on this door
+ * as on the others, and the run-start probe reads a busy vendor as busy.
  */
 export function agyOutcome(_receipt: { error?: string; error_type?: string }): { transport: boolean } {
   return { transport: false };
@@ -190,11 +192,16 @@ const CHILD_BASE = ["HOME", "PATH", "USER", "LOGNAME", "TERM", "LANG", "LC_ALL",
 const CHILD_NETWORK = ["HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR"];
 /**
  * What decides which login and which provider a `claude -p` call is billed
- * to, as the session that launched the run has it: the OAuth token of a
- * headless login, a gateway (base URL, bearer token, headers, client
- * certificate), and Claude on Bedrock, Vertex AI or Foundry with their
- * credentials, project and region. A typist bills the same login and
- * provider as the rest of the run, so none of them is dropped.
+ * to: the OAuth token of a headless login, a gateway (base URL, bearer token,
+ * headers, client certificate), and Claude on Bedrock, Vertex AI or Foundry
+ * with their credentials, project and region. Each is passed on as the server
+ * has it, so a typist bills the login and provider the server was started
+ * with; none of them is dropped. Claude Code does not pass a session's
+ * CLAUDE_CODE_OAUTH_TOKEN to a plugin's server (typistProbe.ts, SETUP.md), so
+ * in a run started from Claude Code the lean typist, under estimated auth,
+ * signs in with the Claude login stored on this computer, which the run's
+ * start check tests; the token
+ * is on this list for a server started outside Claude Code, which can hold it.
  */
 const CLAUDE_ROUTING = [
   "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS",
@@ -512,7 +519,10 @@ export class AgyTypist implements Typist {
     const basis = price.unpriced ? undefined : price.basis;
     if (receipt.error && !receipt.finish_output) {
       const text = String(receipt.error);
-      return { answer: null, error: text.slice(0, 300), transport: agyOutcome(receipt).transport, tokens, cost_usd: cost, price_basis: basis, latency_ms: latency };
+      // The vendor's HTTP status, as the worker read it from the SDK's error (typist_worker.py _http_status); only a
+      // whole number is one.
+      const status = Number.isInteger(receipt.error_status) ? { error_status: receipt.error_status as number } : {};
+      return { answer: null, error: text.slice(0, 300), transport: agyOutcome(receipt).transport, ...status, tokens, cost_usd: cost, price_basis: basis, latency_ms: latency };
     }
     const answer = parseAnswer(receipt.finish_output, req.contract);
     return { answer, error: answer ? undefined : `the agent did not finish with one object in the ${contractShape(req.contract)} contract`, transport: false, tokens, cost_usd: cost, price_basis: basis, latency_ms: latency };

@@ -95,7 +95,7 @@ Then `curl http://localhost:3000/ping` — the response is what the brief asked 
 ## What next
 
 - **Understand the numbers.** [understanding-output.md](understanding-output.md) walks every field in `telemetry.jsonl` and the report.
-- **Understand the cost.** [methodology.md](methodology.md) explains how tokens and costs are counted, and why `opus-plus-flash` is ~10× cheaper than `opus-only`.
+- **Understand the cost.** [methodology.md](methodology.md) explains how tokens and costs are counted, and [brownfield-routing.md](brownfield-routing.md) what `opus-plus-flash` measured against `opus-only`.
 - **Run on an existing repo.** [brownfield.md](brownfield.md) covers `/mmo:brownfield`, which extends real code with a non-destructive write contract.
 - **Script it.** [running.md](running.md) documents `/mmo:pass`, the headless equivalent — every setting exposed as a flag, for CI or repeat runs.
 

@@ -24,7 +24,7 @@ setup is one-time per machine and happens separately.
 
 ---
 
-# 1. Setup-status check — resume or fresh
+# 1. Setup-status check — an unfinished setup or run
 
 Before anything else, invoke:
 
@@ -39,11 +39,19 @@ Read the JSON. Three cases:
   and re-run the remaining setup sections (see §3 below). Do **not** start Gate 0 until setup
   completes.
 
-- **`resume.pending: true` with `kind: "run"`** — a previous task run was interrupted at phase
-  &lt;phase&gt;. Print *"A previous &lt;intent&gt; run (`&lt;run_id&gt;`) was interrupted at phase &lt;phase&gt;.
-  Would you like to resume it, or start fresh?"* Accept `resume`, `discard`, or `abort`. If
-  `resume`, follow the resume path in `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md`.
-  If `discard`, clear `.sdlc/local/state.json` and continue to step 2.
+- **`resume.pending: true` with `kind: "run"`** — a previous run (`<run_id>`, last at phase
+  &lt;phase&gt; when the output names one) never ended by its own log: its chat was closed, it crashed or
+  it stopped before Gate 4, and the write contract its Gate 0 froze still holds this project. Until it
+  ends, the project refuses every write outside that run's scope, this run's Gate 0 included. It cannot
+  be resumed: a run freezes its scope once, at its own Gate 0. Tell the person this in two sentences,
+  say that the files it already wrote stay as they are (`/mmo:revert <run_id>` undoes them), and ask
+  whether to end it. Accept `discard` or `abort`; ending a run is the person's decision, so ask even
+  when the answer seems obvious, and never run it on your own. On `discard`, end it with the contract's
+  own script, then continue to step 2:
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/write-contract.mjs" --abandon --run-id <run_id> --reason "discarded at the start of a new run"
+  ```
+  On `abort`, stop here and change nothing (the person may still be running it in another chat).
 
 - **`resume.pending: null`** — normal flow. Print the one-line `marker` from the hydrate
   output (e.g. *"SDLC: 3 prior runs (last: docs, 2d ago); baseline at abc1234; no open resume
@@ -64,23 +72,22 @@ Script-side steps (2, 4, 5, 6) — you invoke via Bash:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/pre-check.mjs" --run
 ```
 
-Agent-side steps (1 = discovery smoke, 3 = dispatch smoke) — you run yourself:
+Agent-side step (1 = discovery smoke) — you run it yourself:
 
 1. **Discovery smoke.** Invoke the `discovery` subagent (see `${CLAUDE_PLUGIN_ROOT}/agents/discovery.md`)
-   with `mode: first-time` (or `refresh` if a baseline exists). Watch for a non-git-repo refusal
-   or any hard error. On pass, record it:
+   with `mode: first-time` (or `refresh` if a baseline exists), passing `adaptive_profile: true` when the run
+   was started with `--adaptive-profile` and `refresh_profile: true` when it was started with
+   `--refresh-profile`, as step 3 does: whichever step runs discovery passes them. Watch for a non-git-repo
+   refusal or any hard error. On pass, record it:
    ```bash
    echo '{"note":"Tier 1 completed cleanly"}' | node "${CLAUDE_PLUGIN_ROOT}/scripts/pre-check.mjs" --record discovery pass
    ```
 
-3. **Dispatch smoke.** Construct a trivial `{ id: "smoke-1", phase: "codegen", task_type:
-   "smoke", instruction: "Return the literal string OK", ... }` TaskPacket and dispatch via
-   `execute_with_model` to each policy tier the current policy uses (typically premium +
-   mechanical for `opus-plus-flash`; just premium for `opus-only`). If both return their expected
-   output within the timeout, record pass:
-   ```bash
-   echo '{"tiers_tested":["opus","gemini-flash"]}' | node "${CLAUDE_PLUGIN_ROOT}/scripts/pre-check.mjs" --record dispatch pass
-   ```
+Step 3 (dispatch smoke) is not run here: the run's own start check (`preflight_dispatch` with
+`probe_typists` and the run's `intent`) sends one test call through every model that types the run (a model
+a policy rule for the run's job routes to included), once the run's auth mode is chosen at Gate 0. Do not
+dispatch test packets yourself, and do not ask for an API key here: only `vendor` auth needs one, and the
+start check says so when it is missing.
 
 If any pre-check step fails, **do not proceed to Gate 0.** Print the reported remediation and
 offer inline choices (fix now / switch policy / abort). Do not kick the user out to external
@@ -90,7 +97,9 @@ fixes.
 
 If not already done during step 2's smoke:
 
-Invoke the `discovery` subagent. It reads the repo (git state, stack manifests, off-limits, monorepo
+Invoke the `discovery` subagent, passing `adaptive_profile: true` when the run was started with
+`--adaptive-profile` and `refresh_profile: true` when it was started with `--refresh-profile` (the flag
+surface below). It reads the repo (git state, stack manifests, off-limits, monorepo
 signals, submodules, LFS, competing AI configs — see `${CLAUDE_PLUGIN_ROOT}/agents/discovery.md`
 for the full read order) and writes:
 - `.sdlc/runs/<run-id>/discovery.md` (per-run human-readable)
@@ -98,7 +107,7 @@ for the full read order) and writes:
 - `.sdlc/baseline/current.json` + `.sdlc/baseline/discovery.md` (living project baseline, on
   first-time or full refresh)
 - `.sdlc/baseline/stack-profile.md` (Tier 2b, only when triggered — unknown stack, custom
-  framework in CLAUDE.md, or `--adaptive-profile` passed)
+  framework in CLAUDE.md, or `adaptive_profile: true`); the architect reads it while it plans the change
 
 Wait for discovery to finish. If it refuses (non-git repo), stop here — the shepherd already
 printed the git-init guidance.
@@ -133,11 +142,6 @@ Two things to collect from the user. Both go into `.sdlc/runs/<run-id>/intent_br
 - **Inline chat** — if the user just describes it in this message (and no `seed_description` was
   already supplied by the handover), capture their words verbatim into the brief.
 
-**Task type — only when the chosen intent declares `task_types` in `intents.json`.** Ask one more
-question after the interview above, offering each option's `label`: *"Which kind of &lt;intent&gt; job
-is this — &lt;label 1&gt; or &lt;label 2&gt;?"* Record the chosen `id`. Intents with no `task_types` array
-(everything except `docs`, for now) skip this — nothing changes for them.
-
 Write the brief to `.sdlc/runs/<run-id>/intent_brief.md` with this heading contract:
 
 ```
@@ -145,21 +149,31 @@ Write the brief to `.sdlc/runs/<run-id>/intent_brief.md` with this heading contr
 
 ## Context
 ## Goal
-## Task type          (omit this heading entirely when the intent has no task_types)
 ## Files in scope
 ## Files off-limits
 ## Acceptance criteria
 ## Non-goals
 ```
 
-"Task type" holds the chosen `id` verbatim (e.g. `doc_update`), not the label — Phase 4 in
-`pipeline/SKILL.md` reads it back to set the generated TaskPacket's `task_type` field directly,
-instead of inferring it from context. A policy can then route `doc_update` differently from
-`doc_addition` via an ordinary `rules[].when.task_type` match — no new policy schema needed, since
-`task_type` is already a routing key.
+Ask no question beyond the interview: whether a doc is updated or written fresh is in the interview's
+answers, the architect plans each file as an edit or a new file from them, and each packet's label
+(`subtype`: `doc_update` for an edited doc, `doc_addition` for a new one) comes from its unit. Packets route
+by their stage, and by the run's intent when a policy rule names one.
 
 Fill in "Files in scope" and "Files off-limits" with your best guess based on discovery + intent
 + the user's description. These are proposals; Gate 0 lets the user adjust before commit.
+
+For every job: include the **companion files** the change needs to be complete, not only the files that
+carry it. When the job adds or changes a surface that other files list or are generated from — an endpoint,
+a command, an exported function, a configuration key — look in discovery for, and list when they exist: the
+files generated from it (an API spec and the script that exports it) and every file that lists it (a
+catalogue of the surface in the docs, a package README). Left out, they become review findings the run
+cannot act on.
+
+For `bugfix`, propose the test file (or the test folder's glob) the reproducing test needs in the allowlist,
+saying why: the run proves the fix by a test that fails on the bug first, and a bugfix plan without that test
+is refused before any file is written. If the person keeps tests out, stop at Gate 0 with one line: a bugfix
+run needs a test file it may write.
 
 # 5. Gate 0 — Discovery Confirmation
 
@@ -192,10 +206,8 @@ template from `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md` (search for
 
 Reply options: `approved` / `revise: <comments>` / `abort`.
 
-**Cost projection (single line at the bottom, before the reply prompt).** From a rough
-per-intent × baseline-size table, print *"Typical cost for a &lt;intent&gt; run on a repo this size:
-$X–$Y. Approve or abort."* No dedicated mini-gate; the projection is informational and part
-of Gate 0's approve/revise/abort.
+Print no cost estimate at Gate 0: there is no measured per-job cost table to read one from, and a range written
+without one is invented.
 
 **Repo-state risks (surface here, don't defer).** If discovery found LFS, submodules,
 encrypted secrets, failing tests before we started, or an aggressive .gitignore, list them as
@@ -204,22 +216,31 @@ extra confirmation lines with the plugin's default behavior. Example:
 >   into them. Continue? [assumed yes unless you say otherwise]
 
 On `approved`:
-1. Freeze the confirmed allowlist + off-limits into `.sdlc/local/write-contract.json`
-   ({ schema_version:1, active:true, mode:"brownfield", run_id, strict:true, allowlist,
-   off_limits }). The PreToolUse hook (${CLAUDE_PLUGIN_ROOT}/scripts/write-contract-check.mjs) reads this file
-   before every Write/Edit and refuses off-limits or not-in-allowlist paths at the tool
-   boundary.
+1. Freeze the confirmed allowlist + off-limits with the contract's own script (never Write the file yourself):
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/write-contract.mjs" --freeze --run-id <run-id> --allowlist '<JSON array>' --off-limits '<JSON array>'
+   ```
+   (add `--strict-write=off` only when the person passed it). It writes `.sdlc/local/write-contract.json`
+   and records a fingerprint of its bytes in the run's own log. The PreToolUse hook (${CLAUDE_PLUGIN_ROOT}/scripts/write-contract-check.mjs)
+   and the server's writer read it before every write and refuse off-limits or not-in-allowlist paths;
+   while the run is live, a contract changed any other way refuses every write. Run it from the git
+   project's root (the script refuses any other folder): the hook reads the contract only there. It refuses
+   a run id that already froze or ended (a run freezes once, at its own Gate 0). If the freeze is refused
+   because another run is live and holds this project's contract, ask the person as in step 1, naming that
+   run, and freeze again once it has ended; on any other refusal, stop and tell the person what it said.
 2. Update `.sdlc/runs/<run-id>/intent_brief.md` with the final scope.
 3. Continue to step 6.
 
 On `revise: <comments>` — rewrite the affected parts and re-show Gate 0.
 
-On `abort` — clear `.sdlc/local/write-contract.json` (set active:false), do not delete the
-run directory (leave it as a partial record), and stop.
+On `abort` — nothing is frozen yet (the contract is frozen only on `approved`): do not delete the run
+directory (leave it as a partial record), and stop.
 
 # 6. Run the pipeline
 
-Delegate to the `orchestrator` subagent per `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md`.
+Delegate the `brownfield-orchestrator` subagent, whatever the job (the orchestrator with the brownfield
+packet flow in `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/brownfield-runs.md`; never `orchestrator`, which runs
+greenfield).
 Pass:
 - `mode: brownfield`
 - `intent: <from Gate 0>`
@@ -236,9 +257,22 @@ Pass:
   `security_review.md`, `packets.json`, `telemetry.jsonl`, `manifest.json`, and the final report
   land for this run.
 
-The orchestrator then drives phases 1 through 9 with gates 1, 2, 3, 4 as usual — but branched by
-intent (see the Intent matrix in SKILL.md). At each gate, relay the gate prompt to the user; do
+The orchestrator then drives phases 1 through 9 with gates 1, 2, 3, 4 as usual — Gate 2 only for the jobs
+that have one ("The jobs" in brownfield-runs.md). At each gate, relay the gate prompt to the user; do
 not answer on their behalf.
+
+A return that carries a HITL gate block is a pause, not a stop: relay the gate and re-invoke the orchestrator
+with the person's answer; ask nothing else. Only a return without a gate prompt, before the run has ended by its
+own log — its start check halted it, or it stopped for any reason other than a gate answered `abort`, a
+`run.end` it logged as `aborted` or `failed`, or Gate 4 accepted — leaves a run that nothing will end: the
+contract Gate 0 froze still holds the project.
+Tell the person what stopped the run and that its scope is still frozen, and ask whether to end it; on
+their yes:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/write-contract.mjs" --abandon --run-id <run-id> --reason "<what stopped the run, in a few words>"
+```
+A new run, with its own Gate 0, can then start (the brief stays in `.sdlc/runs/<run-id>/intent_brief.md`
+for step 4's "bring your own file").
 
 # 7. Close out
 
@@ -246,7 +280,8 @@ After the orchestrator emits the final report and Gate 4 is accepted (its answer
 
 1. Append a row to `.sdlc/ledger.md` (human-readable) and `.sdlc/ledger.json` (machine mirror).
 2. Update `.sdlc/CLAUDE-SDLC.md` with the latest project fingerprint + a link to the ledger.
-3. Clear the write-contract state: set `.sdlc/local/write-contract.json` active:false.
+3. Switch the write contract off: `node "${CLAUDE_PLUGIN_ROOT}/scripts/write-contract.mjs" --close --run-id <run-id>`
+   (it refuses while the run's log does not yet record its end: Gate 4 accepted).
 4. Print the report to the user with cost breakdown, files touched, and (if applicable) the
    `git reset` command the report provides as the escape hatch.
 

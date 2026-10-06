@@ -15,10 +15,18 @@ src/
 
 ## Try it
 
+A brownfield run's write contract lives at the root of the git project that holds the run, so the example runs as a
+git project of its own (inside a clone of this repository, the clone's root would hold it):
+
 ```bash
-cd plugin/examples/brownfield-refactor
-npm install && npm test
-# /mmo:brownfield  →  refactor
+cp -R plugin/examples/brownfield-refactor ~/brownfield-refactor && cd ~/brownfield-refactor
+printf 'node_modules/\n' > .gitignore
+npm install
+git init && git add -A && git commit -m "the example as shipped"
+npm test
+
+# In Claude Code, in this folder:
+/mmo:refactor
 ```
 
 ## Expected outputs

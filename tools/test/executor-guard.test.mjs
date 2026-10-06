@@ -34,7 +34,8 @@ test("an orchestrator's execute_stage call marks it as an executor-run orchestra
 test("the executor orchestrator may hire only the pipeline's own helpers: general-purpose and Explore are refused with the way to go instead", () => {
   const dir = project();
   record(stageCall("orch-1"), dir);
-  for (const t of ["general-purpose", "Explore", "some-other-agent"]) {
+  // The brownfield reviewers' copies are the plugin's own agents too, but never a greenfield executor run's helpers.
+  for (const t of ["general-purpose", "Explore", "some-other-agent", "mmo:brownfield-senior-reviewer", "brownfield-security-reviewer"]) {
     const out = decide(agentCall("orch-1", t), dir);
     assert.ok(denied(out), t);
     assert.match(out.hookSpecificOutput.permissionDecisionReason, /Read the failing check's output yourself, then send each file to change to execute_stage with stage "repair"/);

@@ -151,7 +151,7 @@ jq -r 'select(.phase=="codegen") | .cost_usd' examples/workforce-ops/passes/pass
 Aggregated form of the telemetry. Useful fields:
 
 - `total_cost_usd`, `total_input_tokens`, `total_output_tokens`, `total_input_tokens_cache_write` — dispatched work only, always
-- `phase_breakdown`, `module_breakdown`, `task_type_breakdown` — sub-rollups (dispatched only)
+- `phase_breakdown`, `module_breakdown`, `task_type_breakdown` — sub-rollups (dispatched only), except that once the collector has run, a phase a helper agent ran (`architecture_design`, `senior_code_review`, `security_review`) is that helper's transcript priced at the list, with a `measured` record in place of the estimate it replaced
 - `orchestrator_overhead` — present only after the collector has run: the transcript-measured cost and token buckets of the orchestrator's own session, kept in its own labeled block so it never blends into the dispatched figures. Inside it:
 
   | Field | Meaning |

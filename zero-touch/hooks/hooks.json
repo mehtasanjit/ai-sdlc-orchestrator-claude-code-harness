@@ -75,7 +75,7 @@
         ]
       },
       {
-        "_comment": "Zero-touch workflow routing (docs/ambient-mode.md). Acts only in a chat the zero-touch plugin marked at its start (or for one run under MMO_AMBIENT); otherwise the shim exits before node starts. Always exits 0; decisions are JSON on stdout. The five mmo agents run only inside a workflow, and not while the Queue-or-Replace question waits; in an ordinary chat the model hiring one is refused.",
+        "_comment": "Zero-touch workflow routing (docs/ambient-mode.md). Acts only in a chat the zero-touch plugin marked at its start (or for one run under MMO_AMBIENT); otherwise the shim exits before node starts. Always exits 0; decisions are JSON on stdout. The mmo agents run only inside a workflow, and not while the Queue-or-Replace question waits; in an ordinary chat the model hiring one is refused.",
         "matcher": "Agent|Task",
         "hooks": [
           {

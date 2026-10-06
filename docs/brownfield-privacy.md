@@ -4,31 +4,79 @@
 
 ## What data leaves the machine
 
-The plugin's per-phase data-exit profile:
+Two kinds of model see your code in a brownfield run, by two routes:
 
-| Phase | What's dispatched to a model | Notes |
+- **Claude, through Claude Code.** The run's orchestrator and its helpers (discovery, the architect, the two
+  reviewers) are Claude Code subagents on the session's Claude model. A file one of them opens with `Read`, `Grep`
+  or `Bash` reaches Claude, as any file a Claude Code session reads does. Claude Code's own permission rules govern
+  those tools; the plugin adds instructions to its agents, not a guard on what they read.
+- **The typists, through the plugin's model server.** Each file of the change is typed by the model the policy
+  routes it to (Gemini Flash, one call per attempt or through the Antigravity agent, or Claude through the lean
+  `claude -p` typist), from a packet the server builds by reading files from disk under the project root.
+
+| Phase | What reaches a model | Notes |
 |---|---|---|
-| Discovery | **Nothing.** Local `Read`/`Glob`/`Grep` only | Zero data exit |
-| Requirements / architecture / packet planning / senior review / security review | Intent brief + relevant source slices + prior phase artifact | Slices, not full files, unless necessary |
-| Codegen packets | Design fragment + a few source slices | Slices only |
-| Test execution | **Nothing.** `Bash` runs your test command locally | Zero data exit |
+| Discovery | What the discovery agent reads, to Claude | It lists env files' key names; opening an env file sends its whole text, values included, and the agent records names only |
+| Requirements, change spec, senior review, security review | The intent brief, the earlier phases' artifacts, and the files and diffs each Claude subagent opens, to Claude | The reviewers read the change as a diff against the run's starting commit |
+| Run start (`preflight_dispatch`) | One fixed one-line test call per typist the run types with | No project content |
+| Typed files (codegen, tests, docs) | The run's shared brief (conventions, decisions, and every file of the change with its import line and exports), the file's own brief, its style file and the files it uses (whole, or the lines the spec names), and for an edit the file being edited, whole, in consecutive parts when it is larger than the server's bound on one input (200,000 bytes) | To the model the policy routes the file to |
+| Fix rounds and retries | The same, plus the failure: a review finding, or the failing check's output (its last 2 kB) | A retry carries the previous attempt's failure |
+| Checks and tests | Nothing: they run on your machine ("Commands the run executes on your machine", below) | Their output reaches a model only as a failure above |
 
-**Never sent, regardless of phase:**
+**What the server never reads into a model's prompt.** One read rule covers everything the server sends: a project
+file is never read into a model's prompt when it matches the always-off-limits list (`.env`, `.env.*`, `.mcp.json`,
+`.cursor/rules/**`, `.claude/settings.local.json`, `.git/**`, at any depth) or the run's `off_limits` from Gate 0.
+Matching ignores letter case, as macOS disks do, and a path that goes through a link is judged by the file it reaches
+as well. Only the run's own folder, `.sdlc/runs/<run-id>/`, where its briefs live, is exempt. The rule is applied
+three times: `plan-lint.mjs` refuses a unit whose `style_from` or `uses` path is off-limits as the architect hands
+each section of the change spec over; `findings-to-packets.mjs` leaves an off-limits file out of what a fix shows beside it
+(naming it under not routed), and does not route a fix aimed at one; and the server's `hydrateInputs` refuses one as it reads each input, the
+last line, which a hand-written packet passes too. So a folder of regulated data put in `off_limits` at Gate 0 is
+never sent to a typist.
 
-- `.env` values (only key NAMES are ever seen, per discovery)
-- Any file matching known secret patterns (private-key headers, `AWS_SECRET_ACCESS_KEY=…`
-  assignments, GitHub / Anthropic / OpenAI / Slack / Stripe tokens, JWTs, bearer
-  authorization values, high-signal env-var assignments)
-- Files in the run's `off_limits` list
-- File contents from paths matched by `.gitignore` (unless you explicitly moved them into
-  the allowlist at Gate 0)
+What this rule does not cover, said exactly:
 
-Enforcement: `plugin/scripts/dispatch-sanitize.mjs` runs a regex sweep on **every** dispatch
-input before it leaves the machine. Detected patterns → dispatch is refused, the orchestrator
-surfaces the finding in the run report. See the script for the 13 patterns it checks (all with
-very-low false-positive rates: known vendor prefixes, PEM key blocks, JWTs, etc.). It
-deliberately does NOT do broad "high-entropy string" matching — that would flag legitimate
-hashes and IDs, produce false alarms, and train users to bypass.
+- **The Claude subagents' own reads.** A helper that opens a file with `Read` sends it to Claude; the write
+  contract governs writes only. Keep files Claude may not see out of the repository, or deny `Read` on them in
+  Claude Code's own permission settings.
+- **Secrets inside files that are not off-limits.** A key pasted into a source file goes wherever that file goes.
+  `plugin/scripts/dispatch-sanitize.mjs` holds a registry of narrow secret patterns (known vendor prefixes, PEM key
+  blocks, JWTs, explicit `AWS_SECRET_ACCESS_KEY=` and sensitive env-var assignments; see the script for the list),
+  but no dispatch path runs it today: the registry is used to redact the plugin's own log lines
+  ([logging.md](logging.md)), and as a command-line scanner you can run on a file (`node
+  plugin/scripts/dispatch-sanitize.mjs <file>`, exit 1 on a finding). It deliberately does no broad
+  "high-entropy string" matching, which would flag legitimate hashes and IDs.
+- **Files under `.gitignore`.** Ignored files are not off-limits by being ignored; put the ones that matter in
+  `off_limits` at Gate 0.
+
+## Commands the run executes on your machine
+
+A brownfield run runs your repository's own commands, by these routes:
+
+| Command | Who runs it | Under Claude Code's Bash rules? |
+|---|---|---|
+| Each file's checks from the change spec (its `run`), their write forms (`fix`, a formatter's `--write`), the run of each check on the file before the change, and a bugfix's red checks (the reproducing test, which must fail on the bug) | The plugin's model server, in the project folder | No |
+| The same file checks, on each file as it is before the change, when the architect hands over a section of the change spec | `plan-lint.mjs`, which the architect starts with `Bash` | The `node plan-lint.mjs` call is, and plan-lint matches each check it would start against your deny rules first: a command they deny is not run, and the section is refused with the rule named. A command it cannot read is not run here; the server judges it before any packet runs |
+| The end-of-run project checks (`verify_deferred`: the project checks the spec names, which the architect is told to make the typecheck and the full suite, and in a bugfix the reproducing test once more), the test run, and `tooling` units (a deps run's install) | The orchestrator, with its `Bash` tool | Yes |
+
+The server and `plan-lint.mjs` run a command with a shell, in its own process group, and stop the whole group at its
+time limit, so a runner's own children do not outlive it. `plan-lint.mjs` stops each at its own `timeout_s`. The
+server runs every command of a file (its checks, their write forms, their run on the file before the change, and the
+red checks) under one limit, the largest `timeout_s` the spec gives that file's checks, which the file's packet
+carries; a fix round's packet keeps its unit's. A command gets their environment minus the vendor credentials they
+hold (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS` and the
+other `*_API_KEY` variables the plugin reads), so a check's output cannot carry them into the next attempt's prompt.
+
+Claude Code's sandbox never applies to the server's commands, and Claude Code's own permission check for its `Bash`
+tool never sees them. So the server holds them to your Bash deny rules itself: it reads the deny rules of the settings
+Claude Code reads for the project (managed settings, `~/.claude/settings.json`, the project's `.claude/settings.json`
+and `.claude/settings.local.json`) and refuses a packet whose check, write form or red check one of them forbids,
+before any model call; a different check is your decision. An "ask" rule is not asked by this check. With the separate
+zero-touch plugin installed, a workflow running in a zero-touch chat also has each server call checked before it is
+made ([ambient-mode.md](ambient-mode.md), `pre-dispatch`). Every one of these commands is one the architect typed into the
+change spec: when Gate 2 opens (feature-extend, feature-new, refactor and deps, and a bugfix that code finds
+design-affecting) the rendered plan you approve lists them under "Checks"; for docs and test runs, and any other
+bugfix, no gate shows them before they run.
 
 ## Never sent, ever
 
@@ -59,8 +107,8 @@ policy is active before the run starts.
 
 **No fallback to public models.** Once your policy names a private endpoint, the plugin
 refuses to fall back to a public one when that endpoint is unavailable. The `preflight_dispatch`
-check runs before the first paid call; if a private endpoint isn't reachable, the run halts
-cleanly rather than silently using a public alternative.
+check runs before any phase; if a private endpoint isn't reachable, the run halts cleanly rather
+than silently using a public alternative.
 
 ## PII in source
 
@@ -74,9 +122,12 @@ If you're in a regulated environment (SOC2, GDPR, HIPAA, PCI, etc.):
 - **Prefer on-prem routing.** See above — configure a policy pointing at your regulated-
   cloud endpoint (BAA-covered Bedrock, PHI-eligible Vertex, etc.).
 - **Off-limits your regulated data folders.** At Gate 0, move any directory containing PII
-  into the run's `off_limits` list. The write contract will refuse writes there AND
-  discovery will not read files from there. (Gate 0's proposal already off-limits `.env*`,
-  `.cursor/`, etc. — add your PII folders manually.)
+  into the run's `off_limits` list. The write contract refuses writes there, and the server
+  never reads a file from there into a typist's prompt. Discovery runs before Gate 0, and the
+  Claude subagents' own reads are not guarded ("What data leaves the machine", above): a
+  folder Claude may not see belongs outside the repository, or under a `Read` deny rule in
+  Claude Code's settings. (Gate 0's proposal already off-limits `.env*`, `.cursor/`, etc. —
+  add your PII folders manually.)
 - **The plugin surfaces a Gate 0 warning** if it detects a `SECURITY.md`, `PRIVACY.md`, or a
   path segment like `SOC2/`, `HIPAA/`, `PCI/`, or `regulated/`:
   > *"This repo appears regulated. Confirm the active policy uses only compliant endpoints,
@@ -109,19 +160,17 @@ direction." `/mmo:audit` (v1.5) exports these into a single `.sdlc/audit-export.
 The plugin has no license-server ping, no anonymous telemetry, no crash reporting. If
 you disconnect from the network, it fails at the first model dispatch and does nothing else.
 
-## Model input isolation across intents
+## Model input by job
 
-Different intents have different read footprints. Compliance officers should know:
+Every job runs the same flow, so jobs differ in what reaches a model only through the files the
+change spec names:
 
-| Intent | Read footprint | Typical files sent to models |
-|---|---|---|
-| `docs` | **Wide read, narrow write.** The docs intent reads a lot of source to summarize it. | Every file in the allowlist gets slice-sampled during Phase 1 requirements. |
-| `bugfix` | **Narrow read, narrow write.** | The failing test + relevant module. |
-| `feature-extend` | Medium. | The extended file + adjacent module files. |
-| `feature-new` | Medium-wide (planner needs to know the surrounding architecture). | Same as feature-extend, plus architecture-adjacent files. |
-| `refactor` | **Wide read.** Call sites for the refactor target must be found. | Every file matching a `Grep` pattern derived from the refactor scope. |
-| `test` | Narrow read (only the file being tested), narrow write. | The target module + adjacent test files. |
-| `deps` | Very narrow. | `package.json` + files that import the affected dep. |
+- **The Claude subagents** (requirements, the architect, the two reviewers) read the intent brief
+  and whatever files they open to plan or review the change. A wide job (a refactor's call sites, a
+  docs run over a module) opens more of the repository than a narrow one (a bugfix's failing path).
+- **Each typist** is sent only its own file's packet: the shared brief, the file's brief, its style
+  file and the files the spec says it uses, and the file itself when it is edited ("What data leaves
+  the machine", above). A typist never sees the whole repository, the requirements or the plan.
 
-If your compliance policy bounds which intents may run against which repos, bracket
-accordingly.
+If your compliance policy bounds which jobs may run against which repos, bracket accordingly,
+and use `off_limits` at Gate 0 for what no typist may be sent.

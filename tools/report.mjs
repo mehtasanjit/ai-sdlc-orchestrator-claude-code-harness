@@ -76,6 +76,13 @@ let vendorCost = 0, estimatedCost = 0;
 // Collapse doubling attempts into one per-packet record (same task_id).
 const packetAgg = new Map(); // task_id → {phase, module, model, attempts, finalCeiling, totalCost, terminal}
 
+// A busy vendor's reply the run waited out is logged as its own event, `retry_reason: "transport"`, with the packet's
+// task_id and attempt_number (greenfield's stage runner, executor/run.ts; brownfield's apply loop, server.ts
+// withVerdicts). It is not an attempt: counted as one, a packet whose vendor was busy once was listed as an
+// output-ceiling doubling (8192 → 8192, nothing doubled) and a delegated packet was marked as retried. Its dollars,
+// if any, stay in the packet's cost.
+const isTransportWait = (e) => e.retry_reason === "transport";
+
 for (const e of events) {
   const p = e.phase ?? "unknown";
   const isSdlc = SDLC_PHASES.has(p);
@@ -122,19 +129,24 @@ for (const e of events) {
       totalCost: 0,
       lastSuccess: false,
     };
-    pkt.attempts += 1;
-    if (pkt.initialCeiling == null || (e.attempt_number ?? 1) === 1) {
-      pkt.initialCeiling = e.ceiling_used ?? pkt.initialCeiling;
-    }
-    if (e.ceiling_used != null) pkt.finalCeiling = e.ceiling_used;
     pkt.totalCost += cost;
-    pkt.lastSuccess = e.success === true;
+    if (!isTransportWait(e)) {
+      pkt.attempts += 1;
+      if (pkt.initialCeiling == null || (e.attempt_number ?? 1) === 1) {
+        pkt.initialCeiling = e.ceiling_used ?? pkt.initialCeiling;
+      }
+      if (e.ceiling_used != null) pkt.finalCeiling = e.ceiling_used;
+      pkt.lastSuccess = e.success === true;
+      // Only the adapters' own doubling loop writes retry_reason "output_cap"; a retry after a failed check, a refused
+      // answer or a cut-off (verify, refused, error, cut_off) is an attempt of the ladder, not a doubling.
+      if (e.retry_reason === "output_cap") pkt.doublings = (pkt.doublings ?? 0) + 1;
+    }
     packetAgg.set(tid, pkt);
   }
 }
 
 const packetsWithDoublings = [...packetAgg.values()]
-  .filter((p) => p.attempts > 1)
+  .filter((p) => (p.doublings ?? 0) > 0)
   .sort((a, b) => b.attempts - a.attempts);
 
 // Any non-vendor event taints the whole run's label.
@@ -466,11 +478,14 @@ const receipts = delegationFiles
 
 if (receipts.length || unreadableReceipts) {
   // Per-task telemetry, recomputed locally to keep this block self-contained.
+  // `calls` counts every event (the two sides of the table add up to the run's calls); `tries` leaves out the busy
+  // vendor's waits, which are no attempt (isTransportWait).
   const byTask = new Map();
   for (const e of events) {
     if (!e.task_id) continue;
-    const r = byTask.get(e.task_id) ?? { calls: 0, cost: 0 };
+    const r = byTask.get(e.task_id) ?? { calls: 0, tries: 0, cost: 0 };
     r.calls += 1;
+    if (!isTransportWait(e)) r.tries += 1;
     r.cost += e.cost_usd ?? 0;
     byTask.set(e.task_id, r);
   }
@@ -479,7 +494,8 @@ if (receipts.length || unreadableReceipts) {
     const tel = byTask.get(d.task_id);
     return {
       d,
-      tries: tel?.calls ?? 1,
+      calls: tel?.calls ?? 1,
+      tries: Math.max(1, tel?.tries ?? 1),
       // Prefer telemetry (covers every attempt) over receipt (last attempt only).
       cost: tel ? tel.cost : (d.cost_usd ?? 0),
       joined: Boolean(tel),
@@ -487,7 +503,7 @@ if (receipts.length || unreadableReceipts) {
   });
 
   const sum = (f) => rows.reduce((s, r) => s + f(r), 0);
-  const delegatedCalls = sum((r) => (r.joined ? r.tries : 0));
+  const delegatedCalls = sum((r) => (r.joined ? r.calls : 0));
   const delegatedCost = sum((r) => (r.joined ? r.cost : 0));
   const otherCalls = events.length - delegatedCalls;
   const otherCost = totalCost - delegatedCost;

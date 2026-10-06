@@ -5,13 +5,21 @@
  * repeat_edit_across_files' check_command) in a scratch copy of the project. The model server runs it, and Claude
  * Code's own permission rules for its Bash tool never see a command a server runs, so a command the person, or their
  * organisation, has forbidden ("Bash(rm:*)", "Bash(curl *)", or all of Bash) could run anyway. The hand-off hook
- * reads the same deny rules and refuses such a call before it reaches the server.
+ * reads the same deny rules and refuses such a call before it reaches the server. The same holds for a workflow's
+ * apply-form packets, whose check and format commands the server runs after writing a file (lib/own-steps.mjs
+ * serverCommands): the stamp's hook refuses such a call in a workflow zero-touch started, and the hook that allows the
+ * workflow's own steps leaves it to Claude Code's prompt in a workflow the person typed. A packet command this check
+ * cannot read is never allowed by those hooks either: it keeps Claude Code's prompt. That is shell syntax in the
+ * command outside its file's placeholder (a lone &, $, backquotes, brackets, redirects, a backslash, a new line, or
+ * quotes, which hide a command's name: 'rm'), and a file path that is not a plain path, since the server pastes the
+ * path into the command as written (lib/own-steps.mjs serverCommandUnchecked).
  *
  * The rules are read from the settings files Claude Code reads: the organisation's managed settings, the person's
  * ~/.claude/settings.json, and the project's .claude/settings.json and .claude/settings.local.json; a deny rule in any
  * of them counts. The rule forms Claude Code documents: "Bash" (every command), "Bash(npm test)" (exactly), "Bash(npm
  * run test:*)" (that prefix), and "*" wildcards ("Bash(curl *)"). A command made of several (&&, ||, ;, |, a new
- * line) is checked part by part, as Claude Code checks one. Not covered (said in docs/ambient-mode.md): Claude Code's
+ * line) is checked part by part, as Claude Code checks one, each with its blanks read as the shell reads them (a tab,
+ * or several spaces, as one space). Not covered (said in docs/ambient-mode.md): Claude Code's
  * sandbox does not apply to a server's commands, and an "ask" rule is not asked here.
  *
  * A new document and an undo are allowed without Claude Code's permission prompt, except where a
@@ -78,8 +86,16 @@ export function toolRuleFor(toolName, projectDir, env = process.env) {
   return null;
 }
 
-/** Whether one simple command matches one rule's text. */
-function matches(command, rule) {
+/**
+ * A command or rule with every run of blanks as one space. Why: the shell splits a command's words on tabs as on
+ * spaces (and on several as on one), so `rm<TAB>-rf x` runs rm; read as text, it would match no "Bash(rm:*)" rule.
+ */
+const oneSpace = (text) => text.replace(/\s+/g, " ").trim();
+
+/** Whether one simple command matches one rule's text, both read with their blanks as single spaces (oneSpace). */
+function matches(rawCommand, rawRule) {
+  const command = oneSpace(rawCommand);
+  const rule = oneSpace(rawRule);
   if (rule === "" || rule === "*") return true;
   if (rule.endsWith(":*")) {
     const prefix = rule.slice(0, -2).trim();

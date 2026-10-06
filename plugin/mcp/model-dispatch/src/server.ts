@@ -16,8 +16,8 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-import { existsSync, readFileSync, unwatchFile, watchFile } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
+import { dirname, join, resolve as resolvePath } from "node:path";
 
 import { loadPolicy, loadPolicyFromPath, getModel } from "./policy.js";
 import {
@@ -37,14 +37,31 @@ import {
   resolveGcpProject,
   resolveGcpLocation,
 } from "./adapters/geminiTransports.js";
-import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides } from "./types.js";
+import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides, ApplySpec, ModelConfig } from "./types.js";
+import {
+  FILE_OUTPUT_SCHEMA,
+  applyContent,
+  checkWriteContract,
+  hasActiveWriteContract,
+  extractFileContent,
+  hydrateInputs,
+  normalizeApply,
+  runApplyLoop,
+  applyBudget,
+  readsSlicesFromDisk,
+} from "./apply.js";
+import { runBatch, batchPacketsFromArgs, compactBatchReceipt, markSharedInputs, batchProgress, packetFingerprint, alreadyApplied, appendAppliedRecord, fileSha256, readAppliedRecords } from "./batch.js";
+import { executorView } from "./executor/run.js";
 import { resolveProjectRoot } from "./project-root.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
 // Typed-spec executor tools (greenfield runs): listed below, handled in executor/tools.ts.
-import { EXECUTOR_TOOLS, EXECUTOR_TOOL_NAMES, executorClaudeLeaves, executorPolicyNotes, handleExecutorTool, type RunState } from "./executor/tools.js";
+import { EXECUTOR_TOOLS, EXECUTOR_TOOL_NAMES, STAGE_CONCURRENCY, fallbackLeaf, typistForLeaf, executorClaudeLeaves, executorPolicyNotes, handleExecutorTool, type RunState } from "./executor/tools.js";
+import { BROWNFIELD_INTENTS, TypistApplyAdapter, usesServerTypist } from "./applyTypist.js";
+import { EDIT_ANSWER_SCHEMA } from "./executor/brief.js";
 import { HANDOFF_TOOLS, HANDOFF_TOOL_NAMES, handleHandoffTool } from "./handoff/tools.js";
 import { handoffListing } from "./handoff/listing.js";
 import { leanOpusCliProblem } from "./executor/typists.js";
+import { probeEvents, probeTypists, runTypingLeaves } from "./typistProbe.js";
 import { runCard } from "./runCard.js";
 import { PLUGIN_ROOT } from "./paths.js";
 
@@ -64,7 +81,9 @@ function validateTaskPacket(raw: unknown): TaskPacket {
     "id", "phase", "task_type", "module", "instruction",
     "inputs", "outputSchema", "acceptance", "budget", "pass_id",
   ];
-  const missing = required.filter((k) => packet[k] === undefined);
+  // Under apply the server supplies the {path, content} schema (apply.ts).
+  const applying = normalizeApply(packet.apply) !== null;
+  const missing = required.filter((k) => packet[k] === undefined && !(applying && k === "outputSchema"));
   if (missing.length > 0) {
     log("warn", "packet.validate.fail", {
       packet_id: typeof packet.id === "string" ? packet.id : undefined,
@@ -88,22 +107,38 @@ function validateTaskPacket(raw: unknown): TaskPacket {
       `execute_with_model: TaskPacket.budget must be { maxInputTokens: number, maxOutputTokens: number }.`,
     );
   }
+  if (applying && typeof packet.artifact_path !== "string") {
+    log("warn", "packet.validate.fail", { packet_id: packet.id as string, missing_fields: "artifact_path" });
+    throw new Error(
+      `execute_with_model: packet.apply.write requires artifact_path — the repo-relative file the server writes.`,
+    );
+  }
   return packet as unknown as TaskPacket;
 }
 
 const SERVER_NAME = "model-dispatch";
 const SERVER_VERSION = "0.1.0";
 
-// Runtime state: loaded policies cached by name, adapters cached by model id.
+// Runtime state: loaded policies cached by name, adapters cached by the model configuration they were built from.
 const adapterCache = new Map<string, ReturnType<typeof createAdapter>>();
 let activePolicy: Policy | null = null;
+/** A run as its pre-flight recorded it; the run id and the brownfield job (intent) when pre-flight was given them. */
+type ServerRun = RunState & { runId?: string; intent?: string };
 /**
  * The run as pre-flight saw it: the auth mode and the policy arguments.
  * execute_stage reads these instead of taking them per call, so the model
  * states the run's auth mode once (Phase -1) and every stage uses that same
  * value.
  */
-let runState: RunState | undefined;
+let runState: ServerRun | undefined;
+/**
+ * Each run's pre-flight, by project and run id (runKey): the source of truth for that run's policy and auth mode. A
+ * brownfield call that names the run (execute_with_model, execute_batch) is typed under the policy its pre-flight
+ * checked and probed (runFor).
+ */
+const runStates = new Map<string, ServerRun>();
+/** A run's key: a run id names a folder under one project's .sdlc/runs, so the project is part of it. */
+const runKey = (projectRoot: string | undefined, runId: string) => `${resolvePath(resolveProjectRoot(projectRoot) ?? "")}|${runId}`;
 let activePolicyKey = "";
 
 /** Slot choices, spelled `slot=option[,slot=option...]`. Property of the install. */
@@ -153,16 +188,43 @@ function legacySelectValue(): string | undefined {
   return value;
 }
 
+/**
+ * A model configuration as a cache key: the whole leaf (model name, adapter, auth, region, limits, pricing), keys
+ * sorted. Shipped policies reuse leaf ids (opus, flash-completion) for different models, and one chat can run two
+ * policies, so a typist or adapter built for one policy's leaf is reused only for exactly the same leaf.
+ */
+function configKey(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(configKey).join(",")}]`;
+  if (v && typeof v === "object") return `{${Object.keys(v as object).sort().filter((k) => (v as any)[k] !== undefined).map((k) => `${JSON.stringify(k)}:${configKey((v as any)[k])}`).join(",")}}`;
+  return JSON.stringify(v) ?? "null";
+}
+
+/**
+ * Greenfield's typist for a policy leaf (executor/tools.ts typistForLeaf), wrapped for the apply loop: one per leaf
+ * configuration and billing mode, so its warm gate and Flash's inline header persist across a batch's packets, and a
+ * later run under a policy whose leaf of the same id names another model gets its own.
+ */
+const typistAdapters = new Map<string, TypistApplyAdapter>();
+function typistApplyAdapter(leaf: ModelConfig, authMode: "estimated" | "vendor"): TypistApplyAdapter {
+  const key = `${authMode}|${configKey(leaf)}`;
+  let adapter = typistAdapters.get(key);
+  if (!adapter) { adapter = new TypistApplyAdapter(leaf, typistForLeaf(leaf, authMode)); typistAdapters.set(key, adapter); }
+  return adapter;
+}
+
 function adapterFor(policy: Policy, modelId: string) {
-  const cacheHit = adapterCache.has(modelId);
+  // Keyed by the configuration the adapter is built from: two policies can give one leaf id different models. An
+  // apply packet never comes here: it is typed by a typist (dispatchOnce).
+  const key = configKey(getModel(policy, modelId));
+  const cacheHit = adapterCache.has(key);
   if (cacheHit) {
-    const cached = adapterCache.get(modelId)!;
+    const cached = adapterCache.get(key)!;
     log("debug", "adapter.construct", { model_id: modelId, adapter: getModel(policy, modelId).adapter, cache_hit: true });
     return cached;
   }
   const model = getModel(policy, modelId);
   const adapter = createAdapter(model);
-  adapterCache.set(modelId, adapter);
+  adapterCache.set(key, adapter);
   log("debug", "adapter.construct", { model_id: modelId, adapter: model.adapter, cache_hit: false });
   return adapter;
 }
@@ -196,6 +258,10 @@ function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: str
   // Claude model whose vendor-mode key is unset fails here too, as a model
   // that cannot be dispatched.
   const today = new Date();
+  // The Claude models the run's typists type with (the lean Opus typist, the last attempt included), when the typists
+  // type this run's files: the claude CLI must run them, and under estimated their API adapter goes unused while the
+  // models themselves type (assessModels says so in their note).
+  const claudeTypists = executor === false ? [] : executorClaudeLeaves(policy, overrides).map((m) => m.id);
   const assessment = assessModels(
     policy.models.filter((m) => !notSelected.has(m.id)),
     authMode,
@@ -205,22 +271,23 @@ function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: str
       return adapterFor(policy, modelId);
     },
     (m) => checkModelPrice(getModel(policy, m.id), today, authMode),
+    claudeTypists,
   );
   for (const message of assessment.price_warnings) {
     log("warn", "pricing.policy_mismatch", { message });
   }
 
-  // The executor's own checks (a new-app build): every Claude model it types
-  // with, the lean Opus last attempt included, runs through this machine's
-  // claude CLI, so the CLI must offer the flags that route needs; and how the
-  // executor reads this policy is shown now, before any paid phase.
+  // The typists' own checks (a new-app build's units, a brownfield run's packets): every Claude model they type
+  // with, the lean Opus last attempt included, runs through this machine's claude CLI, so the CLI must offer the flags
+  // that route needs. How the policy is read for typed files is shown now, before any paid phase: the executor and a
+  // brownfield run's packets read it the same way (executorView).
   const cli = executorCliCheck({
     executor,
-    claudeTypists: executor === false ? [] : executorClaudeLeaves(policy, overrides).map((m) => m.id),
+    claudeTypists,
     cliProblem: () => leanOpusCliProblem(),
   });
   if (cli.halt || cli.warning) log("warn", "preflight.claude_cli", { problem: cli.check.claude_cli, halts: !!cli.halt });
-  const policyNotes = executor === false ? [] : executorPolicyNotes(policy, overrides);
+  const policyNotes = executorPolicyNotes(policy, overrides);
   const haltReason = [assessment.halt_reason, cli.halt].filter((r): r is string => !!r).join(" ") || null;
   const warnings = cli.warning ? [...assessment.warnings, cli.warning] : assessment.warnings;
 
@@ -297,19 +364,402 @@ function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: str
     not_selected: [...notSelected],
     gemini,
     halt_reason: haltReason,
-    // Failures on models this run will not dispatch to, and a claude CLI
-    // problem when pre-flight was not told whether execute_stage types this
-    // run — informational, never blocking.
+    // Failures on adapters this run will not use, and a claude CLI problem
+    // when pre-flight was not told whether the typists type this run's files
+    // — informational, never blocking.
     warnings,
     // Price notes that do not stop the run (a policy block that differs from
     // the price list; the list is billed).
     price_warnings: assessment.price_warnings,
-    // How execute_stage reads this policy (none of these stops a run), and
-    // whether this machine's claude CLI can run its Claude typists.
+    // How the run's typed files read this policy — execute_stage's units and a
+    // brownfield run's packets alike (none of these stops a run) — and whether
+    // this machine's claude CLI can run the executor's Claude typists.
     policy_notes: policyNotes,
     executor: cli.check,
     run_card: card,
   };
+}
+
+interface DispatchOnce {
+  decision: ReturnType<typeof pickModel>;
+  result: Awaited<ReturnType<ReturnType<typeof adapterFor>["execute"]>>;
+  events: TelemetryEvent[];
+}
+
+/** What routing reads of a packet. */
+const routeContext = (p: TaskPacket) => ({ phase: p.phase, task_type: p.task_type, module: p.module, retry_count: p.retry_count ?? 0, intent: p.intent });
+
+interface DispatchOptions {
+  /**
+   * An apply-form packet: its budget is the routed model's own limit, it is typed by greenfield's typist for its leaf,
+   * and its events are returned unwritten, since the apply loop judges each call's answer first and hands the events
+   * to its record hook (runPacket writes them there).
+   */
+  forApply?: boolean;
+  /** The model for this attempt instead of the policy's route (the apply loop's cut-off and last attempt). */
+  force?: { modelId: string; reason: string; ruleIndex: number; selection?: any };
+  /** The run the call belongs to (runFor): how it is billed, for the typist. */
+  run?: ServerRun;
+}
+
+/** Route one packet, run it, log it; append its telemetry unless the apply loop records it (forApply). */
+async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, opts: DispatchOptions = {}): Promise<DispatchOnce> {
+  const { forApply = false, force, run = runState } = opts;
+  const decision = force ?? pickModel(routeContext(packet), policy, selectOverrides());
+  log("info", "route.decide", {
+    packet_id: packet.id,
+    phase: packet.phase,
+    intent: packet.intent,
+    task_type: packet.task_type,
+    module: packet.module,
+    rule_index: decision.ruleIndex,
+    rule_reason: decision.reason,
+    model_id: decision.modelId,
+    select_slot: decision.selection?.slot,
+    select_chosen: decision.selection?.chosen,
+    select_overridden: decision.selection?.overridden,
+  });
+
+  // A brownfield run's apply packet is typed by greenfield's own typist for its leaf (applyTypist.ts): the lean Opus
+  // typist, Flash through the completion door, or the Antigravity agent — one machine for both flows and every policy.
+  // runPacket admits an apply packet only with its job and its run's pre-flight (applyFormProblem), so it never falls
+  // back to a policy adapter. Every other packet goes to its policy adapter, as before.
+  const leafForDispatch = getModel(policy, decision.modelId);
+  // An apply packet starts at the routed model's own output limit (apply.ts applyBudget): a cut-off is then a true one,
+  // and goes to the next typist in the apply loop. (Greenfield's typists set their own limit the same way.)
+  if (forApply) packet = applyBudget(packet, leafForDispatch);
+  if (forApply && !usesServerTypist(leafForDispatch, packet, run)) {
+    // Every adapter a policy may name has a typist (executor/tools.ts typistDoorFor); this is the line for one that does not.
+    throw new Error(`${packet.id}: '${decision.modelId}' (${leafForDispatch.adapter}) has no typist, so it cannot type a brownfield run's file. Nothing was typed.`);
+  }
+  const adapter = forApply ? typistApplyAdapter(leafForDispatch, run!.authMode) : adapterFor(policy, decision.modelId);
+  const dispatchStarted = Date.now();
+  log("info", "dispatch.start", {
+    packet_id: packet.id,
+    model_id: decision.modelId,
+    max_out: packet.budget?.maxOutputTokens,
+    max_in: packet.budget?.maxInputTokens,
+    cache_context: a.cache_context,
+    work_dir: a.work_dir ?? a.project_root,
+  });
+  // Passed on every dispatch; completion adapters ignore it.
+  const result = await adapter.execute(packet, a.cache_context, {
+    project_root: a.project_root,
+    work_dir: a.work_dir ?? a.project_root,
+    telemetry_path: a.telemetry_path,
+  });
+  for (const att of result.attempts ?? []) {
+    log("debug", "dispatch.attempt", {
+      packet_id: packet.id,
+      attempt_number: att.attempt_number,
+      ceiling_used: att.ceiling_used,
+      hit_output_cap: att.hit_output_cap,
+      stop_reason: att.stop_reason,
+    });
+  }
+  if (result.success) {
+    log("info", "dispatch.end", {
+      packet_id: packet.id,
+      model_id: decision.modelId,
+      ok: true,
+      terminal_reason: result.terminal_reason,
+      tokens_in: result.tokens.input,
+      tokens_out: result.tokens.output,
+      tokens_cached: result.tokens.input_cached,
+      cost_usd: result.cost_usd,
+      latency_ms: Date.now() - dispatchStarted,
+      attempts: result.attempts?.length ?? 1,
+      price_basis: result.attempts?.[result.attempts.length - 1]?.price_basis,
+    });
+  } else {
+    log("error", "dispatch.error", {
+      packet_id: packet.id,
+      model_id: decision.modelId,
+      error_class: "DispatchFailed",
+      message: result.error,
+    });
+  }
+
+  // One TelemetryEvent per attempt, all sharing the packet's task_id.
+  const attempts = result.attempts ?? [
+    {
+      attempt_number: 1,
+      ceiling_used: packet.budget.maxOutputTokens,
+      hit_output_cap: false,
+      tokens: result.tokens,
+      cost_usd: result.cost_usd,
+      latency_ms: result.latency_ms,
+      success: result.success,
+      error: result.error,
+    },
+  ];
+  const modelName = getModel(policy, decision.modelId).model_name;
+  const baseEvent = {
+    ts: new Date().toISOString(),
+    pass: packet.pass_id,
+    phase: packet.phase,
+    task_type: packet.task_type,
+    task_id: packet.id,
+    module: packet.module,
+    model: modelName,
+    routed_by: "orchestrator" as const,
+    // Server-measured from the vendor's own usage report, so always
+    // "vendor" — in BOTH auth modes (estimated mode's MCP-dispatched
+    // calls still carry vendor tokens; only direct-tier events are
+    // estimates, and those arrive via log_telemetry, not here). The
+    // report keys the run's cost label off this field; before this
+    // stamp existed every dispatched event fell to "unknown" and the
+    // whole run's numbers were disowned.
+    provenance: "vendor" as const,
+    // Leaf id; the only field that distinguishes two leaves that share
+    // a vendor model name (e.g. flash-completion vs flash-agsdk-worker).
+    model_id: decision.modelId,
+    routing: {
+      policy_name: policy.name,
+      policy_version: policy.version,
+      rule_index: decision.ruleIndex,
+      rule_reason: decision.reason,
+      // Undefined unless the rule went through a slot; JSON.stringify
+      // drops undefined keys, so unslotted policies produce identical
+      // events to before slots existed.
+      select: decision.selection,
+    },
+    retry_count: packet.retry_count ?? 0,
+    // A lean typist call names its door, as greenfield's typist events do: it runs `claude -p` with no session file,
+    // so the run's true total keeps its dollars (collect-orchestrator-usage.mjs inSessionDispatched never subtracts an
+    // event with a door). Every other dispatch writes the event as before.
+    ...(adapter instanceof TypistApplyAdapter ? { door: adapter.door } : {}),
+  };
+  const events: TelemetryEvent[] = attempts.map((att) => ({
+    ...baseEvent,
+    input_tokens: att.tokens.input,
+    input_tokens_cached: att.tokens.input_cached,
+    // Cache writes, disjoint from input_tokens: the total written, plus
+    // the 1-hour share when the adapter knows it (claude-cli). Anthropic
+    // adapters populate it; Gemini leaves both undefined and
+    // JSON.stringify drops the keys, keeping those events unchanged.
+    ...cacheWriteBuckets(att.tokens),
+    output_tokens: att.tokens.output,
+    // Already counted in output_tokens and billed at the output rate;
+    // surfaced only so a reader can see how much of a delegation's
+    // output was thinking. Undefined on adapters that don't report it.
+    output_tokens_reasoning: att.tokens.output_reasoning,
+    cost_usd: att.cost_usd,
+    latency_ms: att.latency_ms,
+    success: att.success,
+    attempt_number: att.attempt_number,
+    ceiling_used: att.ceiling_used,
+    // Why this attempt follows another. A typist's attempt says so itself (applyTypist.ts typistResult: "transport" for
+    // a busy vendor's reply that was waited out, else the apply loop's reason, as greenfield tags its events); an
+    // adapter's own later attempts are its output-cap doublings.
+    retry_reason: att.retry_reason ?? (att.attempt_number > 1 ? "output_cap" : undefined),
+    error: att.error,
+    // Where the dollars' rates came from ("list" or "custom" under
+    // pricing_override), which billed models had no price, and, for a
+    // claude-cli worker, Claude Code's own figure and how the cache
+    // TTL split was known. Undefined fields are dropped from the line.
+    price_basis: att.price_basis,
+    unpriced_models: att.unpriced_models?.length ? att.unpriced_models : undefined,
+    cli_reported_cost_usd: att.cli_reported_cost_usd,
+    ttl_split: att.ttl_split,
+    // claude-cli only: the dollars for the tokens the worker's own
+    // transcript explains. collect-orchestrator-usage.mjs subtracts only
+    // this share of an in-session worker, so its receipt-only side calls
+    // and unlogged tokens stay in the true total (review finding M4).
+    transcript_logged_cost_usd: att.transcript_logged_cost_usd,
+  }));
+  if (a.telemetry_path && !forApply) {
+    for (const ev of events) appendEvent(a.telemetry_path, ev);
+    log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: events.length });
+  }
+  return { decision, result, events };
+}
+
+/**
+ * The run a brownfield call belongs to and the policy it is typed under. When pre-flight recorded the call's run_id,
+ * that record decides (the run state is the source of truth, as execute_stage's): a call that leaves the policy out is
+ * typed under it, and a call that names another policy is refused before anything is typed, since pre-flight's price,
+ * CLI and typist checks covered only that one. A call with no recorded run reads its own arguments, as before.
+ */
+function runFor(a: any): { policy: Policy; run: ServerRun | undefined } {
+  const bound = typeof a?.run_id === "string" && a.run_id ? runStates.get(runKey(a.project_root, a.run_id)) : undefined;
+  if (!bound) return { policy: ensurePolicy(a?.policy_name, a?.project_root, a?.policy_path), run: runState };
+  const policy = ensurePolicy(bound.policyName, bound.projectRoot ?? a.project_root, bound.policyPath);
+  const given = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
+  const name = given(a.policy_name), path = given(a.policy_path);
+  const otherPath = path !== undefined && (bound.policyPath === undefined || resolvePath(path) !== resolvePath(bound.policyPath));
+  const otherName = name !== undefined && name !== (bound.policyName ?? policy.name);
+  if (otherPath || otherName) {
+    throw new Error(
+      `run ${a.run_id}: its pre-flight recorded policy ${bound.policyName ?? bound.policyPath ?? policy.name}, and this call names ` +
+        `${name ?? path}. A run is typed under the policy its pre-flight checked, so nothing was typed.`,
+    );
+  }
+  return { policy, run: bound };
+}
+
+/**
+ * Why an apply packet cannot be typed, or null. The apply form types a brownfield run's packet with greenfield's
+ * typists (applyTypist.ts) on every door: the packet names the run's job (`intent`), by which the policy's job-scoped
+ * rules route it, and the run's pre-flight recorded how the run is billed and tested the typists that type it. Any
+ * other packet would fall back to another way of typing (a policy adapter billed apart from the run's auth mode, a door
+ * without greenfield's lean Opus last attempt, an agent editing the project folder itself), so it is refused before
+ * any call.
+ */
+function applyFormProblem(packet: TaskPacket, run: ServerRun | undefined): string | null {
+  const why: string[] = [];
+  const intent = (packet as any).intent;
+  if (!BROWNFIELD_INTENTS.has(String(intent ?? ""))) {
+    why.push(`an apply packet names its job (intent: one of ${[...BROWNFIELD_INTENTS].join(", ")})${typeof intent === "string" && intent ? `, and '${intent}' is not one` : ""}`);
+  }
+  if (!run) why.push("call preflight_dispatch for this run first: it records how the run is billed and tests the typists that type it");
+  return why.length ? `${packet.id}: ${why.join("; ")}. Nothing was typed.` : null;
+}
+
+/**
+ * Whether the run's applied record (batch.ts) names `p` as it is planned now: its id, file and fingerprint (read the way
+ * runPacket reads it). The batch asks this to tell that a tooling step ran: the orchestrator sends a step's dependents
+ * only after the step (batch.ts stillToRun).
+ */
+function appliedInRun(p: TaskPacket, a: any): boolean {
+  const projectRoot: string | undefined = a.project_root ?? resolveProjectRoot(undefined);
+  if (!projectRoot) return false;
+  const recs = readAppliedRecords(projectRoot, a.run_id).filter((r) => r.packet_id === p.id && r.path === p.artifact_path);
+  if (!recs.length) return false;
+  try {
+    const fingerprint = packetFingerprint(p, { runId: a.run_id, read: hydrateInputs(p, projectRoot).packet });
+    return recs.some((r) => r.fingerprint === fingerprint);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One packet, start to receipt: validate, hydrate, route, dispatch — and under
+ * `apply`, write / verify / retry (runApplyLoop). Shared by execute_with_model
+ * and execute_batch so a batched packet behaves exactly like a single one.
+ */
+async function runPacket(raw: unknown, a: any, signal?: AbortSignal): Promise<unknown> {
+  const packet0 = validateTaskPacket(raw);
+  const { policy: asWritten, run } = runFor(a);
+  const apply = normalizeApply(packet0.apply);
+  const projectRoot: string | undefined = a.project_root ?? resolveProjectRoot(undefined);
+  // A brownfield run's apply packets are routed the way greenfield's executor and the run-start probe read the policy
+  // (executorView): a rule narrowed by task_type is read by its stage alone, since these packets carry none, so a
+  // policy sends a file to the same model in both flows and the probe tests exactly the models the run types with.
+  // Every other packet is routed by the policy as written, as before.
+  const policy = apply ? executorView(asWritten).policy : asWritten;
+
+  // Content-less slices are read from disk for brownfield packets only (apply.ts readsSlicesFromDisk).
+  const needsDisk = readsSlicesFromDisk(packet0, apply, projectRoot);
+  if (needsDisk && !projectRoot) {
+    throw new Error(
+      "execute_with_model: project_root is required when a packet uses apply or an inputs[] slice without content.",
+    );
+  }
+  let packet: TaskPacket = packet0;
+  let hydrated: string[] = [];
+  if (needsDisk) {
+    ({ packet, hydrated } = hydrateInputs(packet0, projectRoot!));
+    if (hydrated.length) log("info", "packet.hydrate", { packet_id: packet.id, files: hydrated.join(",") });
+  }
+  // The apply form is the brownfield packet flow's writer. Greenfield writes through the executor,
+  // and a greenfield project has no write contract, so apply is refused there.
+  if (apply && !hasActiveWriteContract(projectRoot!)) {
+    throw new Error(
+      `${packet0.id}: the apply form writes only inside a brownfield run, after Gate 0 activates ` +
+        ".sdlc/local/write-contract.json; no active write contract under project_root.",
+    );
+  }
+  // Only a brownfield run's packet, after its run's pre-flight, is typed (applyFormProblem): nothing falls back.
+  const problem = apply ? applyFormProblem(packet0, run) : null;
+  if (problem) throw new Error(problem);
+  // A packet this run already applied, whose file is still as it (or a later packet of the run on that file) left it,
+  // has nothing left to do: no typist call, $0 (batch.ts alreadyApplied). A re-sent batch then types only what did not
+  // apply. The packet is judged as planned (packet0), with its briefs as read (batch.ts packetFingerprint).
+  const fingerprint = apply ? packetFingerprint(packet0, { runId: a.run_id, read: packet }) : "";
+  if (apply) {
+    const rec = alreadyApplied(projectRoot!, a.run_id, packet, fingerprint);
+    if (rec) {
+      log("info", "apply.already_applied", { packet_id: packet.id, path: rec.path, applied_at: rec.ts });
+      return {
+        status: "already_applied",
+        apply: { path: rec.path, sha256: rec.sha256 },
+        attempts: [],
+        tokens: { input: 0, input_cached: 0, output: 0 },
+        cost_usd: 0,
+        events_written: 0,
+        applied_at: rec.ts,
+        ...(rec.set_aside?.length ? { set_aside: rec.set_aside } : {}),
+      };
+    }
+  }
+  if (apply && !packet.outputSchema) {
+    // Greenfield's answer contracts: exact edits (or the whole file) for an edit, the whole file for a new one.
+    packet = { ...packet, outputSchema: apply.mode === "edits" ? EDIT_ANSWER_SCHEMA : FILE_OUTPUT_SCHEMA };
+  }
+
+  if (!apply) {
+    // Outside the apply form an agent-door worker edits the project folder itself: while a brownfield run's write
+    // contract is active nothing may write the project outside it and its snapshots, so such a packet is not sent.
+    if (projectRoot && hasActiveWriteContract(projectRoot)) {
+      const d = pickModel(routeContext(packet), policy, selectOverrides());
+      if (getModel(policy, d.modelId).adapter === "antigravity-worker") {
+        throw new Error(
+          `${packet0.id}: routed to '${d.modelId}' (antigravity-worker), an agent that edits the project folder itself. While a brownfield run's ` +
+            "write contract is active, nothing writes the project outside it and its per-file snapshots, so nothing was dispatched.",
+        );
+      }
+    }
+    const one = await dispatchOnce(packet, policy, a, { run });
+    return { decision: one.decision, result: one.result, events: one.events, terminal_reason: one.result.terminal_reason };
+  }
+
+  // Each call's events are written as soon as the loop has judged it (its record hook), as greenfield's stage runner
+  // writes each attempt's event when it is judged (executor/run.ts deps.emit): a busy vendor's reply at once, an answer
+  // once it is written and its file's checks have run (success only when they pass). A server stopped partway through a
+  // packet's ladder has then already written every call it made. Without a telemetry file the events ride in the
+  // receipt (keepEvents).
+  const outcome = await runApplyLoop({
+    packet,
+    apply,
+    projectRoot: projectRoot!,
+    runId: a.run_id,
+    keepEvents: !a.telemetry_path,
+    record: (evs) => {
+      if (!a.telemetry_path) return;
+      for (const ev of evs) appendEvent(a.telemetry_path, ev);
+      log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: evs.length });
+    },
+    route: (p) => pickModel(routeContext(p), policy, selectOverrides()),
+    dispatch: async (p, force) => {
+      const one = await dispatchOnce(p, policy, a, { forApply: true, force, run });
+      return { decision: one.decision, result: one.result, events: one.events };
+    },
+    // A retry routed to a Claude leaf of a brownfield run is typed here by the lean typist (applyTypist.ts), so it
+    // stays in the loop: greenfield's ladder ends in one lean Opus attempt inside the server.
+    typesInServer: (d) => usesServerTypist(getModel(policy, d.modelId), packet, run),
+    // The ladder's last attempt is greenfield's last-attempt model (executor/tools.ts fallbackLeaf: the policy's
+    // default leaf when it is a Claude model, else its first Claude leaf the run can reach) when the server can type
+    // with it: a brownfield run's packets only (usesServerTypist).
+    lastAttempt: () => {
+      const leaf = fallbackLeaf(policy, selectOverrides());
+      return leaf && usesServerTypist(leaf, packet, run) ? { modelId: leaf.id, reason: "the ladder's last attempt", ruleIndex: -1 } : null;
+    },
+    log: (level, event, fields) => log(level, event, fields),
+    signal,
+  });
+  if (outcome.status === "applied" && packet.artifact_path) {
+    const sha256 = fileSha256(projectRoot!, packet.artifact_path);
+    if (sha256) {
+      appendAppliedRecord(projectRoot!, a.run_id, {
+        packet_id: packet.id, fingerprint, path: packet.artifact_path, sha256,
+        ...(outcome.set_aside?.length ? { set_aside: outcome.set_aside } : {}),
+        ts: new Date().toISOString(),
+      });
+    }
+  }
+  return outcome;
 }
 
 const server = new Server(
@@ -354,6 +804,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object",
         properties: {
+          // The definition every orchestrator sees, greenfield's included, is develop's. A brownfield run's packets also
+          // carry `apply` and pass `run_id` beside them (the input is not closed to other fields); the brownfield run's
+          // own instructions and execute_batch's definition describe both.
           packet: { type: "object", description: "TaskPacket (see types.ts)" },
           policy_name: { type: "string" },
           project_root: { type: "string" },
@@ -377,6 +830,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           verbose: { type: "boolean", description: "Shorthand for log_level: debug." },
         },
         required: ["packet"],
+      },
+    },
+    {
+      name: "execute_batch",
+      description:
+        "Execute several apply-form TaskPackets in one call: the server runs them in parallel (4 at a time) " +
+        "in depends_on order, never two on the same artifact_path at once, and returns one receipt per packet plus " +
+        "totals. Same routing, apply, verify and telemetry as execute_with_model; one orchestrator turn for the phase " +
+        "instead of one per packet.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          packets: { type: "array", items: { type: "object" }, description: "TaskPackets, each with an apply block (plan-to-packets output) and the run's job (`intent`), after the run's preflight_dispatch; a batch with a packet that lacks either types nothing. Omit when packets_path is given. `apply: { write: true, mode?: 'content'|'edits', checks?: [{id, run: 'cmd {path}', fix?: 'cmd --write {path}'}], baseline_from?, max_retries? }` (or `verify` and `format` command lists) makes the server write the returned content to artifact_path (write contract + provenance), run each check's fix then its run, retry with the failure appended, and return a receipt instead of the file. A check the file already fails before the change is set aside for it (the receipt's set_aside). Status 'escalate' when the policy routes the next attempt to a model the server cannot type with. An inputs[] slice without `content` is read from disk under project_root (narrow it with `lines: [from, to]` or `section: '<heading>'`)." },
+          packets_path: { type: "string", description: "Path to packets.json (plan-to-packets output); the server reads it so the packets never pass through the caller's context. Packets without an apply block (tooling) are skipped and listed in the receipt (skipped_no_apply). A tooling step that has not run blocks the packets that depend on it: one the call skips, or one it leaves out (packet_ids) that waits for a packet of the call; tooling_steps lists each such step with its instruction, for you to run before sending what waits for it. A step a dependent of which this run already applied has run, and blocks nothing. A packet this run already applied whose file is unchanged since settles already_applied, with no model call. The packets' end-of-run checks are in the receipt's verify_deferred." },
+          packet_ids: { type: "array", items: { type: "string" }, description: "With packets_path: run only these ids." },
+          policy_name: { type: "string" },
+          project_root: { type: "string" },
+          policy_path: { type: "string" },
+          run_id: { type: "string", description: "The run's id: provenance, the full receipt and the record of applied packets go under .sdlc/runs/<run_id>/. Once preflight_dispatch recorded this run id, the batch is typed under the policy recorded there, and a call naming another policy is refused." },
+          cache_context: { type: "string" },
+          telemetry_path: { type: "string" },
+          log_level: { type: "string", enum: ["error", "warn", "info", "debug", "trace"] },
+        },
+        required: [],
       },
     },
     {
@@ -428,15 +905,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "Prove every model this run will dispatch to can be reached, BEFORE the run spends " +
         "anything. Constructs each adapter (where credential discovery happens and fails) and " +
         "reports the resolved Gemini backend, project and region. Makes no API call and costs " +
-        "nothing. Call this once at the start of every run and halt on ok:false — otherwise a " +
+        "nothing, unless probe_typists is true: then it also sends one minimal call through every " +
+        "typist the run types with (cents at most), so a login that exists but cannot be used stops " +
+        "the run here. Call this once at the start of every run and halt on ok:false — otherwise a " +
         "credential problem only surfaces at the first mechanical packet, after the premium " +
         "phases are billed. Requires auth_mode: under 'vendor' every model is dispatched through " +
         "this server and so every adapter must work, while under 'estimated' the orchestrator's " +
-        "own tier runs in-session and its adapter is never constructed — failures there are " +
-        "reported in `warnings` and do not halt. Pass executor: true for a run whose files " +
-        "execute_stage types (every new-app build: /mmo:greenfield, /mmo:pass on a brief): " +
-        "pre-flight then also halts when this machine's claude CLI cannot run the executor's " +
-        "Claude typists. The result's policy_notes say how execute_stage reads the policy.",
+        "own tier's API adapter is not used (its own work runs in-session, and the typists type " +
+        "files with this computer's Claude login) — failures there are " +
+        "reported in `warnings` and do not halt. Pass executor: true for every run whose files the typists " +
+        "type (every new-app build and every brownfield run): pre-flight then also halts when this machine's " +
+        "claude CLI cannot run the typists' Claude models (the lean Opus typist). The result's policy_notes " +
+        "say how the run's typed files read the policy " +
+        "(execute_stage's units and a brownfield run's packets alike). With run_id, the policy and " +
+        "auth mode recorded here are that run's for its execute_with_model and execute_batch calls.",
       inputSchema: {
         type: "object",
         properties: {
@@ -451,8 +933,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           executor: {
             type: "boolean",
             description:
-              "true when execute_stage types this run's files (every new-app build); false for a brownfield run. " +
-              "Omitted, a claude CLI that cannot run the executor's Claude typists is reported under warnings instead of halting.",
+              "true when the typists type this run's files: every new-app build (execute_stage) and every brownfield run " +
+              "(its packets); false only for a run whose files no typist types. Omitted, a claude CLI that cannot run the " +
+              "typists' Claude models is reported under warnings instead of halting.",
           },
           log_level: {
             type: "string",
@@ -460,6 +943,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: "Per-call MMO: log verbosity override.",
           },
           verbose: { type: "boolean", description: "Shorthand for log_level: debug." },
+          probe_typists: {
+            type: "boolean",
+            description:
+              "true: after the free checks pass, send one minimal call through every typist this run types with (the " +
+              "routed attempts of codegen, tests, docs and debug, and the lean Opus last attempt), the same door, login " +
+              "and model as the run's own calls. A call refused (401/403) or with no reply at all stops the run (ok:false, " +
+              "with what to fix); a busy vendor passes with a warning. Each call's cost is in typist_probe and, with " +
+              "telemetry_path, in the run's telemetry.",
+          },
+          telemetry_path: { type: "string", description: "The run's telemetry.jsonl: the probe calls are written there (with probe_typists)." },
+          run_id: { type: "string", description: "The run's id: its probe calls' telemetry events name it, and its execute_with_model and execute_batch calls are typed under the policy recorded here." },
+          intent: { type: "string", description: "A brownfield run's job (docs, bugfix, feature-extend, feature-new, refactor, test, deps): its packets carry it, so with probe_typists the probe also covers the typists a policy rule scoped to that job routes to." },
         },
         required: ["auth_mode"],
       },
@@ -535,178 +1030,75 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     switch (name) {
       case "execute_with_model": {
         const a = args as any;
-        const packet = validateTaskPacket(a.packet);
-        const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
-        const decision = pickModel(
-          {
-            phase: packet.phase,
-            task_type: packet.task_type,
-            module: packet.module,
-            retry_count: packet.retry_count ?? 0,
-            intent: packet.intent,
-          },
-          policy,
-          selectOverrides()
-        );
-        log("info", "route.decide", {
-          packet_id: packet.id,
-          phase: packet.phase,
-          intent: packet.intent,
-          task_type: packet.task_type,
-          module: packet.module,
-          rule_index: decision.ruleIndex,
-          rule_reason: decision.reason,
-          model_id: decision.modelId,
-          select_slot: decision.selection?.slot,
-          select_chosen: decision.selection?.chosen,
-          select_overridden: decision.selection?.overridden,
-        });
-
-        const adapter = adapterFor(policy, decision.modelId);
-        const dispatchStarted = Date.now();
-        log("info", "dispatch.start", {
-          packet_id: packet.id,
-          model_id: decision.modelId,
-          max_out: packet.budget?.maxOutputTokens,
-          max_in: packet.budget?.maxInputTokens,
-          cache_context: a.cache_context,
-          work_dir: a.work_dir ?? a.project_root,
-        });
-        // Passed on every dispatch; completion adapters ignore it.
-        const result = await adapter.execute(packet, a.cache_context, {
-          project_root: a.project_root,
-          work_dir: a.work_dir ?? a.project_root,
-          telemetry_path: a.telemetry_path,
-        });
-        for (const att of result.attempts ?? []) {
-          log("debug", "dispatch.attempt", {
-            packet_id: packet.id,
-            attempt_number: att.attempt_number,
-            ceiling_used: att.ceiling_used,
-            hit_output_cap: att.hit_output_cap,
-            stop_reason: att.stop_reason,
-          });
+        // An apply packet's checks and typist calls can run long: it sends progress as execute_batch does (a message
+        // when it settles, a heartbeat between), so Claude Code does not cut the call off as idle. Any other packet is
+        // one model call, as before.
+        const token = (req.params as any)._meta?.progressToken;
+        const progress = normalizeApply(a?.packet?.apply) !== null
+          ? batchProgress({ token, send: (params) => extra.sendNotification({ method: "notifications/progress", params } as any) }, 1)
+          : null;
+        try {
+          // The request's own cancel signal: a call the person stops writes nothing more (apply.ts runApplyLoop).
+          const out = await runPacket(a.packet, a, extra.signal);
+          progress?.settled({ id: String(a.packet?.id), status: String((out as any)?.status) }, 1);
+          return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+        } finally {
+          await progress?.stop();
         }
-        if (result.success) {
-          log("info", "dispatch.end", {
-            packet_id: packet.id,
-            model_id: decision.modelId,
-            ok: true,
-            terminal_reason: result.terminal_reason,
-            tokens_in: result.tokens.input,
-            tokens_out: result.tokens.output,
-            tokens_cached: result.tokens.input_cached,
-            cost_usd: result.cost_usd,
-            latency_ms: Date.now() - dispatchStarted,
-            attempts: result.attempts?.length ?? 1,
-            price_basis: result.attempts?.[result.attempts.length - 1]?.price_basis,
-          });
-        } else {
-          log("error", "dispatch.error", {
-            packet_id: packet.id,
-            model_id: decision.modelId,
-            error_class: "DispatchFailed",
-            message: result.error,
-          });
+      }
+      case "execute_batch": {
+        const a = args as any;
+        const { list: rawPackets, skipped, tooling, plan } = batchPacketsFromArgs(a);
+        // The inputs every packet carries are marked shared: the lean Opus typist sends them once, cached (batch.ts).
+        const packets: TaskPacket[] = markSharedInputs(rawPackets.map((p: unknown) => validateTaskPacket(p)));
+        for (const p of packets) {
+          if (!normalizeApply(p.apply)) throw new Error(`execute_batch: packet ${p.id} has no apply block; a batch carries apply-form packets only (the receipt is what makes a batch cheap).`);
         }
-
-        // One TelemetryEvent per attempt, all sharing the packet's task_id.
-        const attempts = result.attempts ?? [
-          {
-            attempt_number: 1,
-            ceiling_used: packet.budget.maxOutputTokens,
-            hit_output_cap: false,
-            tokens: result.tokens,
-            cost_usd: result.cost_usd,
-            latency_ms: result.latency_ms,
-            success: result.success,
-            error: result.error,
-          },
-        ];
-        const modelName = getModel(policy, decision.modelId).model_name;
-        const baseEvent = {
-          ts: new Date().toISOString(),
-          pass: packet.pass_id,
-          phase: packet.phase,
-          task_type: packet.task_type,
-          task_id: packet.id,
-          module: packet.module,
-          model: modelName,
-          routed_by: "orchestrator" as const,
-          // Server-measured from the vendor's own usage report, so always
-          // "vendor" — in BOTH auth modes (estimated mode's MCP-dispatched
-          // calls still carry vendor tokens; only direct-tier events are
-          // estimates, and those arrive via log_telemetry, not here). The
-          // report keys the run's cost label off this field; before this
-          // stamp existed every dispatched event fell to "unknown" and the
-          // whole run's numbers were disowned.
-          provenance: "vendor" as const,
-          // Leaf id; the only field that distinguishes two leaves that share
-          // a vendor model name (e.g. flash-completion vs flash-agsdk-worker).
-          model_id: decision.modelId,
-          routing: {
-            policy_name: policy.name,
-            policy_version: policy.version,
-            rule_index: decision.ruleIndex,
-            rule_reason: decision.reason,
-            // Undefined unless the rule went through a slot; JSON.stringify
-            // drops undefined keys, so unslotted policies produce identical
-            // events to before slots existed.
-            select: decision.selection,
-          },
-          retry_count: packet.retry_count ?? 0,
-        };
-        const events: TelemetryEvent[] = attempts.map((att) => ({
-          ...baseEvent,
-          input_tokens: att.tokens.input,
-          input_tokens_cached: att.tokens.input_cached,
-          // Cache writes, disjoint from input_tokens: the total written, plus
-          // the 1-hour share when the adapter knows it (claude-cli). Anthropic
-          // adapters populate it; Gemini leaves both undefined and
-          // JSON.stringify drops the keys, keeping those events unchanged.
-          ...cacheWriteBuckets(att.tokens),
-          output_tokens: att.tokens.output,
-          // Already counted in output_tokens and billed at the output rate;
-          // surfaced only so a reader can see how much of a delegation's
-          // output was thinking. Undefined on adapters that don't report it.
-          output_tokens_reasoning: att.tokens.output_reasoning,
-          cost_usd: att.cost_usd,
-          latency_ms: att.latency_ms,
-          success: att.success,
-          attempt_number: att.attempt_number,
-          ceiling_used: att.ceiling_used,
-          retry_reason: att.attempt_number > 1 ? "output_cap" : undefined,
-          error: att.error,
-          // Where the dollars' rates came from ("list" or "custom" under
-          // pricing_override), which billed models had no price, and, for a
-          // claude-cli worker, Claude Code's own figure and how the cache
-          // TTL split was known. Undefined fields are dropped from the line.
-          price_basis: att.price_basis,
-          unpriced_models: att.unpriced_models?.length ? att.unpriced_models : undefined,
-          cli_reported_cost_usd: att.cli_reported_cost_usd,
-          ttl_split: att.ttl_split,
-          // claude-cli only: the dollars for the tokens the worker's own
-          // transcript explains. collect-orchestrator-usage.mjs subtracts only
-          // this share of an in-session worker, so its receipt-only side calls
-          // and unlogged tokens stay in the true total (review finding M4).
-          transcript_logged_cost_usd: att.transcript_logged_cost_usd,
-        }));
-        if (a.telemetry_path) {
-          for (const ev of events) appendEvent(a.telemetry_path, ev);
-          log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: events.length });
+        // The run's policy, once for the batch: a call that names another policy than the run's pre-flight recorded is
+        // refused here, before any packet starts (runFor). Every packet is admitted here too (applyFormProblem), so a
+        // batch with one packet that cannot be typed starts none.
+        const { run: batchRun } = runFor(a);
+        const refused = packets.map((p) => applyFormProblem(p, batchRun)).filter((r): r is string => r !== null);
+        if (refused.length) throw new Error(`execute_batch: ${refused.join(" ")}`);
+        // Packets typed at once: greenfield's stated bound for every stage and policy (executor/tools.ts
+        // STAGE_CONCURRENCY), fixed by the server, not chosen per call. A rate-limited call waits, so it changes only
+        // the wall time, never who types or what is billed.
+        const maxParallel = STAGE_CONCURRENCY;
+        // Progress as greenfield's execute_stage sends it: a message per settled packet and a heartbeat between.
+        const token = (req.params as any)._meta?.progressToken;
+        const progress = batchProgress({ token, send: (params) => extra.sendNotification({ method: "notifications/progress", params } as any) }, packets.length);
+        let result;
+        try {
+          result = await runBatch({
+            packets,
+            // The plan's tooling steps this call skips, and the whole plan for those it leaves out: what waits for a step
+            // that has not run is blocked by it, never typed before it runs. A step a dependent of which this run applied
+            // has run (appliedInRun).
+            tooling,
+            plan,
+            appliedBefore: (p) => appliedInRun(p, a),
+            maxParallel,
+            run: (p) => runPacket(p, a, extra.signal) as Promise<any>,
+            signal: extra.signal,
+            log: (level, event, fields) => log(level, event, fields),
+            onSettled: (item, done) => progress.settled(item, done),
+          });
+        } finally {
+          await progress.stop();
         }
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                { decision, result, events, terminal_reason: result.terminal_reason },
-                null,
-                2,
-              ),
-            },
-          ],
-        };
+        log("info", "batch.done", { packets: packets.length, status: result.status, counts: JSON.stringify(result.counts), cost_usd: result.cost_usd, duration_ms: result.duration_ms });
+        // Every outcome whole, in the run's own folder, for the orchestrator to read one packet of with jq; the
+        // receipt it reads each turn stays within its bound (batch.ts compactBatchReceipt).
+        let fullReceipt: string | undefined;
+        if (typeof a.run_id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(a.run_id) && typeof a.project_root === "string") {
+          const rel = `.sdlc/runs/${a.run_id}/batches/${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+          try {
+            mkdirSync(dirname(join(a.project_root, rel)), { recursive: true });
+            writeFileSync(join(a.project_root, rel), JSON.stringify({ ...result, skipped_no_apply: skipped }, null, 2) + "\n");
+            fullReceipt = rel;
+          } catch { fullReceipt = undefined; }
+        }
+        return { content: [{ type: "text", text: JSON.stringify(compactBatchReceipt(result, skipped, { fullReceipt })) }] };
       }
       case "simulate_policy": {
         const a = args as any;
@@ -733,15 +1125,36 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         // Parse before the policy loads so a missing mode fails on the mode.
         const authMode = parseAuthMode(a.auth_mode);
         // Pre-flight opens a run: it records the auth mode and policy the run's
-        // executor stages will use. It never refuses a new one: the lock that
-        // keeps one run on one policy is the executor's, per run
-        // (executor/tools.ts, RUN_BINDINGS), so a second, separate /mmo: run in
-        // the same chat may use another policy or auth mode.
-        const next = { authMode, policyName: a.policy_name, projectRoot: a.project_root, policyPath: a.policy_path };
+        // executor stages and brownfield packets will use. It never refuses a
+        // new one: the lock that keeps one run on one policy is per run (the
+        // executor's RUN_BINDINGS in executor/tools.ts; runFor for a brownfield
+        // run's calls, by run_id), so a second, separate /mmo: run in the same
+        // chat may use another policy or auth mode.
+        const runId = typeof a.run_id === "string" && a.run_id ? a.run_id : undefined;
+        // A brownfield run's job: its packets carry it, so a policy rule scoped to it routes them, and the probe covers it.
+        const intent = typeof a.intent === "string" && a.intent ? a.intent : undefined;
+        const next: ServerRun = { authMode, policyName: a.policy_name, projectRoot: a.project_root, policyPath: a.policy_path, ...(runId ? { runId } : {}), ...(intent ? { intent } : {}) };
         const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
         const executor = typeof a.executor === "boolean" ? a.executor : undefined;
-        const out = preflightDispatch(policy, authMode, a.project_root, executor);
+        const out: any = preflightDispatch(policy, authMode, a.project_root, executor);
+        // The run's typists, tested only when asked and only once the free checks pass: a call costs cents, and a run
+        // the free checks already stop needs no call to know it (typistProbe.ts).
+        if (a.probe_typists === true && out.ok) {
+          const probes = await probeTypists(runTypingLeaves(policy, selectOverrides(), intent), authMode);
+          out.typist_probe = probes;
+          if (typeof a.telemetry_path === "string" && a.telemetry_path) {
+            for (const ev of probeEvents(probes, { pass: String(a.run_id ?? ""), policy: { name: policy.name, version: policy.version } })) appendEvent(a.telemetry_path, ev);
+          }
+          for (const p of probes) log(p.ok ? "info" : "warn", "preflight.typist_probe", { model_id: p.model_id, door: p.door, ok: p.ok, busy: p.busy, reason: p.reason, cost_usd: p.cost_usd });
+          const failed = probes.filter((p) => !p.ok);
+          if (failed.length) {
+            out.ok = false;
+            out.halt_reason = [out.halt_reason, ...failed.map((p) => `The ${p.door} typist (${p.model_id}, ${p.model_name}) could not answer a one-line test call: ${p.reason}. ${p.fix ?? ""}`.trim())].filter(Boolean).join(" ");
+          }
+          for (const p of probes.filter((x) => x.busy)) out.warnings.push(`The ${p.door} typist (${p.model_id}) was busy at the test call (${p.reason}); the run waits a busy vendor out as usual.`);
+        }
         runState = next;
+        if (runId) runStates.set(runKey(a.project_root, runId), next);
         return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
       }
       case "load_policy": {

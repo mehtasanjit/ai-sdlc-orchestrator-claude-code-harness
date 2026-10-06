@@ -15,19 +15,25 @@ src/
 
 ## Try it
 
+A brownfield run's write contract lives at the root of the git project that holds the run, so the example runs as a
+git project of its own (inside a clone of this repository, the clone's root would hold it):
+
 ```bash
-cd plugin/examples/brownfield-feature-extend
-npm install && npm test
-# In Claude Code:
-/mmo:brownfield
-# Pick intent: feature-extend
+cp -R plugin/examples/brownfield-feature-extend ~/brownfield-feature-extend && cd ~/brownfield-feature-extend
+printf 'node_modules/\n' > .gitignore
+npm install
+git init && git add -A && git commit -m "the example as shipped"
+npm test
+
+# In Claude Code, in this folder:
+/mmo:feature-extend
 ```
 
 ## Expected outputs
 
 - `src/index.js` — edited: read `req.query.role`, pass to `getUsers`
 - `src/users.js` — edited: `getUsers(role?)` filters when provided
-- `src/users.spec.js` — new tests for the filter param (with role, with unknown role, no role)
+- `src/users.spec.js` — edited: new tests for the filter param (with role, with unknown role, no role)
 - Existing test still passes (no regression)
 
 See [intent_brief.md](intent_brief.md).

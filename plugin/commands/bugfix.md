@@ -1,5 +1,5 @@
 ---
-description: "Fix a specific defect on this repo: reproduce it, diagnose it, fix it, add a regression test. Alias into /mmo:brownfield with intent=bugfix pre-selected. Example: fix the /login endpoint returning 500 on missing password."
+description: "Fix a specific defect on this repo: write a test that reproduces it first, then fix it. Alias into /mmo:brownfield with intent=bugfix pre-selected. Example: fix the /login endpoint returning 500 on missing password."
 argument-hint: "[the bug, in one line]"
 ---
 

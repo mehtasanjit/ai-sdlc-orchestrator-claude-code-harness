@@ -6,7 +6,7 @@
  *     same input, proving the "cannot import each other" split didn't drift
  *   - same for the two redaction copies (dist/redact.js vs
  *     dispatch-sanitize.mjs's PATTERNS)
- *   - rotation keeps exactly one previous file
+ *   - rotation shifts the earlier pieces of a log and keeps every one (both loggers)
  *   - a real subprocess never writes a byte to stdout while logging
  *   - mmo-log.mjs is fail-open end to end
  *   - env.mjs's level-resolution precedence
@@ -109,30 +109,49 @@ test("the TS and ESM redaction layers agree on which strings are secret-shaped",
 
 // ─── rotation ───────────────────────────────────────────────────────────
 
-test("rotation keeps exactly one previous file once the active log crosses 5MB", () => {
-  const dir = tmpDir();
-  try {
-    const logPath = join(dir, "orchestrator.log");
-    writeFileSync(logPath, "x".repeat(5 * 1024 * 1024 + 10));
-    const r = spawnSync(
-      "node",
-      ["--input-type=module", "-e", `
-        import { log, configureSinks } from ${JSON.stringify(join(ROOT, "plugin", "scripts", "lib", "log.mjs"))};
-        configureSinks({ runLogPath: ${JSON.stringify(logPath)} });
-        log("info", "phase.start", { run_id: "r1" });
-      `],
-      { encoding: "utf8" },
-    );
-    assert.equal(r.status, 0, r.stderr);
-    assert.ok(existsSync(`${logPath}.1`), "rotation should have produced a .1 file");
-    const rotated = readFileSync(`${logPath}.1`, "utf8");
-    assert.ok(rotated.length >= 5 * 1024 * 1024, "the .1 file should hold the oversized content");
-    const active = readFileSync(logPath, "utf8");
-    assert.ok(active.includes("phase.start"), "the new line should land in a fresh active file, not the rotated one");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+/**
+ * A run's log is its record: its start, its gates and its contract's freeze record sit in its oldest lines. So a
+ * rotation shifts the pieces it made before (.1 to .2, and so on) and keeps every one; overwriting .1 at the second
+ * rotation dropped the piece that holds the run's first lines. Both loggers rotate alike (the server writes the same
+ * run log as mmo-log.mjs). The readers read every piece, the highest number the oldest (workflow-log.mjs
+ * readRunLogText).
+ */
+const LOGGERS = [
+  ["the script logger", join(ROOT, "plugin", "scripts", "lib", "log.mjs")],
+  ...(SERVER_BUILT ? [["the server logger", join(SERVER_DIST, "log.js")]] : []),
+];
+for (const [which, module] of LOGGERS) {
+  test(`rotation shifts the earlier pieces and keeps every one once the active log crosses 5MB (${which})`, () => {
+    const dir = tmpDir();
+    try {
+      const logPath = join(dir, "orchestrator.log");
+      const logOnce = (fields) => {
+        const r = spawnSync(
+          "node",
+          ["--input-type=module", "-e", `
+            import { log, configureSinks } from ${JSON.stringify(module)};
+            configureSinks({ runLogPath: ${JSON.stringify(logPath)} });
+            log("info", "phase.start", ${JSON.stringify(fields)});
+          `],
+          { encoding: "utf8" },
+        );
+        assert.equal(r.status, 0, r.stderr);
+      };
+      writeFileSync(logPath, "first " + "x".repeat(5 * 1024 * 1024 + 10));
+      logOnce({ run_id: "r1", n: 1 });
+      assert.ok(readFileSync(`${logPath}.1`, "utf8").startsWith("first "), "the first rotation's piece is .1");
+      assert.match(readFileSync(logPath, "utf8"), /phase\.start run_id=r1 n=1/, "the new line lands in a fresh active file");
+      writeFileSync(logPath, "second " + "y".repeat(5 * 1024 * 1024 + 10));
+      logOnce({ run_id: "r1", n: 2 });
+      assert.ok(readFileSync(`${logPath}.2`, "utf8").startsWith("first "), "the second rotation shifts the first piece to .2, never drops it");
+      assert.ok(readFileSync(`${logPath}.1`, "utf8").startsWith("second "), "the newest piece is .1");
+      assert.match(readFileSync(logPath, "utf8"), /phase\.start run_id=r1 n=2/);
+      assert.equal(existsSync(`${logPath}.rotating`), false, "the rotation lock is released");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 // ─── stdout purity, in a real subprocess ───────────────────────────────
 

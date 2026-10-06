@@ -2,13 +2,13 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/tl-ai-labs/ai-sdlc-orchestrator-claude-code-harness/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.8.7-blue)](.claude-plugin/marketplace.json)
+[![Version](https://img.shields.io/badge/version-0.9.3-blue)](.claude-plugin/marketplace.json)
 
 ![How the plugin works — you paste two prompts, an orchestrator routes premium work to Claude Opus and mechanical work to Gemini Flash, and your project gets both generated code and a full audit trail](docs/assets/hero.svg)
 
 ## What this is
 
-A Claude Code plugin that runs a full SDLC pipeline — requirements → design → code → tests → docs → senior review → security review — against either an empty folder (**greenfield**) or an existing repository (**brownfield**). It routes each phase to the model that fits: judgment work stays on Claude Opus, mechanical work drops to Gemini Flash. A typical mid-size run costs cents where a one-model run would cost dollars.
+A Claude Code plugin that runs a full SDLC pipeline — requirements → design → code → tests → docs → senior review → security review — against either an empty folder (**greenfield**) or an existing repository (**brownfield**). It routes each phase to the model that fits: judgment work stays on Claude Opus, mechanical work drops to Gemini Flash. On the measured brownfield studies the work the server dispatched cost 25–59% less under `opus-plus-flash` than under `opus-only`; the Claude Code session that drives a run is most of what a run costs, and is measured after the run from its transcripts ([docs/brownfield-routing.md](docs/brownfield-routing.md)).
 
 Two Gemini paths reach the same model at the same price — one call per packet (`flash-completion`) or a full agent session with tools and a workspace (`flash-agsdk-worker`). You pick which door once at setup. See [docs/two-gemini-paths.md](docs/two-gemini-paths.md) for the measured comparison.
 
@@ -67,16 +67,16 @@ flowchart LR
     classDef local fill:#F3F4F6,stroke:#6B7280,color:#1F2937
 ```
 
-The packet flow, which every brownfield run uses, walks the 11 states below plus two brownfield ones (`discovery`, `change_plan`) around the same core.
+The packet flow, which every brownfield run uses, walks the 11 states below plus discovery and the rendered `change_plan.md` around the same core: the architect hands over a typed change spec, and code renders the plan Gate 2 shows and derives one packet per file from it, with no model call.
 
 ```mermaid
 flowchart LR
     P0([preflight_dispatch]):::local
     P1[read_brief]:::opus
     P2[requirements_analysis]:::opus
-    P3[architecture_design]:::opus
+    P3[architecture_design<br/><i>typed change spec</i>]:::opus
     P4[cache_project_header]:::gem
-    P5[plan_task_packets]:::opus
+    P5[plan_task_packets<br/><i>derived by code</i>]:::local
     P6[execute_packets]:::gem
     P7[senior_code_review]:::opus
     P8[test_run]:::local
@@ -86,9 +86,9 @@ flowchart LR
     P0 --> P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> P9 --> P10
 
     D[discovery<br/><i>brownfield only</i>]:::opus
-    C[change_plan<br/><i>brownfield only</i>]:::opus
+    C[change_plan.md<br/><i>rendered by code · Gate 2</i>]:::local
     D -.-> P2
-    C -.-> P4
+    P3 -.-> C
 
     classDef opus  fill:#FEF3C7,stroke:#B45309,color:#78350F
     classDef gem   fill:#E0F2FE,stroke:#0369A1,color:#0C4A6E
@@ -97,7 +97,7 @@ flowchart LR
 
 Legend — **amber:** Claude Opus (judgment). **blue:** Gemini Flash (mechanical). **grey:** local — no model call.
 
-Four HITL gates fire along the way: after requirements (Gate 1), after design (Gate 2), after security review (Gate 3), before final acceptance (Gate 4). Brownfield adds Gate 0 (discovery confirmation) before any of them.
+Four HITL gates fire along the way: after requirements (Gate 1), after design (Gate 2), after security review (Gate 3), before final acceptance (Gate 4). Brownfield adds Gate 0 (discovery confirmation) before any of them, and opens Gate 2 for feature-extend, feature-new, refactor and deps, and for a bugfix that code finds design-affecting (["The jobs"](plugin/skills/pipeline/brownfield-runs.md#the-jobs)).
 
 The full plugin file inventory lives in [docs/architecture.md](docs/architecture.md).
 
@@ -107,17 +107,20 @@ The full plugin file inventory lives in [docs/architecture.md](docs/architecture
 
 Pick one at Gate 0 in `/mmo:brownfield`.
 
-| Job type | When to use | Who does the heavy lifting |
+| Job type | When to use | What the run proves before it is done |
 |---|---|---|
-| `docs` | Write API docs, README, ADRs, docstrings | Gemini Flash |
-| `bugfix` | Fix a specific defect (reproduce → diagnose → fix → regression test) | Gemini Flash · escalates to Opus after 2 failed retries |
-| `feature-extend` | Add a capability to an existing endpoint or module | Opus for change plan · Gemini for the edits |
-| `feature-new` | Add a new subsystem (endpoint + storage + tests) | Opus for design · Gemini for full codegen mix |
-| `refactor` | Extract shared logic; runs the **full** test suite for invariants | Opus for refactor plan · Gemini for `refactor_extract` + patches |
-| `test` | Backfill tests to a coverage target | Gemini Flash |
-| `deps` | Upgrade a dependency + patch breaking-change fallout | Opus for dep-swap plan · Gemini for adjacent-code patches |
+| `docs` | Write API docs, README, ADRs, docstrings | Each doc passes the repo's own doc checks |
+| `bugfix` | Fix a specific defect | A test that reproduces the bug fails before the fix and passes after it |
+| `feature-extend` | Add a capability to an existing endpoint or module | Each file passes its checks; the project checks pass at the end |
+| `feature-new` | Add a new subsystem (endpoint + storage + tests) | Each file passes its checks; the project checks pass at the end |
+| `refactor` | Extract shared logic and update its call sites | The whole-project checks it names pass at the end (code requires at least one; the architect is told to name the full test suite) |
+| `test` | Backfill tests to a coverage target | The whole-project checks it names pass at the end (code requires at least one; the architect is told to name the full test suite) |
+| `deps` | Upgrade a dependency and adapt the code it breaks | The install runs as the package manager's own step; the whole-project checks it names pass at the end (code requires at least one) |
 
-Full intent-by-phase matrix in [plugin/skills/pipeline/SKILL.md:255](plugin/skills/pipeline/SKILL.md).
+Every job runs the same flow: Opus writes a typed change spec (checked against the files as it arrives), code
+derives one packet per file, and the policy's typists type them (under `opus-plus-flash`, Gemini Flash types and
+the last attempt of a file that keeps failing goes to Opus). Which jobs open Gate 2, and what each spec holds:
+["The jobs"](plugin/skills/pipeline/brownfield-runs.md#the-jobs).
 
 ### Routing — model per phase
 
@@ -125,12 +128,13 @@ Same rule applies to greenfield and brownfield. The default `opus-plus-flash` po
 
 | Phase | Tier | Model in the default policy |
 |---|---|---|
-| `requirements_analysis` · `architecture_design` · `plan_task_packets` (not in the executor flow) | premium | Claude Opus |
+| `requirements_analysis` · `architecture_design` (greenfield's typed spec, brownfield's typed change spec) | premium | Claude Opus |
 | `senior_code_review` · `security_review` | premium | Claude Opus |
-| `discovery` · `change_plan` (brownfield only) | premium | Claude Opus |
+| `discovery` (brownfield only) | premium | Claude Opus |
+| `plan_task_packets` | local | Code, no model call: greenfield's executor types the spec's units as they are; brownfield's `plan-to-packets.mjs` derives one packet per file |
 | codegen · `tests` · `docs` (`execute_stage` in the executor flow, `execute_packets` otherwise) | mechanical | Gemini Flash |
 | `debug` (retry_count ≥ 2) | premium | Claude Opus (auto-escalation) |
-| `test_run` | local | Bash on your machine, no model call (executor flow: `execute_stage` verify runs the checks by code; failures go to the `debug` route) |
+| `test_run` | local | On your machine, no model call (greenfield: `execute_stage` verify runs the checks by code; brownfield: the server runs each file's checks, the orchestrator runs the project checks with Bash; failures go to the `debug` route) |
 
 Source: [plugin/config/policies/opus-plus-flash.yaml:64](plugin/config/policies/opus-plus-flash.yaml). Every rule is data — change routing by editing the YAML, or author a new policy in the browser console via `/mmo:policy change`.
 
@@ -139,14 +143,14 @@ Two guardrails ship on:
 - **Escalation** — a mechanical-tier packet that fails validation twice auto-routes to Opus on the third attempt. Prevents infinite retries when Flash can't solve a particular puzzle.
 - **No cost cap** — no policy sets a dollar limit and nothing stops a run for its cost. The orchestrator makes at most three repair rounds after a failing check run, and the acceptance stage runs at most three re-checks. A policy that still declares `hard_cost_cap_usd` loads, with the figure set aside and a warning.
 
-Two policies ship:
+Every shipped policy is a YAML file in [plugin/config/policies/](plugin/config/policies/). The two the brownfield studies measured:
 
-| Policy | Uses | Typical mid-size run cost |
-|---|---|---|
-| `opus-only` | Claude Opus for every phase | $10 – 30 |
-| `opus-plus-flash` (default) | Opus for judgment, Gemini Flash for mechanical | $0.30 – 3 |
+| Policy | Uses | Dispatched cost, three feature-extend studies | True total incl. the driver session |
+|---|---|---|---|
+| `opus-only` | Claude Opus for every phase | $3.9 – 9.6 | not yet measured |
+| `opus-plus-flash` (default) | Opus for judgment, Gemini Flash for mechanical (completion door) | $2.7 – 6.0 | $22.55 (one measured run) |
 
-Deep dive: [docs/brownfield-routing.md](docs/brownfield-routing.md).
+The two columns are different numbers. *Dispatched* is what `telemetry.jsonl` records — every packet the MCP server sent to a model. *True total* adds the Claude Code session that drives the run, which the collector reconstructs from the session transcripts after the run ends. On the measured `opus-plus-flash` run the driver session was 99% of the true total, so the policy that moves the driver tier is the one that moves the total. Numbers, run by run, with a refactor study and the agent door: [docs/brownfield-routing.md](docs/brownfield-routing.md).
 
 ## Greenfield vs. brownfield
 
@@ -186,7 +190,7 @@ Framed by what you want to do, not by every provider that exists. Full provider 
 | If you want to… | You need |
 |---|---|
 | **Try it at all** | Node.js 20+, Claude Code CLI, macOS/Linux/WSL2, and either an `ANTHROPIC_API_KEY` **or** a Claude Code subscription (sign in once with `claude`) |
-| **Get the ~10× cost drop** | The above, plus a Gemini surface — a `GEMINI_API_KEY` from [AI Studio](https://aistudio.google.com/app/apikey), or Application Default Credentials from `gcloud auth application-default login` |
+| **Route mechanical work to Gemini** | The above, plus a Gemini surface — a `GEMINI_API_KEY` from [AI Studio](https://aistudio.google.com/app/apikey), or Application Default Credentials from `gcloud auth application-default login` |
 | **Use the Antigravity agent path** | The above, plus Python 3.10+ (macOS ships 3.9, too old) **and** Vertex ADC — there is no API-key door for the agent path |
 
 That's it. You don't need to pick a Gemini door yourself — setup asks. You don't need to write a policy — `opus-plus-flash` loads by default.
@@ -225,7 +229,7 @@ Thirteen commands, split by purpose. All are declared in [plugin/commands/](plug
 | Command | What it does | When to use it |
 |---|---|---|
 | [`/mmo:greenfield`](plugin/commands/greenfield.md) | Runs the greenfield pipeline. Interviews you for the brief (or reads one you point at), confirms the output path, shows the routing plan, then starts spending. Takes no arguments. | Empty folder + a project brief. Generates a whole new app into `./src/`. |
-| [`/mmo:brownfield`](plugin/commands/brownfield.md) | Runs the brownfield pipeline. Hydrates prior state, runs discovery (or resumes), asks for the intent and brief, freezes scope at Gate 0, then executes. Takes no arguments. | Existing repo. Extends the code you already have. |
+| [`/mmo:brownfield`](plugin/commands/brownfield.md) | Runs the brownfield pipeline. Hydrates prior state (a run that never ended is not resumed: you decide whether to end it), runs discovery, asks for the intent and brief, freezes scope at Gate 0, then executes. Takes no arguments. | Existing repo. Extends the code you already have. |
 | [`/mmo:pass`](plugin/commands/pass.md) | Headless twin of the above. Every setting a flag: `--auth=vendor\|estimated`, `--policy`, `--mode=greenfield\|brownfield`, `--intent`, `--brief`, `--gates`, `--strict-write`, and more. | CI, scripted replays, batch runs. |
 
 ### Run a specific brownfield job

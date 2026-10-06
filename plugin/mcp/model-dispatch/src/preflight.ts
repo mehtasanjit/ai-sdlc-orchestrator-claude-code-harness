@@ -4,8 +4,8 @@
  * Which models this server actually dispatches to depends on the run's auth
  * mode. Under `vendor` every call goes through this server, so every adapter
  * must work. Under `estimated` the orchestrator's own tier runs inside Claude
- * Code on the user's subscription — its adapter is never constructed, so
- * failures there are informational, not blocking.
+ * Code on the user's subscription — its API adapter is not used by the run,
+ * so a failure building it is a warning, not a halt.
  *
  * Split from server.ts because server.ts opens a stdio transport as a
  * top-level side effect and hangs a test runner on import. `makeAdapter` is
@@ -85,8 +85,8 @@ export function parseAuthMode(value: unknown): AuthMode {
   throw new Error(
     "this run requires auth_mode=vendor|estimated. Pre-flight cannot tell which models " +
       "will be dispatched through this server without it: under 'vendor' every model is, " +
-      "under 'estimated' the orchestrator's own tier runs in-session and its adapter is " +
-      "never constructed.",
+      "under 'estimated' the orchestrator's own tier runs in-session and its API adapter is " +
+      "not used, so a failure building it is a warning.",
   );
 }
 
@@ -107,12 +107,19 @@ export function requiresServerDispatch(adapter: string, authMode: AuthMode): boo
  * in-session work is priced from the same list after the run, so either way
  * the run's cost would have a hole in it. Omitted (as in the reachability
  * tests), no price is checked.
+ *
+ * `typistModels` names the Claude models the run's typists type with (the lean
+ * Opus typist, executor/tools.ts executorClaudeLeaves): under `estimated` such a
+ * model's API adapter goes unused, but the model itself types files through
+ * this computer's claude CLI, so its note says that instead of "this run does
+ * not dispatch to it".
  */
 export function assessModels(
   models: PreflightModel[],
   authMode: AuthMode,
   makeAdapter: (modelId: string) => unknown,
   checkPrice?: (model: PreflightModel) => PriceCheck,
+  typistModels: string[] = [],
 ): PreflightAssessment {
   const priceWarnings: string[] = [];
   const results: PreflightModelResult[] = models.map((m) => {
@@ -177,11 +184,15 @@ export function assessModels(
   }
   const halt_reason = reasons.length === 0 ? null : reasons.join(" ");
 
-  const warnings = nonBlocking.map(
-    (f) =>
-      `${f.id} could not be constructed (${f.error}), but this run does not dispatch to it: ` +
-      `auth_mode=${authMode} runs '${f.adapter}' work inside the Claude Code session instead of ` +
-      `through this server. Not a blocker. It would block a vendor-mode run of the same policy.`,
+  const typed = new Set(typistModels);
+  const warnings = nonBlocking.map((f) =>
+    typed.has(f.id)
+      ? `${f.id}: its API adapter ('${f.adapter}') could not be constructed (${f.error}). auth_mode=${authMode} does not ` +
+        `use that adapter: the lean Opus typist types this model's files with this computer's Claude login (probe_typists ` +
+        `tests that typist). Not a blocker. It would block a vendor-mode run of the same policy.`
+      : `${f.id} could not be constructed (${f.error}), but this run does not dispatch to it: ` +
+        `auth_mode=${authMode} runs '${f.adapter}' work inside the Claude Code session instead of ` +
+        `through this server. Not a blocker. It would block a vendor-mode run of the same policy.`,
   );
 
   return { models: results, ok: reasons.length === 0, halt_reason, warnings, price_warnings: priceWarnings };
@@ -211,11 +222,13 @@ export interface ExecutorCliReport {
 }
 
 /**
- * The claude CLI check. `executor` says whether execute_stage types this
- * run's files (every new-app build): true halts on a problem, before any paid
- * phase; false skips the check (the packet flow never starts a typist);
- * omitted reports a problem as a warning, since pre-flight cannot tell the
- * flows apart and a brownfield run, which never needs the CLI, must not stop.
+ * The claude CLI check. `executor` says whether the typists type this run's
+ * files (every new-app build's units through execute_stage, every brownfield
+ * run's packets through the apply loop): their Claude attempts, the lean Opus
+ * last attempt included, run this machine's claude CLI, so true halts on a
+ * problem, before any paid phase; false skips the check (a run whose files no
+ * typist types); omitted reports a problem as a warning, since pre-flight
+ * cannot tell whether the run types files.
  */
 export function executorCliCheck(o: { executor?: boolean; claudeTypists: string[]; cliProblem: () => string | null }): { check: ExecutorCliReport; halt: string | null; warning: string | null } {
   const check: ExecutorCliReport = { claude_typists: o.claudeTypists, claude_cli: "not checked" };
@@ -223,7 +236,7 @@ export function executorCliCheck(o: { executor?: boolean; claudeTypists: string[
   const problem = o.cliProblem();
   check.claude_cli = problem ?? "ok";
   if (!problem) return { check, halt: null, warning: null };
-  const what = `execute_stage types ${o.claudeTypists.join(", ")} with this machine's claude CLI (the lean Opus last attempt included), but ${problem}.`;
+  const what = `The run's typists type ${o.claudeTypists.join(", ")} with this machine's claude CLI (the lean Opus last attempt included), but ${problem}.`;
   if (o.executor === true) return { check, halt: `${what} Nothing was spent; fix it and run pre-flight again.`, warning: null };
-  return { check, halt: null, warning: `${what} A new-app build (execute_stage) cannot type with Claude until this is fixed; pass executor: true to pre-flight to stop such a run here. A brownfield run does not use the claude CLI.` };
+  return { check, halt: null, warning: `${what} A run whose files the typists type (a new-app build, a brownfield run) cannot type with Claude until this is fixed; pass executor: true to pre-flight to stop such a run here.` };
 }

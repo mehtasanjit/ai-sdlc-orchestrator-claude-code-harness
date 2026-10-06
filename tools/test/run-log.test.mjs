@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,4 +90,32 @@ test("an accepted Gate 4 ends the run even when the log left an earlier gate ope
     assert.equal(zeroTouchEnded(dir), false, "zero-touch waits on the open gate");
     assert.equal(runEnded(dir, RUN), true, "final acceptance is the run's last word");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The plugin's logger renames a run log that reached its size limit to orchestrator.log.1 and starts a new one. The
+// rotated piece is still the run's own log: the guard reads it first, then the current file, so a run's end (and the
+// contract's freeze record, lib/contract-lock.mjs) is found wherever the rotation left it.
+test("a run's end is read across the log's rotated piece: the older piece first, then the current file", () => {
+  const dir = project([START, open("gate-2"), gate("gate-2", "abort")]);
+  try {
+    const file = join(dir, ".sdlc", "runs", RUN, "orchestrator.log");
+    renameSync(file, `${file}.1`);
+    writeFileSync(file, formatLine("info", "phase.end", { run_id: RUN, phase: "design" }) + "\n");
+    assert.equal(runEnded(dir, RUN), true, "the abort sits in the rotated piece");
+    writeFileSync(file, formatLine("info", "run.start", { run_id: RUN }) + "\n");
+    assert.equal(runEnded(dir, RUN), false, "a run started again after the rotation is live again");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The run's log is written by the plugin's own scripts (mmo-log.mjs for the run's events, write-contract.mjs for the
+// contract's freeze record and an abandoned run's end, zero-touch's stop for the abort it records), and the contract
+// by write-contract.mjs (zero-touch's stop switches it off after logging the run's end). The modules that guard the
+// contract say exactly that, and never that one script alone writes the log or that the orchestrator writes the contract.
+test("the contract guard's modules say truthfully who writes the run log and the contract", async () => {
+  const { readFileSync } = await import("node:fs");
+  for (const rel of ["lib/run-log.mjs", "write-contract-check.mjs", "lib/contract-lock.mjs", "write-contract.mjs"]) {
+    const text = readFileSync(join(SCRIPTS, rel), "utf8");
+    assert.doesNotMatch(text, /only mmo-log\.mjs|mmo-log\.mjs only|which only mmo-log/, `${rel}: the log has more than one writer`);
+    assert.doesNotMatch(text, /orchestrator writes\/updates this file/, `${rel}: the orchestrator never writes the contract`);
+  }
 });

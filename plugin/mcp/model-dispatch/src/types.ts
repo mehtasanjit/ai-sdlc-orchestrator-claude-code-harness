@@ -29,12 +29,120 @@ export type Phase =
   // event. No policy rule ever matches it and no packet ever carries it; it
   // exists in this union only so the event type-checks. Readers must key on
   // `tier: "orchestrator"`, not on this phase name.
-  | "orchestrator_overhead";
+  | "orchestrator_overhead"
+  // Not a routed phase either — the label the run-start typist probe (typistProbe.ts) stamps on its events: one
+  // minimal call through each typist the run types with, billed like any call. No policy rule matches it and no
+  // packet carries it; it is in this union so the probe's events type-check as the events they are.
+  | "preflight";
+
+/**
+ * Why an attempt follows the one before it, on its telemetry event. Greenfield's executor (executor/run.ts) writes
+ * `transport` (a busy vendor's reply waited out and sent again: not an attempt), `refused` (the previous answer failed
+ * the answer check) and `error`; a brownfield run's apply loop (apply.ts) writes the same, plus `verify` (the previous
+ * answer was written and failed the file's checks) and `cut_off` (the previous reply stopped at its model's output
+ * limit). `output_cap`, `validation` and `escalation` are the adapters' own doubling and the orchestrator's retries.
+ */
+export type RetryReason = "output_cap" | "validation" | "escalation" | "transport" | "refused" | "error" | "verify" | "cut_off";
 
 export interface FileSlice {
   path: string;
-  content: string;
+  /**
+   * Omit it and the server reads the file at `path` (under `project_root`)
+   * itself, narrowed by `lines` or `section` when given. The orchestrator
+   * then never pastes file text into a packet.
+   */
+  content?: string;
   reason: string;
+  /** 1-based inclusive line range to read from the file on disk. */
+  lines?: [number, number];
+  /**
+   * A Markdown heading to read from the file on disk: that heading line
+   * and everything up to the next heading of the same or a higher level.
+   * Matched by substring against the heading text, first hit wins.
+   */
+  section?: string;
+  /**
+   * Set by `execute_batch` only (batch.ts markSharedInputs): every packet of the batch carries this input, from a file
+   * no packet writes. The lean Opus typist sends shared inputs once, as its cached system-prompt tail; every other door
+   * reads the packet as before. A value a caller sends is replaced.
+   */
+  shared?: boolean;
+}
+
+/**
+ * Editor-side apply for a mechanical packet (apply.ts runApplyLoop). The server writes the answer to `artifact_path`,
+ * runs its checks, and retries with the failure appended on greenfield's ladder: every attempt but the last by the
+ * model the policy routes, the last by the ladder's last-attempt model (the lean Opus typist) when the server can type
+ * with it; a retry the policy routes to a model the server cannot type with ends as `escalate`, for the orchestrator.
+ * The orchestrator sees a receipt, not the file.
+ */
+export interface ApplySpec {
+  write: boolean;
+  /**
+   * `content` (default): the model returns the whole file, `{path, content}`. `edits`: an existing file, answered in
+   * greenfield's edit contract — `{path, edits: [{search, replace}]}`, each search found exactly once in the file as it
+   * was before the packet, or `{path, content}` with the whole file — which the server applies with greenfield's
+   * applier (executor/run.ts applyEdits); for an edit to a large file, where returning the whole file would cost more
+   * output than the change is worth.
+   */
+  mode?: "content" | "edits";
+  /**
+   * Shell commands run from `project_root` after the write; `{path}` is
+   * replaced by the artifact path. All must exit 0 for the attempt to pass.
+   */
+  verify?: string[];
+  /**
+   * Formatter commands run after the write and before `verify` (same `{path}`
+   * substitution). Their exit code is ignored — `verify` still judges the file —
+   * so a formatting-only miss costs a second of formatter time, not a retry.
+   * Every command the server runs for a packet (these, `verify`, `red`) runs in
+   * its own process group, killed whole at its time limit, without the vendor
+   * credentials the server holds, and only when the person's Claude settings do
+   * not deny any command in it, nor, while they deny any, does it hide what it
+   * runs (a substitution or an expansion) (apply.ts runShell, commandDeniedBy,
+   * commandUnchecked). `{path}` is pasted so the shell reads it as it is: inside
+   * single quotes ('{path}') any path, outside them only a plain one.
+   */
+  format?: string[];
+  /**
+   * Typed checks (a brownfield run's change spec, plan-to-packets): each a command with `{path}` and its own write
+   * form. The checks that must pass give `verify` (their `run`) and `format` (their `fix`), and turn on the baseline
+   * rule, unless `baseline` is false: before any typist is paid, each `run` is tried on the file as it is (`edits`
+   * mode) or on `baseline_from` (a new file's style file); a check that already fails there is set aside for this
+   * packet, and the receipt's `set_aside` names it. Without a baseline file every check judges the answer.
+   *
+   * `expect: "fail"` makes a check a reproducing check (a bugfix's test, typed before the fix): it goes to `red`
+   * instead of `verify`, its write form never runs (a formatter must not rewrite the judge), and the answer passes
+   * only when it fails on its own verdict (apply.ts runRed). For an edit of an existing test file, it is first tried
+   * on the file as it is: a file that already fails it is refused before any typist is paid, because the old failure
+   * would hide whether the new case reproduces the bug.
+   */
+  checks?: { id?: string; run: string; fix?: string; expect?: "fail" }[];
+  /**
+   * The reproducing checks' commands (the checks typed `expect: "fail"`), set by normalizeApply: each must exit
+   * non-zero, after every check in `verify` has passed. The verdict is the exit code only (0 passes, 126 and 127 mean
+   * the shell could not run it), so it cannot tell a failing assertion from a test file that does not load: the unit
+   * also carries a check that must pass on the same file (a syntax, type or load check), which judges first.
+   */
+  red?: string[];
+  /** The style file a new file's checks are first tried on (relative to project_root). */
+  baseline_from?: string;
+  /**
+   * `false` on a fix round's packet (findings-to-packets): its file fails a check, which is why the round exists, so
+   * no baseline is taken and every check judges the answer. Absent: the baseline rule above.
+   */
+  baseline?: boolean;
+  /**
+   * An edit unit's sites (plan-to-packets, `edits` mode only): line ranges of the file before the change where the
+   * answer may change it. A line outside every replace or delete site must stay as it is, and new lines may stand
+   * only at an insert site or where a replaced or deleted range stood; an answer that goes beyond them is a retry with
+   * the lines named, never a write (apply.ts siteProblem). Absent: the answer is held to no sites.
+   */
+  sites?: { id: string; at: "replace" | "delete" | "insert_before" | "insert_after"; from: number; to: number }[];
+  /** Mechanical-tier retries the server may spend on verify failures. Default 2. */
+  max_retries?: number;
+  /** Seconds each verify command may run. Default 120. */
+  verify_timeout_sec?: number;
 }
 
 export interface TaskPacket {
@@ -44,6 +152,7 @@ export interface TaskPacket {
   module: string;
   instruction: string;
   inputs: FileSlice[];
+  /** Optional under `apply`: the server substitutes the `{path, content}` file schema. */
   outputSchema: Record<string, any>;
   acceptance: string[];
   budget: { maxInputTokens: number; maxOutputTokens: number };
@@ -63,6 +172,13 @@ export interface TaskPacket {
    * than for `docs`) via a rule matching on both `phase` and `intent`.
    */
   intent?: string;
+  /** Brownfield only. See ApplySpec. */
+  apply?: ApplySpec;
+  /**
+   * Set by the apply loop's retry (apply.ts refinePacket), never by a caller: why this attempt follows the last. A
+   * retry keeps the packet's id, so its telemetry event is the same task with the next attempt number.
+   */
+  retry_reason?: RetryReason;
 }
 
 export interface TelemetryEvent {
@@ -81,10 +197,12 @@ export interface TelemetryEvent {
   model_id?: string;
   routed_by: "orchestrator" | "fallback" | "manual";
   /**
-   * Executor events only (execute_stage): which typist typed the unit —
-   * `lean-opus` (a `claude -p` with no tools), `flash-completion` (Gemini
-   * through the completion door) or `agy` (Gemini through the Antigravity
-   * SDK). Absent on every other event.
+   * Which typist typed the call — `lean-opus` (a `claude -p` with no tools),
+   * `flash-completion` (Gemini through the completion door) or `agy` (Gemini
+   * through the Antigravity SDK): on executor events (execute_stage), on a
+   * brownfield run's apply calls typed by greenfield's typists (applyTypist.ts:
+   * any of the three, whichever the policy's leaf has), and on the run-start
+   * typist probe's events (typistProbe.ts). Absent on every other event.
    */
   door?: "lean-opus" | "flash-completion" | "agy";
   /**
@@ -179,10 +297,13 @@ export interface TelemetryEvent {
   latency_ms: number | null;
   success: boolean;
   retry_count: number;
-  /** Output-cap doubling attempts share a task_id. attempt_number is 1-indexed. */
+  /**
+   * 1-indexed. Output-cap doubling attempts share a task_id; so do the attempts of one file in greenfield's executor
+   * and in a brownfield run's apply loop, numbered by the ladder's slot.
+   */
   attempt_number?: number;
   ceiling_used?: number;
-  retry_reason?: "output_cap" | "validation" | "escalation";
+  retry_reason?: RetryReason;
   artifact_path?: string;
   error?: string;
 }
@@ -259,6 +380,18 @@ export interface AttemptRecord {
   ttl_split?: TtlSplit;
   /** claude-cli only: the per-model ledger behind `cost_usd`. */
   per_model?: WorkerModelCost[];
+  /**
+   * A server typist's own reading of the vendor's fields (greenfield's TypistResult.transport), stated either way by
+   * applyTypist.ts typistResult: true, the call failed for the vendor's or the network's reason ("not now") and the
+   * apply loop waits and sends it again, not an attempt; false, any failure is an attempt, whatever status it carries
+   * (the agent door's SDK has already waited). Absent on another adapter's attempt, which the loop reads from its status.
+   */
+  transient?: boolean;
+  /**
+   * Why this call follows the one before it, for its telemetry event (a server typist's attempt: applyTypist.ts
+   * typistResult): `transport` for a busy reply, else the reason the apply loop gave the packet. Absent on a first call.
+   */
+  retry_reason?: RetryReason;
 }
 
 export type PriceBasis = "list" | "custom";
@@ -452,11 +585,15 @@ export interface ExecutionResult {
   /**
    * Why the doubling loop stopped. `_budget_exhausted` means "retries used but
    * model still had headroom" (raise the cap); `_at_model_absolute` means "hit
-   * the vendor's ceiling" (packet too big).
+   * the vendor's ceiling" (packet too big). A server typist's failed attempt (applyTypist.ts typistResult) is
+   * `invalid_answer` (the model replied outside the contract) or `no_answer` (no reply came: a crash, a timeout, a
+   * login the CLI could not use): an attempt the apply loop retries, recorded as failed.
    */
   terminal_reason?:
     | "success"
     | "output_cap_doubling_budget_exhausted"
     | "output_cap_at_model_absolute"
-    | "vendor_error";
+    | "vendor_error"
+    | "no_answer"
+    | "invalid_answer";
 }

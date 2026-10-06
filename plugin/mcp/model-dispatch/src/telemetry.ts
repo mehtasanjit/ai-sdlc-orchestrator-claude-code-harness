@@ -162,6 +162,11 @@ export interface OrchestratorUnloggedBilled {
 export interface Manifest {
   pass: string;
   policy_name: string;
+  /**
+   * The run's dispatched window: its first and last dispatched event. Pre-flight's typist probe events (phase
+   * "preflight") count as spend but never set it: they come before run.start, which the collector looks for at or
+   * before started_at.
+   */
   started_at: string;
   ended_at: string;
   duration_sec: number;
@@ -332,6 +337,12 @@ export function cacheWriteBuckets(tokens: { input_cache_write?: number; input_ca
   };
 }
 
+/**
+ * The phase of the run-start typist probe's events (typistProbe.ts probeEvents): spend of the run they name, sent
+ * before the run's first dispatched call.
+ */
+export const PREFLIGHT_PHASE = "preflight";
+
 export function buildManifest(allEvents: TelemetryEvent[], opts: {
   pass: string;
   policy_name: string;
@@ -341,16 +352,29 @@ export function buildManifest(allEvents: TelemetryEvent[], opts: {
     const now = new Date().toISOString();
     return emptyManifest(opts.pass, opts.policy_name, now);
   }
+  // The run-start typist probe's events (phase "preflight") carry the run id they were sent for (typistProbe.ts
+  // probeEvents). One that names another run — a pre-flight the probe halted, whose events stay in a telemetry file the
+  // next run shares (greenfield's ./.sdlc/telemetry.jsonl) — is that attempt's spend, not this run's. One with no run
+  // id cannot be told apart and is kept.
+  const ownEvents = opts.pass
+    ? allEvents.filter((ev) => !((ev.phase as string) === PREFLIGHT_PHASE && typeof ev.pass === "string" && ev.pass !== "" && ev.pass !== opts.pass))
+    : allEvents;
   // Partition FIRST: orchestrator-overhead events (post-run transcript
   // reconstruction, tier: "orchestrator") never enter the dispatched sums
   // or breakdowns below. This is the structural guarantee that re-deriving
   // a manifest from collector-touched telemetry can't blend the two spends.
-  const events = allEvents.filter((ev) => ev.tier !== "orchestrator");
-  const orchEvents = allEvents.filter((ev) => ev.tier === "orchestrator");
+  const events = ownEvents.filter((ev) => ev.tier !== "orchestrator");
+  const orchEvents = ownEvents.filter((ev) => ev.tier === "orchestrator");
   // Run window comes from dispatched events (the collector's event is
   // stamped at collection time, after the run); overhead-only input is a
   // degenerate case where the overhead event is the only clock we have.
-  const windowSource = events.length > 0 ? events : orchEvents;
+  // Pre-flight's probe calls count as spend but never open the window: they
+  // are sent before the orchestrator logs run.start, and the collector finds
+  // run.start at or before started_at, so the window starts at the first
+  // dispatched event after pre-flight (unless pre-flight is all there is).
+  const dispatched = events.filter((ev) => (ev.phase as string) !== PREFLIGHT_PHASE);
+  const windowSource = dispatched.length > 0 ? dispatched : events.length > 0 ? events : orchEvents;
+  if (windowSource.length === 0) return emptyManifest(opts.pass, opts.policy_name, new Date().toISOString());
   const sorted = windowSource.slice().sort((a, b) => a.ts.localeCompare(b.ts));
   const started_at = sorted[0].ts;
   const ended_at = sorted[sorted.length - 1].ts;

@@ -192,7 +192,10 @@ test("a missing claude binary halts an estimated run that names the claude-cli a
 
 // ─── The executor's checks: the claude CLI its Claude typists need, the key a vendor run bills ───
 
-test("the claude CLI check halts a new-app build, only warns when pre-flight is not told the flow, and is skipped for the packet flow", () => {
+// Every run whose files the typists type (a new-app build's units, a brownfield run's packets) types its Claude
+// attempts with the lean Opus typist through this machine's claude CLI, so executor: true halts on a CLI that cannot
+// run it. Not told, pre-flight warns, and the warning never claims a brownfield run does without the CLI.
+test("the claude CLI check halts a run the typists type, only warns when pre-flight is not told, and is skipped for a run that types nothing", () => {
   const { executorCliCheck } = preflightModule;
   const problem = "this machine's claude CLI lists no --tools, --effort flags: update Claude Code";
   let asked = 0;
@@ -202,8 +205,11 @@ test("the claude CLI check halts a new-app build, only warns when pre-flight is 
   assert.ok(halt.halt.includes(problem));
   assert.equal(halt.warning, null);
   const unknown = executorCliCheck({ executor: undefined, claudeTypists: ["opus"], cliProblem });
-  assert.equal(unknown.halt, null, "a run that may be brownfield never needs the claude CLI, so it is not stopped");
+  assert.equal(unknown.halt, null, "pre-flight was not told whether the typists type this run, so it is not stopped");
   assert.ok(unknown.warning.includes(problem));
+  assert.match(unknown.warning, /pass executor: true/);
+  assert.doesNotMatch(unknown.warning, /brownfield run does not use/i, "a brownfield run's packets are typed through the same CLI");
+  assert.doesNotMatch(halt.halt + unknown.warning, /^execute_stage types/, "the typists of both flows, not only execute_stage's");
   asked = 0;
   const packet = executorCliCheck({ executor: false, claudeTypists: ["opus"], cliProblem });
   assert.deepEqual([packet.halt, packet.warning, packet.check.claude_cli, asked], [null, null, "not checked", 0]);
@@ -265,13 +271,14 @@ test("a new-app build whose claude CLI cannot run the lean Opus typist halts at 
   for (const f of ["--tools", "--append-system-prompt-file", "--effort"]) assert.ok(out.halt_reason.includes(f), `${f}: ${out.halt_reason}`);
   assert.match(out.halt_reason, /update Claude Code/);
   assert.deepEqual(out.executor.claude_typists, ["opus"]);
-  // Not told the flow (a brownfield run never uses the lean typist): reported, not a halt.
+  // Not told whether the typists type this run's files: reported, not a halt.
   const unknown = await preflightWith(old, { auth_mode: "estimated", policy_name: "opus-only-v5" });
   assert.equal(unknown.ok, true, unknown.halt_reason);
   assert.ok(unknown.warnings.some((w) => w.includes("--tools")), JSON.stringify(unknown.warnings));
-  const packetFlow = await preflightWith(old, { auth_mode: "estimated", policy_name: "opus-only-v5", executor: false });
-  assert.equal(packetFlow.ok, true);
-  assert.ok(!packetFlow.warnings.some((w) => w.includes("--tools")));
+  // A run whose files no typist types (executor: false) has nothing for the CLI to do.
+  const typesNothing = await preflightWith(old, { auth_mode: "estimated", policy_name: "opus-only-v5", executor: false });
+  assert.equal(typesNothing.ok, true);
+  assert.ok(!typesNothing.warnings.some((w) => w.includes("--tools")));
   // No claude on the server's PATH at all.
   const none = await preflightWith(mkdtempSync(join(tmpdir(), "no-claude-")), { auth_mode: "estimated", policy_name: "opus-only-v5", executor: true });
   assert.equal(none.ok, false);
@@ -342,4 +349,37 @@ test("an unreadable or odd settings file never stops pre-flight: the run card re
   const out = await preflightWith(bin, { auth_mode: "estimated", policy_name: "opus-only-v5", project_root: project });
   assert.equal(out.ok, true, out.halt_reason);
   assert.deepEqual(out.run_card.settings_problems.map((p) => p.split(":")[0]), [join(project, ".claude", "settings.local.json")]);
+});
+
+// preflight_dispatch's own definition is what an orchestrator reads: it asks executor: true of every run the typists
+// type, a brownfield run included (its packets go through the same lean Opus typist and claude CLI).
+test("preflight_dispatch asks executor: true of every run the typists type, brownfield included", async () => {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const home = mkdtempSync(join(tmpdir(), "preflight-home-"));
+  const client = new Client({ name: "preflight-test", version: "0" });
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(HERE, "..", "dist", "server.js")], env: { PATH: "/usr/bin:/bin", HOME: home, MMO_LOG_LEVEL: "error" }, stderr: "ignore" }));
+  try {
+    const tool = (await client.listTools()).tools.find((t) => t.name === "preflight_dispatch");
+    assert.match(tool.description, /Pass executor: true for every run whose files the typists type \(every new-app build and every brownfield run\)/);
+    const executor = tool.inputSchema.properties.executor.description;
+    assert.doesNotMatch(executor, /false for a brownfield run/);
+    assert.match(executor, /brownfield/);
+  } finally {
+    await client.close();
+  }
+});
+
+// Under estimated a Claude model's API adapter is not used, but the lean Opus typist types that same model's files on
+// this computer's Claude login. Pre-flight's note on the adapter says so, instead of claiming the run never dispatches
+// to the model.
+test("under estimated, a Claude model the typists type is not called undispatched: its API adapter is what goes unused", () => {
+  const out = assessModels(MODELS, "estimated", factoryFailing("opus"), undefined, ["opus"]);
+  assert.equal(out.ok, true);
+  assert.equal(out.warnings.length, 1);
+  assert.doesNotMatch(out.warnings[0], /does not dispatch to it/);
+  assert.match(out.warnings[0], /lean Opus typist/);
+  assert.match(out.warnings[0], /probe_typists/);
+  // A model no typist types keeps the old note.
+  assert.match(assessModels(MODELS, "estimated", factoryFailing("opus")).warnings[0], /does not dispatch to it/);
 });

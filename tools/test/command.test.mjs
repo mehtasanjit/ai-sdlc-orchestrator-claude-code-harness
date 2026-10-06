@@ -316,7 +316,7 @@ test("every agent that must find files on its own can actually search", () => {
   //
   // Bash is the search path that exists everywhere, so any agent whose job
   // starts from a directory rather than a named file must hold it.
-  const needsSearch = ["senior-reviewer", "security-reviewer"];
+  const needsSearch = ["senior-reviewer", "security-reviewer", "brownfield-senior-reviewer", "brownfield-security-reviewer"];
   for (const name of needsSearch) {
     const { head } = frontmatter(read("plugin", "agents", `${name}.md`));
     const line = head.split("\n").find((l) => l.startsWith("tools:")) ?? "";

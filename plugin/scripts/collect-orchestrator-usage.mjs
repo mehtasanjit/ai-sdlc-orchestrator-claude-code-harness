@@ -49,10 +49,18 @@
  *      placeholders fabricated by the CLI, not billed API traffic.
  *   5. WINDOW: run_id is NOT present in transcript metadata (checked
  *      empirically), but the run's own COMMAND TURN is: the `"type": "user"`
- *      line whose text invokes `/mmo:pass`, `/mmo:greenfield` or
- *      `/mmo:brownfield` (any plugin prefix; the orchestration runner's
- *      `ai-sdlc-*` command names too), carrying this run's `--run-id` or no
- *      run id at all. Claude Code bills PER INVOCATION, and an invocation
+ *      line whose text invokes one of the plugin's run commands under its own
+ *      `mmo:` namespace (`/mmo:pass`, `/mmo:greenfield`, `/mmo:brownfield` or
+ *      a brownfield job command; the orchestration runner's `ai-sdlc-*`
+ *      command names too; and, typed only, the clone route's `/pass`, the
+ *      project command tools/setup.mjs installs), or the person's turn that led
+ *      Claude to call one with the Skill tool (how zero-touch starts a
+ *      workflow), carrying this run's `--run-id` or no run id at all. A
+ *      project's own `/test`, another plugin's command or skill, or any other
+ *      bare job name is not one (RUN_COMMAND_NAME, TYPED_RUN_COMMAND_NAME); nor
+ *      is a run command typed while another run was going that zero-touch
+ *      queued, which starts nothing where it is typed (humanTurns).
+ *      Claude Code bills PER INVOCATION, and an invocation
  *      begins at its human turn, so the window OPENS at that turn's own
  *      timestamp — exact, not approximate. The turn chosen is the latest one
  *      at or before the driver's `run.start` line in
@@ -62,12 +70,30 @@
  *      first human turn after the driver's `run.end` line (that turn starts
  *      the next invocation and is excluded), or at the end of the session
  *      file when no human turn follows — both exact, because assistant
- *      messages only ever follow a human turn. A typed gate answer, the one
+ *      messages only ever follow a human turn. A QUEUED run is the one
+ *      exception: zero-touch starts it from the Stop hook when the run before
+ *      it ends, in the same invocation and with no turn of its own, so another
+ *      run's lifecycle record (run.end, or a gate it resolved after run.end)
+ *      lies between the last person's turn and its Skill call. Its window
+ *      opens at that Skill call, and the run before it closes there; both are
+ *      real events, so exact, but neither is where the invocation the CLI
+ *      bills begins or ends, so a receipt never proves either window
+ *      (provableInvocation). Zero-touch's "Replace it" is not a queued start:
+ *      its `run.end outcome=aborted reason=replaced` is written inside the
+ *      person's request's own invocation, so the request opens the replacing
+ *      run and the replaced run closes at it (the last person's turn at or
+ *      before that record). Pre-flight events (phase "preflight", the
+ *      run-start typist probe, logged before run.start) are spend but never an
+ *      anchor: when the manifest's started_at is one, run.start is looked for
+ *      at or before the first dispatched event that is not pre-flight. A typed gate answer, the one
  *      human turn between a gate's `gate.open` and `gate.resolved` lines, is
  *      part of the run and closes nothing; a gate with no `gate.resolved` line
  *      claims a turn only up to `run.end` (else the last dispatched event), so
  *      a request typed after an unanswered gate still closes the window
- *      (gateAnswerTurns). Lines with `isMeta: true`,
+ *      (gateAnswerTurns). A queued run command (above) is no gate's answer and
+ *      closes nothing either: it starts nothing where it is typed, so a run
+ *      waiting at Gate 4 after run.end runs on to the queued run's Skill call.
+ *      Lines with `isMeta: true`,
  *      `toolUseResult`, or a `tool_result` content block are the CLI's own
  *      bookkeeping, not human turns; nor are compaction summaries
  *      (`isCompactSummary`, `isVisibleInTranscriptOnly`) or harness-injected
@@ -96,8 +122,12 @@
  *      first dispatch (a reused run id appends to the same log) and the first
  *      lifecycle marker after it, which must be run.end. File-level pruning
  *      uses mtime with a LOWER bound only (mtime < anchor − slack ⇒ the
- *      file's last write predates the run and it cannot contain run
- *      messages). There is deliberately NO mtime upper bound — a session
+ *      file's last write predates the window and it cannot contain window
+ *      messages), where the anchor is where the window opens: the command
+ *      turn when there is one (in brownfield it comes many minutes before
+ *      run.start, and a helper that finished in between, such as the
+ *      discovery helper before Gate 0, holds window messages), else run.start,
+ *      else the first dispatch. There is deliberately NO mtime upper bound — a session
  *      that keeps going after the run would push mtime past the window and
  *      silently drop the run's own messages. This diverges from report.mjs's
  *      artifacts listing, which bounds mtime on both ends for a different
@@ -234,6 +264,24 @@
  *      transcript explains, and only that share is subtracted, so the
  *      unlogged dollars stay in the true total. An event written before that
  *      field existed subtracts its whole cost_usd, as before.
+ *  10. HELPER PHASES: the architect and the two reviewers run as helpers of
+ *      the session, so their work is in the overhead and in no dispatched
+ *      event. Each helper file's agent type (Claude Code's
+ *      `agent-<id>.meta.json`, `agentType`: this plugin's `mmo:<name>`, or the
+ *      bare name the clone route installs) names its phase
+ *      (lib/helper-phases.mjs), and its messages in the window are priced as in
+ *      fact 6. The figures are put into `phase_breakdown` in place of the
+ *      orchestrator's hand estimates
+ *      for those phases, each with a `measured` record (the measurement and
+ *      the estimate it replaced).
+ *      The true total does not change: the helpers are in the overhead, and the
+ *      estimates are subtracted once (fact 9).
+ *  11. SUMMARY.md: once the manifest is patched, the run's SUMMARY.md is
+ *      rendered again from it (lib/run-summary.mjs: the overhead and the true
+ *      total, cost by phase and model, the collector command, the run's files,
+ *      the checks set aside), and the acceptance table code wrote is copied
+ *      into it (lib/acceptance-summary.mjs; also done first, whatever the cost
+ *      figures, so a run this tool refuses still carries the table).
  *
  *
  * Usage:
@@ -292,6 +340,8 @@
 
 import { readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { writeAcceptanceSummary } from "./lib/acceptance-summary.mjs";
+import { applyHelperPhases, helperAgentType, phaseOfAgentType } from "./lib/helper-phases.mjs";
+import { writeRunSummary } from "./lib/run-summary.mjs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -323,20 +373,54 @@ const RUN_START_LINE = runMarkerLine("run.start");
 const RUN_END_LINE = runMarkerLine("run.end");
 
 /**
- * The text of a human turn that starts a run. Claude Code records a slash
- * command as `<command-name>/mmo:pass</command-name>` (with the plugin's
- * install name as the prefix, which need not be `mmo`; the orchestration
- * runner's commands are `ai-sdlc-measured`, `ai-sdlc-pass1`, ...); a `-p`
- * prompt on an older CLI is the bare command line. Both shapes are accepted.
+ * The plugin's commands that start a run: /mmo:pass, /mmo:greenfield, /mmo:brownfield and the seven brownfield job
+ * commands, one per intent of config/intents.json (a test keeps this list equal to that file, which the collector
+ * does not read at run time so a copy of this script outside the plugin still knows them). A command it did not know
+ * opened the window at run.start − 5 minutes and dropped the run's own intake, pre-check and Gate 0.
  */
-const MMO_COMMAND = /<command-name>\/(?:[\w-]+:)?(?:pass|greenfield|brownfield|ai-sdlc-[\w-]+)<\/command-name>|^\s*\/(?:[\w-]+:)?(?:pass|greenfield|brownfield|ai-sdlc-[\w-]+)(?:\s|$)/;
+export const RUN_COMMANDS = Object.freeze(["pass", "greenfield", "brownfield", "docs", "bugfix", "feature-extend", "feature-new", "refactor", "test", "deps"]);
+/**
+ * A run command's name: one of RUN_COMMANDS under the plugin's own `mmo:` namespace, or the orchestration runner's
+ * `ai-sdlc-*` (its own project commands; `ai-sdlc-measured`, `ai-sdlc-pass1`, ...). Only the plugin's namespace
+ * counts because several job names are generic: a project's own `/test`, another plugin's `/x:docs` or a Skill call to
+ * another plugin's `docs` skill is not a run of this plugin, and read as one it became "the latest command turn before
+ * run.start", opened the window late and dropped the run's intake while still calling the window exact. A typed
+ * command also accepts the clone route's bare `/pass` (TYPED_RUN_COMMAND_NAME).
+ */
+const RUN_COMMAND_NAME = `(?:mmo:(?:${RUN_COMMANDS.join("|")})|(?:[\\w-]+:)?ai-sdlc-[\\w-]+)`;
+/**
+ * A run command the person TYPED: RUN_COMMAND_NAME, or the clone route's bare `pass`. The clone route
+ * (tools/setup.mjs) installs plugin/commands/pass.md as the project command `/pass`, the one run command that route
+ * has, so it is this plugin's own; read as no command, a clone-route run fell back to the approximate window at
+ * run.start − 5 minutes and dropped its intake. Only that exact name, and only typed: another plugin's `/x:pass`, any
+ * other bare job name, and a Skill call by a bare name stay out (SKILL_RUN_COMMAND does not take this alternative).
+ */
+const TYPED_RUN_COMMAND_NAME = `(?:${RUN_COMMAND_NAME}|pass)`;
+/**
+ * The text of a human turn that starts a run. Claude Code records a slash
+ * command as `<command-name>/mmo:pass</command-name>`; a `-p` prompt on an
+ * older CLI is the bare command line (`/mmo:pass --run-id=...`). Both shapes
+ * are accepted, for the names TYPED_RUN_COMMAND_NAME allows; the name is
+ * captured (group 1 or 2) so a typed command can be matched to a queued run's
+ * Skill call for the same job (humanTurns).
+ */
+const MMO_COMMAND = new RegExp(`<command-name>\\/(${TYPED_RUN_COMMAND_NAME})<\\/command-name>|^\\s*\\/(${TYPED_RUN_COMMAND_NAME})(?:\\s|$)`);
+/** The job a run command names: `mmo:docs` and the clone route's `pass` both name their job without the namespace. */
+const commandJob = (name) => String(name).replace(/^mmo:/, "");
+/**
+ * A run command Claude called with the Skill tool (`input.skill`, e.g. `mmo:bugfix`): how zero-touch starts a
+ * workflow, so the transcript holds no typed command. The invocation the CLI bills began at the person's turn that
+ * led to the call, so that turn is the run's command turn — unless another run's record falls between the two
+ * (a queued run: humanTurns).
+ */
+const SKILL_RUN_COMMAND = new RegExp(`^${RUN_COMMAND_NAME}$`);
 /** `--run-id=<id>` or `--run-id <id>` inside the command turn's text; stops at whitespace or the closing tag. */
 const RUN_ID_FLAG = /--run-id(?:=|\s+)([^\s<]+)/;
 
 /**
  * The driver's own start, read from a run-lifecycle log (header, fact 5).
  * Returns { ms, iso } for the LAST `run.start` line stamped at or before
- * `notAfterMs` (the manifest's first dispatched event), or null when the
+ * `notAfterMs` (the first dispatched event that is not pre-flight), or null when the
  * file is missing or holds no such line. "Last at or before" is deliberate:
  * mmo-log.mjs appends, so a reused run id carries the earlier run's
  * `run.start` in the same file, and the earlier one must not stretch this
@@ -365,6 +449,7 @@ export function runStartFromLog(logPath, notAfterMs) {
  * and this run never logged its end), there is no run.end that belongs to
  * this run and null is returned; a later run.end would be another run's,
  * and closing this window there would sweep that run's messages in.
+ * `replaced` says the run.end is zero-touch's "Replace it" record (REPLACED_END).
  */
 export function runEndFromLog(logPath, runStartMs) {
   if (!logPath || !existsSync(logPath)) return null;
@@ -375,11 +460,20 @@ export function runEndFromLog(logPath, runStartMs) {
       if (!m) continue;
       const ms = Date.parse(m[1]);
       if (!Number.isFinite(ms) || ms <= runStartMs) continue;
-      if (first == null || ms < first.ms) first = { ms, iso: m[1], event };
+      if (first == null || ms < first.ms) first = { ms, iso: m[1], event, replaced: event === "run.end" && REPLACED_END.test(line) };
     }
   }
-  return first && first.event === "run.end" ? { ms: first.ms, iso: first.iso } : null;
+  return first && first.event === "run.end" ? { ms: first.ms, iso: first.iso, replaced: first.replaced } : null;
 }
+
+/**
+ * The run.end zero-touch writes when the person answers "Replace it" (plugin/scripts/ambient/lib/workflow-log.mjs
+ * abortRun, called with "replaced"): `run.end run_id=<id> outcome=aborted reason=replaced`. It is written after the
+ * person's request for the new job, inside that request's own invocation (the question box's answer is a tool result,
+ * not a turn), so it is no queued run's boundary: the request is the replacing run's command turn, and the replaced
+ * run's messages end at it (humanTurns; the closing anchor in main).
+ */
+const REPLACED_END = /\soutcome=(?:aborted|"aborted")(?:\s.*)?\sreason=(?:replaced|"replaced")(?:\s|$)|\sreason=(?:replaced|"replaced")(?:\s.*)?\soutcome=(?:aborted|"aborted")(?:\s|$)/;
 
 /** One gate line, as mmo-log.mjs renders it: `MMO: <ts> INFO   gate.open run_id=... gate=gate-1 title="..."` / `gate.resolved ... gate=gate-1 response=...`. */
 const GATE_LINE = /^(?:\S+\s+)?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\s+[A-Z]+\s+gate\.(open|resolved)\s.*\bgate=(\S+)/;
@@ -415,24 +509,112 @@ export function gateAnswerTurns(logPath, runStartMs, turns, runEndMs = Number.NE
       if (Number.isFinite(ms) && ms >= runStartMs) gateLines.push({ ms, kind: m[2], gate: m[3] });
     }
   }
-  const gates = new Map();
+  // Each opening of a gate is its own wait with its own answer: a gate shown again after a revise or reject (Gate 4
+  // after its changes) opens a second wait once the first is resolved.
+  const episodes = [];
+  const openNow = new Map();
   for (const l of gateLines.filter((x) => x.ms < nextStartMs)) {
-    const g = gates.get(l.gate) ?? { gate: l.gate, open_ms: null, resolved_ms: null };
-    if (l.kind === "open" && g.open_ms == null) g.open_ms = l.ms;
-    if (l.kind === "resolved" && g.open_ms != null && g.resolved_ms == null) g.resolved_ms = l.ms;
-    gates.set(l.gate, g);
+    if (l.kind === "open") {
+      if (!openNow.has(l.gate)) { const e = { gate: l.gate, open_ms: l.ms, resolved_ms: null }; episodes.push(e); openNow.set(l.gate, e); }
+    } else {
+      const e = openNow.get(l.gate);
+      if (e) { e.resolved_ms = l.ms; openNow.delete(l.gate); }
+    }
   }
   const answers = new Set();
   const found = [];
-  for (const g of gates.values()) {
+  for (const g of episodes) {
     if (g.open_ms == null) continue;
     const end = g.resolved_ms ?? Math.min(runEndMs, nextStartMs);
-    const inside = turns.filter((t) => t.ms >= g.open_ms && t.ms <= end && !t.command);
+    // A run command, or one zero-touch queued (humanTurns), is never a gate's answer.
+    const inside = turns.filter((t) => t.ms >= g.open_ms && t.ms <= end && !t.command && !t.queue_request);
     if (inside.length === 1) answers.add(inside[0].ms);
     found.push({ gate: g.gate, open: new Date(g.open_ms).toISOString(), resolved: g.resolved_ms ? new Date(g.resolved_ms).toISOString() : null, turns_inside: inside.length, answer: inside.length === 1 ? inside[0].iso : null });
   }
   return { answers, gates: found.sort((a, b) => a.open.localeCompare(b.open)) };
 }
+
+/**
+ * One lifecycle record of any run, as mmo-log.mjs renders it: run.start, run.end, gate.open or gate.resolved. Used
+ * only to tell a queued run's Skill call from one that answers the person's own turn (humanTurns).
+ */
+const LIFECYCLE_LINE = /^(?:\S+\s+)?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\s+[A-Z]+\s+(run\.start|run\.end|gate\.open|gate\.resolved)(?:\s|$)/;
+/** The gate a gate line names (`gate=gate-2`). */
+const GATE_FIELD = /\sgate=(\S+)/;
+
+/**
+ * The run logs of a project: `<project-root>/.sdlc/runs/<run-id>/orchestrator.log` for every run, plus `extra` (a
+ * brownfield pass directory is its run's folder, so its log may sit outside that tree when the pass was copied).
+ * Missing files are left out.
+ */
+export function projectRunLogs(projectRoot, extra = []) {
+  const out = new Set();
+  const runsDir = join(projectRoot, ".sdlc", "runs");
+  try {
+    for (const e of readdirSync(runsDir, { withFileTypes: true })) {
+      if (e.isDirectory()) out.add(join(runsDir, e.name, "orchestrator.log"));
+    }
+  } catch { /* no runs folder: no logs */ }
+  for (const p of extra) out.add(p);
+  return [...out].filter((p) => existsSync(p)).sort();
+}
+
+/**
+ * Every lifecycle record (LIFECYCLE_LINE) in the given run logs, oldest first: when any run of the project started,
+ * ended, or opened or resolved a gate, as { ms, event, gate, log, replaced }. `gate` is the gate a gate line names,
+ * `log` the file the line is in (a gate is paired with its resolution in its own run's log), and `replaced` marks the
+ * run.end of zero-touch's "Replace it" (REPLACED_END). A queued run's Skill call follows such a record of the run
+ * before it with no person's turn in between; the records also say whether a run was going when the person typed a
+ * run command (humanTurns).
+ */
+export function runLifecycle(logPaths) {
+  const out = [];
+  for (const p of logPaths) {
+    let text;
+    try { text = readFileSync(p, "utf-8"); } catch { continue; }
+    for (const line of text.split("\n")) {
+      const m = LIFECYCLE_LINE.exec(line);
+      if (!m) continue;
+      const ms = Date.parse(m[1]);
+      if (!Number.isFinite(ms)) continue;
+      const event = m[2];
+      out.push({
+        ms, event, gate: event.startsWith("gate.") ? (GATE_FIELD.exec(line)?.[1] ?? null) : null, log: p, replaced: event === "run.end" && REPLACED_END.test(line),
+        // As zero-touch reads a run's end (ambient/lib/workflow-log.mjs workflowState): an aborted or failed run.end, or a
+        // gate answered abort, ends the run whatever gate is open; a gate answered revise or reject stays open.
+        hard_end: (event === "run.end" && /\boutcome="?(?:aborted|failed)\b/.test(line)) || (event === "gate.resolved" && /\bresponse="?abort/.test(line)),
+        keeps_open: event === "gate.resolved" && /\bresponse="?(?:revise|reject)/.test(line),
+        // The job a run.start names (its intent, or greenfield's mode), so a typed command can be matched to the run it started.
+        job: event === "run.start" ? (/\bintent="?([\w-]+)/.exec(line)?.[1] ?? (/\bmode="?greenfield\b/.test(line) ? "greenfield" : null)) : null,
+      });
+    }
+  }
+  return out.sort((a, b) => a.ms - b.ms);
+}
+
+/**
+ * Whether a gate opened after `fromMs` is still open at `ms`: a gate.open in (fromMs, ms] whose resolution in the same
+ * log (the next gate.resolved for that gate) comes after `ms`, or never. A run that has logged run.end can still wait
+ * for the person at such a gate (Gate 4), and zero-touch counts it as running until the gate is answered. Gates
+ * opened before `fromMs` (the run command that started the chat's current run) belong to earlier runs and are not read.
+ */
+function gateOpenAt(lifecycle, fromMs, ms) {
+  const open = new Set();
+  for (const r of lifecycle) {
+    if (r.ms > ms) break;
+    if (!r.gate || r.ms <= fromMs) continue;
+    const key = `${r.log}\u0000${r.gate}`;
+    if (r.event === "gate.open") open.add(key);
+    else if (r.event === "gate.resolved" && !r.keeps_open) open.delete(key);
+  }
+  return open.size > 0;
+}
+
+/** start_anchor / end_anchor of a window bounded by a queued run's Skill call (humanTurns). */
+export const QUEUED_START_ANCHOR = "queued run's Skill call";
+export const NEXT_QUEUED_START_ANCHOR = "next queued run's Skill call";
+/** end_anchor of a run zero-touch's "Replace it" stopped: the person's request for the job that replaced it (REPLACED_END). */
+export const REPLACING_TURN_ANCHOR = "replacing request's turn";
 
 /**
  * The human turns of one top-level session file, oldest first (header,
@@ -446,20 +628,72 @@ export function gateAnswerTurns(logPath, runStartMs, turns, runEndMs = Number.NE
  * true`), any other transcript-only line, and harness-injected lines, whose
  * `origin.kind` is something other than `human` (a background-task
  * notification is `task-notification`). A line with no `origin` is kept:
- * older transcripts never wrote one. Each turn reports whether its text is a
- * run command (MMO_COMMAND) and which `--run-id` it names, if any. The
+ * older transcripts never wrote one. Each turn reports whether it starts a run
+ * — its text is a run command (MMO_COMMAND), or Claude called a run command
+ * with the Skill tool in its invocation (SKILL_RUN_COMMAND, how zero-touch
+ * starts a workflow) — and which `--run-id` it names, if any. The
  * session id is the line's own `sessionId` field, else the file's basename —
  * the CLI names the file after the session. Lines without a parseable
  * timestamp cannot anchor anything and are skipped.
+ *
+ * A queued run is the one exception to "the person's turn before the Skill
+ * call starts the run". Zero-touch starts a queued job from the Stop hook when
+ * the running workflow ends, in the same invocation: the hook's context is an
+ * attachment line, not a person's turn, so the last person's turn before the
+ * call belongs to the run before it (a request typed during that run, or its
+ * typed Gate 4 answer). `lifecycle` (runLifecycle over the project's run logs)
+ * tells the two apart: when another run's lifecycle record — its run.end, or a
+ * gate it resolved after run.end — falls after that turn and at or before the
+ * call, the call itself opens the queued run. It is returned as an entry of
+ * its own, `queued: true` and `command: true`, stamped with the first line of
+ * the message that makes the call (its other content lines can come first), and
+ * the person's turn keeps its own meaning (a gate answer stays one). Without
+ * this, the queued run's window opened inside the run before it and counted
+ * that run's messages twice, and the earlier run lost its typed gate answer.
+ * Zero-touch's "Replace it" record (a run.end with reason=replaced, REPLACED_END)
+ * is no such boundary: it is written after the person's request, inside that
+ * request's invocation, so the request stays the replacing run's command turn.
+ *
+ * A run command the person TYPED while another run was going, which zero-touch
+ * queued ("Queue it": Claude is told not to run it now), starts nothing where it
+ * is typed; its job starts later from the Stop hook with a queued Skill call.
+ * Read as a command turn it opened the running run's window late (the latest
+ * command turn before that run's run.start), dropping its intake and Gate 0
+ * while still calling the window exact. Such a turn is returned with
+ * `command: false` and `queue_request: true` when all of these hold: a run was
+ * going when it was typed (the latest run command before it has no run.end
+ * after it, or a gate opened since is still unanswered, as Gate 4 waits after
+ * run.end); it did not replace that run (no "Replace it" record lies inside its
+ * own invocation, before the next person's turn); and a later queued Skill call
+ * starts its job, with no other run command for that job between the two. A
+ * queue request is neither a gate's answer (zero-touch never reads a typed
+ * command as one) nor the start of another run.
  */
-export function humanTurns(file) {
+export function humanTurns(file, { lifecycle = [] } = {}) {
   const turns = [];
+  // Run commands Claude called with the Skill tool: { ms, id, session_id, run_id, job }. Each marks the person's turn
+  // that led to it, or opens a queued run itself.
+  const skillStarts = [];
+  // The first line's timestamp of every assistant message, by message id: one message is written as several lines.
+  const firstLineMs = new Map();
   let lines;
   try { lines = readFileSync(file, "utf-8").split("\n"); } catch { return turns; }
   for (const line of lines) {
     if (!line.trim()) continue;
     let obj;
     try { obj = JSON.parse(line); } catch { continue; }
+    if (obj?.type === "assistant") {
+      const ms = Date.parse(obj.timestamp);
+      const id = obj.message?.id;
+      if (id && Number.isFinite(ms)) firstLineMs.set(id, Math.min(firstLineMs.get(id) ?? ms, ms));
+      if (!Array.isArray(obj.message?.content)) continue;
+      for (const b of obj.message.content) {
+        if (b?.type === "tool_use" && b.name === "Skill" && typeof b.input?.skill === "string" && SKILL_RUN_COMMAND.test(b.input.skill) && Number.isFinite(ms)) {
+          skillStarts.push({ ms, id: id ?? null, session_id: obj.sessionId ?? basename(file, ".jsonl"), run_id: RUN_ID_FLAG.exec(String(b.input.args ?? ""))?.[1] ?? null, job: commandJob(b.input.skill) });
+        }
+      }
+      continue;
+    }
     if (obj?.type !== "user" || obj.isMeta === true || obj.toolUseResult !== undefined) continue;
     // Not typed by a person, so not a turn (review finding F2; shapes read from
     // real Claude Code transcripts, 2026-09-14). The receipt rule depends on this
@@ -478,16 +712,99 @@ export function humanTurns(file) {
     } else continue;
     const ms = Date.parse(obj.timestamp);
     if (!Number.isFinite(ms)) continue;
+    const typedCommand = MMO_COMMAND.exec(text);
     turns.push({
       ms,
       iso: String(obj.timestamp),
       file,
       session_id: obj.sessionId ?? basename(file, ".jsonl"),
-      command: MMO_COMMAND.test(text),
+      command: typedCommand !== null,
       run_id: RUN_ID_FLAG.exec(text)?.[1] ?? null,
+      // The job a typed run command names, so a queued Skill call for the same job can be matched to it (below).
+      typed_job: typedCommand ? commandJob(typedCommand[1] ?? typedCommand[2]) : null,
     });
   }
-  return turns.sort((a, b) => a.ms - b.ms);
+  turns.sort((a, b) => a.ms - b.ms);
+  // A Skill call belongs to the invocation of the last person's turn at or before it: that turn starts the run,
+  // unless another run's lifecycle record lies between the two (a queued run, which the call itself opens). A
+  // "Replace it" record is not such a record: it is written inside the request's own invocation.
+  const boundaries = lifecycle.filter((r) => !r.replaced).map((r) => r.ms);
+  const queued = [];
+  const queuedAt = new Set();
+  for (const s of skillStarts) {
+    const at = s.id != null && firstLineMs.has(s.id) ? Math.min(firstLineMs.get(s.id), s.ms) : s.ms;
+    let owner = null;
+    for (const t of turns) if (t.ms <= at) owner = t; else break;
+    if (!owner) continue;
+    if (boundaries.some((ms) => ms > owner.ms && ms <= at)) {
+      if (queuedAt.has(at)) continue; // the same call, written on more than one line
+      queuedAt.add(at);
+      queued.push({ ms: at, iso: new Date(at).toISOString(), file, session_id: s.session_id, command: true, run_id: s.run_id, queued: true, job: s.job });
+      continue;
+    }
+    owner.command = true;
+    owner.skill_job = s.job;
+    if (owner.run_id == null) owner.run_id = s.run_id;
+  }
+  if (queued.length) {
+    turns.push(...queued);
+    turns.sort((a, b) => a.ms - b.ms);
+  }
+  markQueueRequests(turns, lifecycle);
+  return turns;
+}
+
+/**
+ * Marks the typed run commands zero-touch queued (humanTurns): `command: false, queue_request: true`. The latest
+ * typed command is decided first, so an earlier duplicate of a queued request ("already queued; it is not added
+ * twice") is matched to the same queued Skill call rather than being stopped by the later duplicate.
+ */
+/** The jobs a run.start line names (its intent, or greenfield's mode): the typed commands a run.start can be matched to. */
+const RUN_START_JOBS = new Set(["greenfield", "docs", "bugfix", "feature-extend", "feature-new", "refactor", "test", "deps"]);
+
+function markQueueRequests(turns, lifecycle) {
+  const persons = turns.filter((t) => !t.queued);
+  const jobOf = (t) => (t.queued ? t.job : t.typed_job ?? t.skill_job ?? null);
+  const runEnds = lifecycle.filter((r) => r.event === "run.end");
+  const typed = turns.filter((t) => t.command && !t.queued && t.typed_job);
+  for (let k = typed.length - 1; k >= 0; k--) {
+    const t = typed[k];
+    const i = turns.indexOf(t);
+    // A later queued Skill call starts this job, with no other run command for the job in between.
+    let start = null;
+    for (const u of turns.slice(i + 1)) {
+      if (!u.command || jobOf(u) !== t.typed_job) continue;
+      if (u.queued) start = u;
+      break;
+    }
+    // A run was going when it was typed (zero-touch's rule, workflow-log.mjs workflowState): the latest run command
+    // before it has not ended since, or a gate opened since then is still unanswered; an aborted or failed run, or a
+    // gate answered abort, ends it whatever gate is open.
+    const before = turns.slice(0, i).filter((u) => u.command);
+    const running = before[before.length - 1];
+    if (!running) continue;
+    if (lifecycle.some((r) => r.hard_end && r.ms > running.ms && r.ms <= t.ms)) continue;
+    const ended = runEnds.some((r) => r.ms > running.ms && r.ms <= t.ms);
+    if (ended && !gateOpenAt(lifecycle, running.ms, t.ms)) continue;
+    // With no queued Skill call after it, the command was queued and then dropped (zero-touch drops its queue when the
+    // running run ends without completing, and a session can close first) unless it started a run of its own job: a
+    // run.start naming that job before the next typed run command. A command whose job no run.start names (/mmo:pass,
+    // /mmo:brownfield before its job is chosen) keeps its turn.
+    if (!start) {
+      if (!t.typed_job || !RUN_START_JOBS.has(t.typed_job)) continue;
+      // The run that was going is known from its own log: a run.start of its job (or one naming no job) after its
+      // command turn. Without one there is no evidence a run was going, and the command keeps its turn.
+      const runningJob = jobOf(running);
+      if (!lifecycle.some((r) => r.event === "run.start" && r.ms > running.ms && (r.job == null || r.job === runningJob))) continue;
+      const nextTyped = turns.slice(i + 1).find((u) => u.command && !u.queued && u.typed_job);
+      if (lifecycle.some((r) => r.event === "run.start" && r.job === t.typed_job && r.ms > t.ms && (!nextTyped || r.ms < nextTyped.ms))) continue;
+    }
+    // It did not replace that run: no "Replace it" record inside its own invocation (up to the next person's turn).
+    const nextPerson = persons.find((u) => u.ms > t.ms);
+    if (runEnds.some((r) => r.replaced && r.ms > t.ms && (!nextPerson || r.ms < nextPerson.ms))) continue;
+    t.command = false;
+    t.queue_request = true;
+  }
 }
 
 /**
@@ -790,8 +1107,11 @@ export function helperAttribution(sessionFile, helperFiles, { root, fromMs = nul
  * only turns inside the window were counted, so a window closed by a later
  * `/mmo:pass` turn was called provable and the later leg's receipt was booked
  * onto the earlier run (review finding F1). `laterHumanTurns` absent counts as 0.
+ * `queuedStartAfter` is the timestamp of a queued run's Skill call at or after
+ * the window's close (humanTurns): that run starts inside the same invocation,
+ * so the receipt bills it too, and the window is not the whole invocation.
  */
-export function provableInvocation({ receiptSessionId, pinnedId, startAnchor, humanTurnsInWindow, laterHumanTurns = 0, laterHumanTurnFrom = null, windowExact, lowerBound }) {
+export function provableInvocation({ receiptSessionId, pinnedId, startAnchor, humanTurnsInWindow, laterHumanTurns = 0, laterHumanTurnFrom = null, queuedStartAfter = null, windowExact, lowerBound }) {
   const reasons = [];
   if (!receiptSessionId) reasons.push("the receipt names no session");
   else if (pinnedId !== receiptSessionId) reasons.push(`the scan is not pinned to the receipt's session ${receiptSessionId}${pinnedId ? ` (it is pinned to ${pinnedId})` : ""}`);
@@ -807,6 +1127,7 @@ export function provableInvocation({ receiptSessionId, pinnedId, startAnchor, hu
         `so the receipt may bill a later invocation of this session`
     );
   }
+  if (queuedStartAfter) reasons.push(`a queued run starts at ${queuedStartAfter} in the same invocation, so the receipt bills that run too`);
   if (!windowExact) reasons.push("the window is approximate");
   return { provable: reasons.length === 0, reasons };
 }
@@ -1283,6 +1604,8 @@ export function sumTranscriptUsage(files, windowStartMs, windowEndMs, { roleOf =
       const rec = {
         model: msg.model ?? null,
         role: roleOf(file),
+        // The transcript file the message is in: a helper's file names the phase its work is (lib/helper-phases.mjs).
+        file,
         timestamp: obj.timestamp,
         modifiers: { speed: null, service_tier: null, inference_geo: null },
         conflicts: [],
@@ -1732,7 +2055,9 @@ export async function main(argv = process.argv.slice(2)) {
   if (!existsSync(manifestPath)) {
     throw new Error(`no manifest.json in ${passDir} — is this a run's pass directory?`);
   }
-  // First, and independent of the cost figures below: SUMMARY.md gets the acceptance stage's own table.
+  // First, and independent of the cost figures below: SUMMARY.md (write-manifest.mjs rendered it) gets the acceptance
+  // stage's own table, so a run this tool refuses (exit 1 or 3) still carries it. Once the manifest is patched, the
+  // summary is rendered again with the true total and the table copied into it again (header, fact 11).
   if (!args.dryRun && writeAcceptanceSummary(passDir)) console.log("acceptance: SUMMARY.md carries the table the acceptance stage wrote (acceptance.md)");
   const modelWritten = JSON.parse(readFileSync(manifestPath, "utf-8"));
   // The call log: machine-written, one line per dispatched call.
@@ -1801,17 +2126,30 @@ export async function main(argv = process.argv.slice(2)) {
     );
   }
 
-  const firstDispatchMs = Date.parse(manifest.started_at);
+  const manifestStartMs = Date.parse(manifest.started_at);
   const lastDispatchMs = Date.parse(manifest.ended_at);
-  if (!Number.isFinite(firstDispatchMs) || !Number.isFinite(lastDispatchMs)) {
+  if (!Number.isFinite(manifestStartMs) || !Number.isFinite(lastDispatchMs)) {
     throw new Error(`manifest.json has no parseable started_at/ended_at — cannot anchor the run window`);
   }
+  // Pre-flight events never anchor a run. The run-start typist probe writes its events (phase "preflight") before the
+  // orchestrator logs run.start; they are spend, and stay in the dispatched total, but a started_at taken from one
+  // put the "first dispatch" before run.start, so run.start (looked for at or before it) was never found, typed gate
+  // answers were not recognised, and the window closed at ended_at + 5 minutes. When the manifest's started_at reaches
+  // back to a pre-flight event, the first dispatched event that is not pre-flight is the anchor instead.
+  const runEvents = dispatchedOnly(logEvents).filter((ev) => Number.isFinite(Date.parse(ev?.ts)));
+  const firstRunEvent = runEvents.filter((ev) => ev.phase !== "preflight").sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))[0];
+  const firstRunEventMs = firstRunEvent ? Date.parse(firstRunEvent.ts) : Number.NaN;
+  const preflightBefore = runEvents.filter((ev) => ev.phase === "preflight" && Date.parse(ev.ts) < firstRunEventMs).map((ev) => Date.parse(ev.ts));
+  const startIsPreflight = preflightBefore.length > 0 && manifestStartMs <= Math.max(...preflightBefore);
+  const firstDispatchMs = startIsPreflight ? firstRunEventMs : manifestStartMs;
   // Report each anchor under the file it actually came from. Naming the manifest
   // for a value it never held printed the word `undefined` into the run's own
   // record, and a reader checking the window against the manifest would find
   // nothing there.
   const source = rebuilt ? "the manifest rebuilt from telemetry.jsonl" : "the manifest's";
-  const startedAtLabel = `${source} started_at ${manifest.started_at} (= first dispatched event)`;
+  const startedAtLabel = startIsPreflight
+    ? `the first dispatched event after pre-flight ${firstRunEvent.ts} in telemetry.jsonl (${source} started_at ${manifest.started_at} is a pre-flight event)`
+    : `${source} started_at ${manifest.started_at} (= first dispatched event)`;
   const endedAtLabel = `${source} ended_at ${manifest.ended_at} (= last dispatched event)`;
   if (passIdRaw === undefined || passIdRaw === null || passIdRaw === "") {
     throw new Error(
@@ -1898,14 +2236,20 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   // ── Candidate transcript files ──────────────────────────────────────────
-  // Pruned by mtime against the earliest anchor the window could open at:
-  // the command turn precedes run.start by seconds and every run message is
-  // written after it, so a file whose last write predates run.start (else
-  // the first dispatch) minus the slack cannot hold this run.
+  // Pruned by mtime against run.start (else the first dispatch) minus the
+  // slack to find the command turn: the session file that holds it is written
+  // until the run ends, so it always survives this prune. Once the command turn
+  // is known the prune is redone against it (below), because the window opens
+  // there and a brownfield run's command turn comes many minutes before
+  // run.start (intake, discovery and Gate 0 run first).
   const tDir = args.transcriptsDir ? resolve(args.transcriptsDir) : transcriptsDirFor(projectRoot);
-  const candidates = candidateTranscripts(tDir, runStart ? runStart.ms : firstDispatchMs);
+  const pruneFromMs = runStart ? runStart.ms : firstDispatchMs;
+  let candidates = candidateTranscripts(tDir, pruneFromMs);
   const topLevel = candidates.filter((f) => dirname(f) === tDir);
-  const turnsByFile = new Map(topLevel.map((f) => [f, humanTurns(f)]));
+  // Every run's lifecycle records in this project, so a queued run's Skill call is told from one that answers the
+  // person's own turn (humanTurns).
+  const lifecycle = runLifecycle(projectRunLogs(projectRoot, runLogCandidates));
+  const turnsByFile = new Map(topLevel.map((f) => [f, humanTurns(f, { lifecycle })]));
 
   // ── The command turn: where the invocation, and so the window, begins ───
   // Candidates: run commands at or before run.start (else the first
@@ -1924,6 +2268,10 @@ export async function main(argv = process.argv.slice(2)) {
       if (!commandTurn || rank > commandTurn.rank || (rank === commandTurn.rank && t.ms > commandTurn.ms)) commandTurn = { ...t, rank };
     }
   }
+  // The window opens at the command turn, so a file is pruned against it when it comes before run.start: a helper
+  // that finished between the two (the discovery helper that runs before Gate 0) holds messages inside the window,
+  // and a prune at run.start dropped them while attribution, which lists files unpruned, still read complete.
+  if (commandTurn && commandTurn.ms < pruneFromMs) candidates = candidateTranscripts(tDir, commandTurn.ms);
   if (commandTurn && receipt?.session_id && commandTurn.session_id !== receipt.session_id) {
     // The receipt bills one session; the run's command turn is in another.
     // Either the receipt was copied from a different run or the receipt's
@@ -1962,7 +2310,7 @@ export async function main(argv = process.argv.slice(2)) {
     pinnedId = pinned ? receipt.session_id : null;
     mainFile = pinned ? (topLevel.find((f) => basename(f).startsWith(receipt.session_id)) ?? null) : null;
   }
-  const mainTurns = mainFile ? (turnsByFile.get(mainFile) ?? humanTurns(mainFile)) : [];
+  const mainTurns = mainFile ? (turnsByFile.get(mainFile) ?? humanTurns(mainFile, { lifecycle })) : [];
   // Typed gate answers are part of the run, not new invocations: the run's own log names them.
   // A gate the log never resolves answers only a turn before the run's end (run.end, else the last
   // dispatch); a later message is a new request and closes the window, as it always did.
@@ -1987,7 +2335,17 @@ export async function main(argv = process.argv.slice(2)) {
   let startAnchor;
   let startExact;
   let startLine;
-  if (commandTurn) {
+  if (commandTurn?.queued) {
+    // A queued run: the run before it ended in this invocation and the Stop hook started this one with no turn of its
+    // own, so the earlier run's messages end at this call and this run's begin there. A real event, so exact; but not
+    // where the invocation the CLI bills begins, so a receipt can never be proven to be this run's (provableInvocation).
+    windowStartMs = commandTurn.ms;
+    startAnchor = QUEUED_START_ANCHOR;
+    startExact = true;
+    startLine =
+      `opens at the Skill call that started this queued run ${commandTurn.iso} in ${commandTurn.file} (exact: the run ` +
+      `before it ended in the same invocation with no new turn, so this run's messages begin at that call)`;
+  } else if (commandTurn) {
     windowStartMs = commandTurn.ms;
     startAnchor = "command turn";
     startExact = true;
@@ -2029,8 +2387,32 @@ export async function main(argv = process.argv.slice(2)) {
   let endExact;
   let endLine;
   if (runEnd && mainFile) {
-    const next = invocationTurns.find((t) => t.ms > runEnd.ms);
-    if (next) {
+    // "Replace it" (REPLACED_END): the record is written after the person's request for the new job, inside that
+    // request's invocation, so this run's messages end at the request, the last person's turn at or before the
+    // record. Closing at the next turn after the record instead ran this run to the end of the session, over the
+    // replacing run's messages.
+    const replacing = runEnd.replaced ? mainTurns.filter((t) => !t.queued && t.ms <= runEnd.ms && t.ms > windowStartMs).pop() : undefined;
+    // A run command zero-touch queued (humanTurns) starts nothing, so it does not close the run: the queued run's
+    // Skill call, or a later turn, does.
+    const next = invocationTurns.find((t) => t.ms > runEnd.ms && !t.queue_request);
+    if (replacing) {
+      windowEndMs = replacing.ms;
+      endAnchor = REPLACING_TURN_ANCHOR;
+      endExact = true;
+      endLine =
+        `closes at the person's turn ${replacing.iso} that asked for the job which replaced this run (run.end ${runEnd.iso} ` +
+        `outcome=aborted reason=replaced in ${runEnd.path}) (exact: the replacing run's invocation begins at that turn, and ` +
+        `this run's messages end there)`;
+    } else if (next?.queued) {
+      // The next run was queued and started by the Stop hook in this invocation: its Skill call is where this run's
+      // messages end. Closing at the end of the session instead took in the whole queued run.
+      windowEndMs = next.ms;
+      endAnchor = NEXT_QUEUED_START_ANCHOR;
+      endExact = true;
+      endLine =
+        `closes at the Skill call that started the next queued run ${next.iso} after run.end ${runEnd.iso} in ${runEnd.path} ` +
+        `(exact: that run starts in this invocation with no turn of its own, and its messages begin there)`;
+    } else if (next) {
       windowEndMs = next.ms;
       endAnchor = "next human turn after run.end";
       endExact = true;
@@ -2163,6 +2545,64 @@ export async function main(argv = process.argv.slice(2)) {
       );
       return 1;
     }
+  }
+
+  // ── Helper phases (lib/helper-phases.mjs) ──────────────────────────────
+  // The architect and the reviewers run as helpers of this session, so their work is in the overhead and in no
+  // dispatched event; the orchestrator used to log each as a hand estimate, and the per-phase table showed it. Each
+  // helper file's agent type (its meta.json) names its phase, and its messages in the window are priced exactly as
+  // above. The figures go into phase_breakdown in place of the estimates; the true total does not change, since the
+  // helpers are in the overhead and the estimates are subtracted once (inSessionDispatched).
+  const helperPhases = {};
+  let helperFilesWithoutPhase = 0;
+  {
+    const filePhase = new Map();
+    for (const f of files) {
+      if (roleOf(f) !== "helper") continue;
+      const type = helperAgentType(f);
+      const phase = phaseOfAgentType(type);
+      if (phase) filePhase.set(f, { phase, type });
+      else if (messages.some((m) => m.file === f)) helperFilesWithoutPhase++;
+    }
+    for (const phase of new Set([...filePhase.values()].map((x) => x.phase))) {
+      const mine = messages.filter((m) => filePhase.get(m.file)?.phase === phase);
+      if (!mine.length) continue;
+      const pp = priceMessages(mine, pricer);
+      const perModel = {};
+      for (const e of pp.per_model) {
+        const b = (perModel[e.model] ??= { messages: 0, cost_usd: 0, input_tokens: 0, input_tokens_cached: 0, input_tokens_cache_write: 0, output_tokens: 0 });
+        b.messages += e.messages;
+        b.cost_usd = pricingMod.round6(b.cost_usd + e.cost_usd);
+        b.input_tokens += e.tokens.input;
+        b.input_tokens_cached += e.tokens.input_cached;
+        b.input_tokens_cache_write += e.tokens.input_cache_write_5m + e.tokens.input_cache_write_1h;
+        b.output_tokens += e.tokens.output;
+      }
+      const phaseFiles = new Set(mine.map((m) => m.file));
+      helperPhases[phase] = {
+        cost_usd: pp.cost_usd,
+        messages: mine.length,
+        files: phaseFiles.size,
+        agent_types: [...new Set([...phaseFiles].map((f) => filePhase.get(f).type))].sort(),
+        per_model: perModel,
+        pricing_complete: pp.complete,
+      };
+    }
+  }
+  if (Object.keys(helperPhases).length) {
+    const estimatesOf = (phase) => dispatchedOnly(logEvents).filter((ev) => ev.phase === phase && (ev.provenance === "estimated" || ev.provenance === "apportioned_from_measured_total"));
+    console.log(
+      `helper phases: ` +
+        Object.entries(helperPhases).map(([phase, h]) => {
+          const est = estimatesOf(phase);
+          return `${phase} $${h.cost_usd} (${h.files} helper file${h.files === 1 ? "" : "s"}, ${h.messages} message${h.messages === 1 ? "" : "s"}; ` +
+            (est.length ? `replaces an estimate of $${pricingMod.round6(est.reduce((a, ev) => a + (ev.cost_usd ?? 0), 0))})` : "no estimate was logged)");
+        }).join("; ") +
+        ` — each priced from its helper's transcript, in place of the orchestrator's estimate in phase_breakdown`
+    );
+  }
+  if (helperFilesWithoutPhase > 0) {
+    console.log(`  ${helperFilesWithoutPhase} helper file(s) belong to no phase (the orchestrator itself, another helper, or no agent type on record): their cost is in the overhead only`);
   }
 
   // ── Which model labels the orchestrator event ───────────────────────────
@@ -2465,6 +2905,12 @@ export async function main(argv = process.argv.slice(2)) {
       for (const reading of readings) {
         const last = reading.inWindow[reading.inWindow.length - 1];
         const earlierCount = reading.inWindow.length - 1;
+        if (last.queued) {
+          // A queued run's Skill call (humanTurns) starts no invocation the CLI bills: the receipt's bill begins at a
+          // person's turn, so a leg opened at the call can never be the receipt's invocation.
+          refusals.push(`The last turn in the window (${last.iso}) is a queued run's Skill call, which starts no invocation the CLI bills.`);
+          continue;
+        }
         const asResume = reading.resumed && gateAnswers.answers.has(last.ms);
         const from = asResume ? `${last.iso}, the gate answer read as a --resume continuation` : last.iso;
         if (asResume) console.log(`  the gate answer at ${last.iso} is read as a --resume continuation, the start of a new invocation:`);
@@ -2499,8 +2945,10 @@ export async function main(argv = process.argv.slice(2)) {
           continue;
         }
         if (cmpLast.short.length > 0) {
-          // Human turns at or after the window's close, exactly as the main path counts them.
-          const laterTurns = reading.turns.filter((t) => t.ms >= windowEndMs);
+          // Human turns at or after the window's close, exactly as the main path counts them; a queued run's Skill
+          // call there is named on its own (humanTurns).
+          const laterTurns = reading.turns.filter((t) => t.ms >= windowEndMs && !t.queued);
+          const laterQueued = reading.turns.filter((t) => t.ms >= windowEndMs && t.queued);
           const proof = provableInvocation({
             receiptSessionId: receipt.session_id,
             pinnedId,
@@ -2509,6 +2957,7 @@ export async function main(argv = process.argv.slice(2)) {
             humanTurnsInWindow: reading.turns.filter((t) => t.ms >= last.ms && t.ms < windowEndMs).length,
             laterHumanTurns: laterTurns.length,
             laterHumanTurnFrom: laterTurns[0]?.iso ?? null,
+            queuedStartAfter: laterQueued[0]?.iso ?? null,
             // The last invocation opens at a human turn, which is exact whatever
             // anchored the whole window's opening, so only the close can be approximate.
             windowExact: endExact,
@@ -2616,7 +3065,10 @@ export async function main(argv = process.argv.slice(2)) {
         // than the end of the session refuses here: the receipt may be that later
         // invocation's bill. An unpinned scan has no session file to read turns from;
         // its close is approximate, which provableInvocation refuses on its own.
-        const laterTurns = invocationTurns.filter((t) => t.ms >= windowEndMs);
+        // A queued run's Skill call at or after the close (humanTurns) is named on its own: that run starts in this
+        // invocation, so the receipt bills it too.
+        const laterTurns = invocationTurns.filter((t) => t.ms >= windowEndMs && !t.queued);
+        const laterQueued = invocationTurns.filter((t) => t.ms >= windowEndMs && t.queued);
         const proof = provableInvocation({
           receiptSessionId: receipt.session_id,
           pinnedId,
@@ -2624,6 +3076,7 @@ export async function main(argv = process.argv.slice(2)) {
           humanTurnsInWindow: turnsInWindow.length,
           laterHumanTurns: laterTurns.length,
           laterHumanTurnFrom: laterTurns[0]?.iso ?? null,
+          queuedStartAfter: laterQueued[0]?.iso ?? null,
           windowExact,
           lowerBound: overheadIsFloor,
         });
@@ -2874,12 +3327,24 @@ export async function main(argv = process.argv.slice(2)) {
       source: rebuilt ? "telemetry-rebuild" : "manifest",
     },
   };
+  // The helpers' measured phases go into phase_breakdown in place of the estimates (lib/helper-phases.mjs); each keeps
+  // its whole measurement, so write-manifest.mjs can apply it again when it rebuilds the manifest.
+  applyHelperPhases(modelWritten, readTelemetry(telemetryPath), helperPhases);
   modelWritten.true_total_cost_usd = trueTotal;
   const tmpM = `${manifestPath}.tmp-collect`;
   writeFileSync(tmpM, JSON.stringify(modelWritten, null, 2), "utf-8");
   renameSync(tmpM, manifestPath);
 
   console.log(`written: 1 orchestrator event → ${telemetryPath}; manifest patched with orchestrator_overhead + true_total_cost_usd.`);
+  // SUMMARY.md is code's (lib/run-summary.mjs): rendered again from the patched manifest, so it carries the overhead and
+  // the true total, then code's acceptance table into it. A summary that cannot be written is said; the manifest stands.
+  try {
+    writeRunSummary(passDir, modelWritten, { projectRoot });
+    writeAcceptanceSummary(passDir);
+    console.log(`SUMMARY.md rewritten with the true total → ${join(passDir, "SUMMARY.md")}`);
+  } catch (e) {
+    console.error(`NOTE: SUMMARY.md was not written: ${e?.message ?? e}`);
+  }
   return 0;
 }
 

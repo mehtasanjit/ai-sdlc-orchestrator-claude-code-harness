@@ -1037,6 +1037,58 @@ test("no run.end line and a human turn after the command turn: only run.end coul
   } finally { fix.rm(); }
 });
 
+// A run starts with any of the plugin's run commands: /mmo:pass, /mmo:greenfield, /mmo:brownfield and the seven
+// brownfield job commands, typed by the person or called by Claude (zero-touch starts a workflow with the Skill tool,
+// so the transcript holds a Skill call, not a typed command). A command the collector did not know opened the window
+// at run.start − 5 minutes and dropped the run's own intake, pre-check and Gate 0.
+const skillCall = (ts, skill, args = "") => JSON.stringify({ type: "assistant", timestamp: ts, message: { id: `m_skill_${ts}`, model: "claude-opus-4-8", stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu_1", name: "Skill", input: { skill, args } }], usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 } } });
+
+test("the run commands are the plugin's: pass, greenfield, brownfield and every brownfield job of intents.json", async () => {
+  const { RUN_COMMANDS } = await import("../../../scripts/collect-orchestrator-usage.mjs");
+  const intents = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "config", "intents.json"), "utf8")).intents.map((i) => i.id);
+  assert.deepEqual([...RUN_COMMANDS].sort(), ["brownfield", "greenfield", "pass", ...intents].sort());
+});
+
+test("a typed job command is a command turn; a command that starts no run is not", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mmo-turns-"));
+  try {
+    const f = join(dir, "s.jsonl");
+    writeFileSync(f, [
+      uLine("2026-09-05T18:00:00.000Z", "<command-message>mmo:setup is running…</command-message>\n<command-name>/mmo:setup</command-name>"),
+      uLine("2026-09-05T18:10:00.000Z", "<command-message>mmo:feature-extend is running…</command-message>\n<command-name>/mmo:feature-extend</command-name>\n<command-args>add a filter</command-args>"),
+      uLine("2026-09-05T18:20:00.000Z", "/mmo:bugfix the date parser accepts 30 February"),
+    ].join("\n") + "\n");
+    assert.deepEqual(humanTurns(f).map((t) => t.command), [false, true, true]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a workflow command Claude called (zero-touch): the person's turn that led to it is the run's command turn", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mmo-turns-"));
+  try {
+    const f = join(dir, "s.jsonl");
+    writeFileSync(f, [
+      uLine("2026-09-05T18:00:00.000Z", "what does parseDate do?"),
+      uLine("2026-09-05T18:10:00.000Z", "fix the bug where parseDate accepts 30 February"),
+      skillCall("2026-09-05T18:10:05.000Z", "mmo:bugfix", "fix the bug where parseDate accepts 30 February"),
+      skillCall("2026-09-05T18:15:00.000Z", "mmo:policy"),
+    ].join("\n") + "\n");
+    const turns = humanTurns(f);
+    assert.deepEqual(turns.map((t) => [t.iso, t.command]), [["2026-09-05T18:00:00.000Z", false], ["2026-09-05T18:10:00.000Z", true]], "no turn is added: a Skill call is Claude's, not the person's");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a zero-touch run's window opens at the person's turn that started it: exact, and the receipt verifies", () => {
+  const fix = anchorRun([uLine(COMMAND_TS, "run the pipeline on brief.md"), skillCall("2026-09-05T18:51:20.000Z", "mmo:pass", "--auth=vendor --policy=check-anchor --run-id=r-anchor brief.md"), ...ANCHOR_LINES]);
+  try {
+    withRunLog(fix, RUN_LOG);
+    const r = fix.run();
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /window 2026-09-05T18:51:15\.673Z → end of session\n/);
+    assert.match(r.stdout, AGREES);
+    assert.doesNotMatch(r.stdout, /approximate/);
+  } finally { fix.rm(); }
+});
+
 test("--run-id picks this run's command turn: a turn naming another run is never this run's, wherever it sits", () => {
   const fix = anchorRun([commandTurn("2026-09-05T18:30:00.000Z", "other-run"), commandTurn(), ...ANCHOR_LINES]);
   try {
@@ -1319,7 +1371,14 @@ test("runEndFromLog: the first lifecycle marker after run.start must be run.end;
     const p = join(dir, "orchestrator.log");
     const startMs = Date.parse(RUN_START);
     writeFileSync(p, [runLogLine("2026-09-04T19:30:00.000Z", "run.end", "run_id=x outcome=completed"), runLogLine(RUN_START), runLogLine("2026-09-05T18:53:27.000Z", "phase.start", "run_id=x phase=a"), runLogLine(RUN_END, "run.end", "run_id=x outcome=completed"), runLogLine("2026-09-05T20:00:00.000Z", "run.end", "run_id=x outcome=completed"), ""].join("\n"));
-    assert.deepEqual(runEndFromLog(p, startMs), { ms: Date.parse(RUN_END), iso: RUN_END }); // the first run.end AFTER run.start; yesterday's is ignored
+    assert.deepEqual(runEndFromLog(p, startMs), { ms: Date.parse(RUN_END), iso: RUN_END, replaced: false }); // the first run.end AFTER run.start; yesterday's is ignored
+    // Zero-touch's "Replace it" record (workflow-log.mjs abortRun) is said, so the window closes at the replacing request.
+    writeFileSync(p, [runLogLine(RUN_START), runLogLine(RUN_END, "run.end", "run_id=x outcome=aborted reason=replaced"), ""].join("\n"));
+    assert.deepEqual(runEndFromLog(p, startMs), { ms: Date.parse(RUN_END), iso: RUN_END, replaced: true });
+    for (const other of ["run_id=x outcome=aborted reason=stopped", "run_id=x outcome=completed reason=replaced", "run_id=x outcome=aborted reason=replaced-by-hand"]) {
+      writeFileSync(p, [runLogLine(RUN_START), runLogLine(RUN_END, "run.end", other), ""].join("\n"));
+      assert.equal(runEndFromLog(p, startMs).replaced, false, other);
+    }
     writeFileSync(p, [runLogLine(RUN_START), runLogLine("2026-09-05T19:30:00.000Z"), runLogLine("2026-09-05T20:00:00.000Z", "run.end", "run_id=x outcome=completed"), ""].join("\n"));
     assert.equal(runEndFromLog(p, startMs), null); // a second run.start came first: that run.end is not this run's
     writeFileSync(p, runLogLine(RUN_START) + "\n");
@@ -1780,8 +1839,10 @@ test("a window opened at the first dispatch is reported as a lower bound, not an
 });
 
 // ─── the acceptance table in SUMMARY.md ────────────────────────────────────
+// SUMMARY.md is code's (plugin/scripts/lib/run-summary.mjs): the collector renders it again from the manifest it has
+// just patched, so a summary written by anything else is replaced, and code's acceptance table goes into it.
 
-test("the collector copies the acceptance table code wrote into SUMMARY.md, between markers, replacing it on every re-run", () => {
+test("the collector renders SUMMARY.md from the patched manifest and copies the acceptance table code wrote into it, between markers, replacing it on every re-run", () => {
   const fix = makeFixture();
   try {
     const table = "## Acceptance criteria (checked by code)\n\n| Criterion | Verdict | Checked by | Evidence |\n|---|---|---|---|\n| AC-1 | fail | install | 11 output lines start with \"npm warn\" |\n";
@@ -1790,7 +1851,9 @@ test("the collector copies the acceptance table code wrote into SUMMARY.md, betw
     run(fix);
     const once = readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8");
     assert.match(once, /<!-- acceptance:start -->\n## Acceptance criteria \(checked by code\)[\s\S]*\| AC-1 \| fail \|[\s\S]*<!-- acceptance:end -->/);
-    assert.match(once, /^# Run summary/, "the rest of the summary is kept");
+    assert.match(once, /^# Run /, "code's summary, rendered from the manifest");
+    assert.match(once, /\| \*\*True total\*\* \| \*\*\$[0-9.]+\*\* \|/, "with the true total the collector just wrote");
+    assert.doesNotMatch(once, /Total cost: see manifest\./, "a summary written by hand is replaced");
     writeFileSync(join(fix.passDir, "acceptance.md"), table.replace("| fail | install | 11 output lines", "| pass | install | exit code 0; 0 output lines"));
     run(fix);
     const twice = readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8");
@@ -1802,16 +1865,20 @@ test("the collector copies the acceptance table code wrote into SUMMARY.md, betw
   }
 });
 
-test("the collector leaves SUMMARY.md alone on a dry run, and when the run wrote no acceptance table", () => {
+test("the collector leaves SUMMARY.md alone on a dry run; a run that wrote no acceptance table gets no acceptance block", () => {
   const fix = makeFixture();
   try {
     const summary = "# Run summary\n\nNo acceptance stage in this flow.\n";
     writeFileSync(join(fix.passDir, "SUMMARY.md"), summary);
-    run(fix);
-    assert.equal(readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8"), summary, "no acceptance.md: untouched");
-    writeFileSync(join(fix.passDir, "acceptance.md"), "## Acceptance criteria (checked by code)\n");
     run(fix, ["--dry-run"]);
     assert.equal(readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8"), summary, "--dry-run writes nothing");
+    run(fix);
+    const rendered = readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8");
+    assert.match(rendered, /^# Run /, "code's summary");
+    assert.doesNotMatch(rendered, /acceptance:start/, "no acceptance.md: no block");
+    writeFileSync(join(fix.passDir, "acceptance.md"), "## Acceptance criteria (checked by code)\n");
+    run(fix, ["--dry-run"]);
+    assert.equal(readFileSync(join(fix.passDir, "SUMMARY.md"), "utf-8"), rendered, "--dry-run writes nothing");
   } finally {
     rmSync(fix.root, { recursive: true, force: true });
   }

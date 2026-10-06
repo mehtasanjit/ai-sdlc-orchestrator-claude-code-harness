@@ -14,12 +14,18 @@ src/
 
 ## Try it
 
-```bash
-cd plugin/examples/brownfield-test-backfill
-npm install
-npm test    # exits 0 with "no test files found" — no tests to run yet
+A brownfield run's write contract lives at the root of the git project that holds the run, so the example runs as a
+git project of its own (inside a clone of this repository, the clone's root would hold it):
 
-# /mmo:brownfield  →  test
+```bash
+cp -R plugin/examples/brownfield-test-backfill ~/brownfield-test-backfill && cd ~/brownfield-test-backfill
+printf 'node_modules/\n' > .gitignore
+npm install
+git init && git add -A && git commit -m "the example as shipped"
+npm test    # no test files yet
+
+# In Claude Code, in this folder:
+/mmo:test
 ```
 
 ## Expected outputs

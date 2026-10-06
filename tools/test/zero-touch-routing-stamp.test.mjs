@@ -2,7 +2,7 @@
  * What mmo does with the person's zero-touch choices once a workflow runs, and when a conversation is cleared.
  *
  *   - A run zero-touch started has the person's policy stamped on every model-server call that takes one (load_policy,
- *     preflight_dispatch, execute_with_model, simulate_policy), as an explicit file, which the server and the
+ *     preflight_dispatch, execute_with_model, execute_batch, simulate_policy), as an explicit file, which the server and the
  *     workflow's run-start check put ahead of everything, a project's routing-policy.yaml included. Helpers make most
  *     of these calls, so theirs are stamped too. A run the person typed keeps its own rules: nothing is stamped.
  *   - /clear gives the conversation a new chat id, and Claude Code sends SessionEnd (reason "clear") for the old one
@@ -106,7 +106,7 @@ test("every model-server call of a run zero-touch started carries the person's p
     const args = await startedBugfix(s, "d1");
     assert.match(args, /^\[zero-touch policy=opus-plus-sonnet auth=estimated\] /, "the start carries the pick");
     const path = join(POLICIES, "opus-plus-sonnet.yaml");
-    for (const toolName of ["load_policy", "preflight_dispatch", "execute_with_model", "simulate_policy"]) {
+    for (const toolName of ["load_policy", "preflight_dispatch", "execute_with_model", "execute_batch", "simulate_policy"]) {
       const input = { policy_name: "opus-plus-flash", project_root: s.repo, auth_mode: "estimated" };
       const r = await dispatch(s, "d1", toolName, input);
       assert.deepEqual(updated(r), { ...input, policy_path: path }, `${toolName}: the rest of the call as it was, the policy file added`);
@@ -132,6 +132,51 @@ test("a run the person typed, or no run at all: nothing is stamped (the folder's
     assert.equal((await skill(s, "n2", "mmo:bugfix", "the login 500")).stdout, "");
     assert.equal((await dispatch(s, "n2", "load_policy", input)).stdout, "", "a typed run keeps its own rules");
   } finally { s.cleanup(); }
+});
+
+test("a workflow step whose server would run a command the person's settings forbid is refused; one they allow is stamped and allowed", { skip: SKIP ?? false }, async () => {
+  const s = sandbox({ mode: "workflows", workflows: { models: "opus-plus-sonnet" } });
+  try {
+    await startedBugfix(s, "c1");
+    // The person's own Claude settings forbid rm; the organisation's settings file is the test home's, never this computer's.
+    mkdirSync(join(s.home, ".claude"), { recursive: true });
+    writeFileSync(join(s.home, ".claude", "settings.json"), JSON.stringify({ permissions: { deny: ["Bash(rm:*)"] } }));
+    const env = { MMO_MANAGED_SETTINGS: join(s.home, "managed-settings.json") };
+    const call = (sid, hook, toolName, input) => run(hook, { session_id: sid, cwd: s.repo, tool_name: `mcp__plugin_mmo_model-dispatch__${toolName}`, tool_input: input }, s, env);
+    const pk = (verify) => ({ id: "p1", artifact_path: "src/a.ts", apply: { write: true, verify } });
+    let r = await call("c1", "pre-dispatch", "execute_batch", { packets: [pk(["npx biome check {path}"]), pk(["rm -rf {path}"])] });
+    assert.equal(r0(r), "deny", "a batch that would run a forbidden command");
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /^Zero-touch: this workflow step wasn't run, because it would run a command your Claude settings don't allow\.$/);
+    assert.match(context(r), /`rm -rf src\/a\.ts`.*Bash\(rm:\*\)/, "Claude is told which command and which rule");
+    assert.equal(r0(await call("c1", "pre-dispatch", "execute_with_model", { packet: pk(["rm -rf {path}"]) })), "deny", "one packet with the apply form too");
+    // The packets file the call names is read from the project folder, as the server reads it.
+    writeFileSync(join(s.repo, "packets.json"), JSON.stringify({ packets: [pk(["rm -rf {path}"])] }));
+    assert.equal(r0(await call("c1", "pre-dispatch", "execute_batch", { packets_path: "packets.json" })), "deny");
+    writeFileSync(join(s.repo, "packets.json"), JSON.stringify([pk(["npx biome check {path}"])]));
+    r = await call("c1", "pre-dispatch", "execute_batch", { packets_path: "packets.json" });
+    assert.equal(r0(r), "allow", "commands the settings allow: a step of the workflow, as before");
+    assert.equal(updated(r)?.policy_path, join(POLICIES, "opus-plus-sonnet.yaml"));
+    // A packets file that cannot be read cannot be checked: stamped, and left to Claude Code's own prompt.
+    r = await call("c1", "pre-dispatch", "execute_batch", { packets_path: "missing.json" });
+    assert.equal(r0(r), null);
+    assert.equal(updated(r)?.policy_path, join(POLICIES, "opus-plus-sonnet.yaml"));
+  } finally { s.cleanup(); }
+  // A run the person typed (in a project of its own: one workflow runs per project): such a call is not allowed
+  // without Claude Code's prompt, and nothing is refused.
+  const t = sandbox();
+  try {
+    mkdirSync(join(t.home, ".claude"), { recursive: true });
+    writeFileSync(join(t.home, ".claude", "settings.json"), JSON.stringify({ permissions: { deny: ["Bash(rm:*)"] } }));
+    const env = { MMO_MANAGED_SETTINGS: join(t.home, "managed-settings.json") };
+    const pk = (verify) => ({ id: "p1", artifact_path: "src/a.ts", apply: { write: true, verify } });
+    const call = (input) => run("pre-any", { session_id: "c2", cwd: t.repo, tool_name: "mcp__plugin_mmo_model-dispatch__execute_batch", tool_input: input }, t, env);
+    await run("prompt", { session_id: "c2", cwd: t.repo, prompt: "/mmo:bugfix the login 500", prompt_id: "t-c2" }, t, env);
+    assert.equal((await skill(t, "c2", "mmo:bugfix", "the login 500")).stdout, "", "the typed run starts");
+    writeFileSync(join(t.repo, "packets.json"), JSON.stringify([pk(["npx biome check {path}"])]));
+    assert.equal(r0(await call({ packets_path: "packets.json" })), "allow", "commands the settings allow: a step of the typed run");
+    writeFileSync(join(t.repo, "packets.json"), JSON.stringify([pk(["rm -rf {path}"])]));
+    assert.equal((await call({ packets_path: "packets.json" })).stdout, "", "a forbidden one: left to Claude Code's own prompt");
+  } finally { t.cleanup(); }
 });
 
 test("/clear ends the old chat id: a workflow it abandons is recorded as stopped and the project is free; an exit keeps it", { skip: SKIP ?? false }, async () => {

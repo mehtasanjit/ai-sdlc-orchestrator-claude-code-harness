@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" role="img" aria-labelledby="hero-title hero-desc">
   <title id="hero-title">How the AI-SDLC Orchestrator plugin works</title>
-  <desc id="hero-desc">You paste two prompts in Claude Code. An orchestrator subagent decomposes the work into packets, routes premium judgment work to Claude Opus and cheap mechanical work to Gemini Flash, and hands your project both generated code under src/ and a full audit trail under .sdlc/. Cost is about ten times lower than a one-model run because most of the work is mechanical.</desc>
+  <desc id="hero-desc">You paste two prompts in Claude Code. An orchestrator subagent decomposes the work into packets, routes premium judgment work to Claude Opus and cheap mechanical work to Gemini Flash, and hands your project both generated code under src/ and a full audit trail under .sdlc/. The mechanical work goes to the cheaper model, and every call is priced and recorded by phase and model.</desc>
 
   <defs>
     <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
@@ -96,6 +96,6 @@
     <text x="820" y="278" text-anchor="middle" class="s" style="fill:#047857">telemetry.jsonl — every call</text>
     <text x="820" y="294" text-anchor="middle" class="s" style="fill:#047857">provenance.json — what changed</text>
     <text x="820" y="310" text-anchor="middle" class="s" style="fill:#047857">final_report.md — cost per phase</text>
-    <text x="820" y="338" text-anchor="middle" class="note">~10× cheaper than one-model runs</text>
+    <text x="820" y="338" text-anchor="middle" class="note">every call priced, by phase and model</text>
   </g>
 </svg>

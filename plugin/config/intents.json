@@ -11,10 +11,6 @@
         "What should get documented — a specific module, endpoint, or the whole repo?",
         "Who's the audience — other engineers, API consumers, or both?",
         "Any existing docs to update rather than write fresh, or a format/style to match?"
-      ],
-      "task_types": [
-        { "id": "doc_update", "label": "Update an existing doc" },
-        { "id": "doc_addition", "label": "Write a new doc" }
       ]
     },
     {
@@ -22,7 +18,7 @@
       "title": "Bug fix",
       "example": "fix the /login endpoint returning 500 on missing password",
       "argument_hint": "[the bug, in one line]",
-      "summary": "Reproduce a specific defect, diagnose it, fix it, add a regression test.",
+      "summary": "Reproduce a specific defect with a test that fails on it, then fix it.",
       "interview": [
         "Describe the bug in one sentence — the observed behavior.",
         "What is the expected behavior instead?",

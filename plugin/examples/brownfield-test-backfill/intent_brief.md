@@ -15,14 +15,12 @@ amount). Idempotency check on refund (calling twice with same ref = one refund).
 ## Files in scope
 
 - `src/payments.spec.js` (create)
-- `src/payments.js` — treat as read-only reference; do NOT modify to make tests easier
-- `src/db.js` — mock or stub as needed inside the test file
+
+Read, not written: `src/payments.js`, `src/db.js` (the code under test and its store: outside the allowlist, so never written — this is a test backfill, not a refactor — and not off-limits, which would keep them from the test writer too; mock or stub the store inside the test file)
 
 ## Files off-limits
 
-- `src/payments.js` (read-only — this is a test-backfill, not a refactor)
-- `src/db.js` (read-only)
-- Standard set
+- Standard set.
 
 ## Acceptance criteria
 

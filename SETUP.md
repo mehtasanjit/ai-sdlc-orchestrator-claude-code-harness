@@ -153,6 +153,13 @@ terminal is invisible to it. There are two places that do work:
   — `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY` on the AI Studio path. Claude Code reads that file at
   startup and passes the values through to the plugin's model server.
 
+**The Claude typist uses this computer's own Claude login.** Under subscription (`estimated`) auth, the
+model that types files with a Claude model (the lean Opus typist, a `claude -p` call per file) signs in with
+the Claude login stored on this computer, not with a token a chat was started with: Claude Code does not pass
+a session's `CLAUDE_CODE_OAUTH_TOKEN` to a plugin's model server. Keep this computer logged in to a plan
+larger than Pro (`claude`, then `/login`). Every run's start check sends one test call through each typist
+and stops the run, saying what to fix, when one cannot answer.
+
 If the check reports `env-placeholders`, the variables are declared but were never set anywhere
 Claude Code could see, and the server received the literal text `${GEMINI_API_KEY}` instead of a
 value. The plugin now discards those and falls back to the credentials file, so the run is not
