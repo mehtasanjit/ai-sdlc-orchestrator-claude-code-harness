@@ -250,19 +250,20 @@ test("an apply packet that names no job, or comes before its run's pre-flight, i
 });
 
 // A packet typed through execute_with_model alone gets the progress execute_batch sends (one message when it settles,
-// a heartbeat between): its checks and typist calls can run past Claude Code's idle limit for a silent MCP call.
+// a heartbeat between): its checks and typist calls can run past Claude Code's idle limit for a silent MCP call. The
+// message is read on the wire, where the server owes it before the reply (serverHarness.mjs wireLog: the client drops a
+// progress message that arrives in the same read as the reply).
 test("execute_with_model with an apply packet sends progress when asked for it", async () => {
   const bin = standInClaude([receipt({ path: "src/a.txt", content: "x\n" })]);
   const root = project();
   writeFileSync(join(root, "policy.yaml"), SOLO);
   try {
-    const progress = [];
     await withServer({ bin, home: root }, async (call) => {
       assert.equal((await preflight(call, root)).json?.ok, true);
-      const r = await call("execute_with_model", { packet: packet("tp_codegen_U01", "src/a.txt"), policy_path: join(root, "policy.yaml"), project_root: root, run_id: "r1" }, { onprogress: (p) => progress.push(p) });
+      const r = await call("execute_with_model", { packet: packet("tp_codegen_U01", "src/a.txt"), policy_path: join(root, "policy.yaml"), project_root: root, run_id: "r1" }, { onprogress: () => {} });
       assert.equal(r.json?.status, "applied", r.text);
+      assert.ok(r.progress.some((p) => /tp_codegen_U01 applied/.test(p.message ?? "")), JSON.stringify(r.progress));
     });
-    assert.ok(progress.some((p) => /tp_codegen_U01 applied/.test(p.message ?? "")), JSON.stringify(progress));
   } finally {
     cleanup(bin, root);
   }

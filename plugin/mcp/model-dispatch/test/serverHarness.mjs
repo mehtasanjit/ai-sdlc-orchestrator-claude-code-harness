@@ -69,9 +69,35 @@ export function project({ files = {}, contract = { schema_version: 1, active: tr
 }
 
 /**
+ * The messages the server sends on a connected client's transport, recorded as they arrive, before the client handles
+ * them. Why a test reads progress here and not through `onprogress`: the MCP client (the sdk's Protocol) handles a
+ * reply at once but a notification a microtask later, and the reply removes the call's progress handler, so a progress
+ * message that arrives in the same read as the reply never reaches `onprogress` (seen on a loaded CI runner). What the
+ * server owes is the order on the wire: every progress message of a call before its reply (batch.ts batchProgress,
+ * stop()). `mark()` before a call; `progressOf(mark)` after it returns the progress params the server sent for that
+ * call before replying (the sdk uses the request's id as its progress token). Calls must not overlap.
+ */
+export function wireLog(transport) {
+  const messages = [];
+  const handle = transport.onmessage;
+  transport.onmessage = (message, extra) => { messages.push(message); handle?.(message, extra); };
+  return {
+    mark: () => messages.length,
+    progressOf(from) {
+      const sent = messages.slice(from);
+      const at = sent.findIndex((m) => m.id !== undefined && ("result" in m || "error" in m));
+      if (at < 0) return [];
+      const id = String(sent[at].id);
+      return sent.slice(0, at).filter((m) => m.method === "notifications/progress" && String(m.params?.progressToken) === id).map((m) => m.params);
+    },
+  };
+}
+
+/**
  * One server process with `bin` first on PATH; `fn(call)` runs with `call(name, args, opts?)` returning
- * {isError, text, json}. `opts` goes to the client's callTool as its request options (e.g. `onprogress`, which makes
- * the call ask for progress messages).
+ * {isError, text, json, progress}. `opts` goes to the client's callTool as its request options (e.g. `onprogress`,
+ * which makes the call ask for progress messages); `progress` is what the server sent for the call before its reply,
+ * read on the wire (wireLog).
  */
 export async function withServer({ bin, home, env = {} }, fn) {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -79,13 +105,15 @@ export async function withServer({ bin, home, env = {} }, fn) {
   const transport = new StdioClientTransport({ command: process.execPath, args: [SERVER], env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, MMO_LOG_LEVEL: "error", ...env }, stderr: "ignore" });
   const client = new Client({ name: "server-harness", version: "0" });
   await client.connect(transport);
+  const wire = wireLog(transport);
   try {
     return await fn(async (name, args, opts) => {
+      const from = wire.mark();
       const r = await client.callTool({ name, arguments: args }, undefined, opts);
       const text = r.content?.[0]?.text ?? "";
       let json;
       try { json = JSON.parse(text); } catch { json = undefined; }
-      return { isError: r.isError === true, text, json };
+      return { isError: r.isError === true, text, json, progress: wire.progressOf(from) };
     });
   } finally {
     await client.close();

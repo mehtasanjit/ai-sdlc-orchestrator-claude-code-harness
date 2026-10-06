@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { wireLog } from "./serverHarness.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELP = "--tools --append-system-prompt-file --effort --strict-mcp-config --safe-mode --disable-slash-commands --no-session-persistence";
@@ -88,13 +89,16 @@ async function batchOnce(policyYaml, extraArgs = {}) {
   const transport = new StdioClientTransport({ command: process.execPath, args: [join(HERE, "..", "dist", "server.js")], env: { PATH: `${bin}:/usr/bin:/bin`, HOME: root, MMO_LOG_LEVEL: "error" }, stderr: "ignore" });
   const client = new Client({ name: "lean-batch-test", version: "0" });
   await client.connect(transport);
+  // Progress is read on the wire, where the server owes every message before the reply (serverHarness.mjs wireLog).
+  const wire = wireLog(transport);
   try {
     const policy_path = join(root, "policy.yaml");
     const pre = await client.callTool({ name: "preflight_dispatch", arguments: { auth_mode: "estimated", policy_path, project_root: root } });
     assert.notEqual(pre.isError, true, pre.content[0].text);
-    const progress = [];
-    const r = await client.callTool({ name: "execute_batch", arguments: { packets: [unit("A1", "src/a.ts"), unit("A2", "src/b.ts")], project_root: root, policy_path, run_id: "r1", auth_mode: "estimated", ...extraArgs(root) } }, undefined, { onprogress: (p) => progress.push(p) });
+    const from = wire.mark();
+    const r = await client.callTool({ name: "execute_batch", arguments: { packets: [unit("A1", "src/a.ts"), unit("A2", "src/b.ts")], project_root: root, policy_path, run_id: "r1", auth_mode: "estimated", ...extraArgs(root) } }, undefined, { onprogress: () => {} });
     assert.notEqual(r.isError, true, r.content[0].text);
+    const progress = wire.progressOf(from);
     return { root, bin, receipt: JSON.parse(r.content[0].text), text: r.content[0].text, progress };
   } finally {
     await client.close();
