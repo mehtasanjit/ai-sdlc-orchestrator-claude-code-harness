@@ -46,6 +46,12 @@ test("the acceptance list: every command that checks the finished project, what 
   }
   assert.match(executor, /the brief's own words/, "a pass rule comes from the brief, not from a tool's defaults");
   assert.match(executor, /Every command must finish by itself/);
+  // A check that needs a database creates a fresh one for its run instead of resetting an existing one. Why: a reset
+  // is destructive, and a database tool may refuse a destructive action an AI agent runs until a person agrees, so a
+  // reset step would stop the checks in an unattended run. A fresh database needs no one's consent and keeps every
+  // tool's safety check on. The rule names no tool: it holds for every database.
+  assert.match(executor, /needs a database works on one it creates for that run/);
+  assert.match(executor, /never on an existing one it resets or wipes/);
   assert.match(executor, /Every AC\s+id must be checked by some command\./, "no criterion is left out because a tool might be absent");
   assert.match(executor, /A check whose tool may be missing on this machine is still a command: code finds out when it runs/);
   assert.match(executor, /Only a\s+criterion that no command could check by running[^.]*goes in `unchecked`/);
