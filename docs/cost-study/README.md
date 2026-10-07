@@ -56,40 +56,40 @@ Think of Opus as an expensive project lead who re-reads the whole project notebo
 
 "Full bill" is everything in the run's time window. "Work itself" leaves out the launching chat that landed in the same window. Where the two are equal, no separate figure was taken.
 
-| Run | Date | Plugin | Setup | Full bill | Work itself | Minutes | Note |
-|---|---|---|---|---|---|---|---|
-| — | 16–17 Sep | 0.7.3 | Opus-only | $19.16 | — | 48 | starting point |
-| — | 16–17 Sep | 0.7.3 | Opus + Sonnet | $23.36 | — | 53 | trial of Sonnet as the worker |
-| — | 16–17 Sep | 0.7.3 | Opus + Flash | $26.02 | — | 60 | starting point |
-| A | 18 Sep | 0.7.4 | Opus-only | $22.91 | — | 71 | |
-| B | 18 Sep | 0.7.4 | Opus + Flash | $20.75 | — | 51 | first Flash win |
-| 9 | 18 Sep | 0.7.5 | Opus + Flash | ($24.76) | — | — | invalid: laptop froze mid-run |
-| 10 | 18 Sep | 0.7.5 | Opus-only | $17.96 | — | 50 | |
-| 11 | 18 Sep | 0.7.5 | Opus + Flash | $17.41 | — | 53 | |
-| 12 | 21 Sep | 0.7.7 | Opus + Flash | — | — | — | invalid: an old helper server was running |
-| 13 | 21 Sep | 0.7.7 | Opus + Flash | $18.77 | — | 65 | |
-| 14 | 21 Sep | 0.7.8 | Opus + Flash | $17.05 | ≈ $15.42 | 38 | |
-| 15 | 21 Sep | 0.7.8 | Opus-only | $21.06 | ≈ $20.50 | 36 | unfair: ran Flash-only steps |
-| 16 | 21 Sep | 0.7.9 | Opus-only | $14.86 | ≈ $13.70 | 41 | |
-| 17 | 21 Sep | 0.8.0 | Opus + Flash | $15.93 | ≈ $14.60 | 43 | setup bug cost ≈ $1.10 |
-| 18 | 21 Sep | 0.8.0 | Opus-only | $17.40 | ≈ $16.10 | 45 | same setup as 16: shows the noise |
-| 19 | 23 Sep | 0.8.1 | Opus + Flash | $16.12 | ≈ $14.65 | 71 | |
-| 20 | 23 Sep | 0.8.1 | Opus + Flash | $13.90 | ≈ $13.33 | 59 | |
-| 21 | 23 Sep | 0.8.1 | Opus-only | $17.43 | ≈ $16.47 | 79 | 5-minute memory trial |
-| 22 | 23 Sep | 0.8.2 | Opus-only | $10.78 | ≈ $9.93 | 47 | |
-| 23 | 23 Sep | 0.8.2 | Opus + Flash | $12.67 | ≈ $11.96 | 53 | |
-| 24 | 23 Sep | 0.8.3 | Opus-only | $13.17 | ≈ $11.27 | 57 | |
-| 25 | 23 Sep | 0.8.4 | Opus + Flash | $17.52 | ≈ $16.10 | 65 | 3 import-repair rounds |
-| 26b | 24 Sep | 0.8.4 | Opus-only | $11.60 | ≈ $10.79 | 50 | Run 26 died after 1 minute |
-| 27b | 24 Sep | 0.8.5 | Opus + Flash | $11.94 | ≈ $11.61 | 59 | Run 27 lost to a network outage |
-| 28 | 24 Sep | 0.8.6 | Opus + Flash | $15.32 | ≈ $14.91 | 64 | manager paused 3× (≈ $4.10) |
-| 29 | 24 Sep | 0.8.6 | Opus-only | $14.18 | ≈ $12.84 | 69 | |
-| 30 | 24 Sep | 0.8.8 | Opus + Flash | $9.79 | ≈ $8.79 | 46 | |
-| 31 | 24 Sep | 0.8.8 | Opus-only | $13.98 | ≈ $12.65 | 77 | |
-| 32 | 24 Sep | 0.8.9 | Opus + Flash | $9.36 | ≈ $8.15 | 61 | Google "too busy" 8× |
-| 33b | 24 Sep | 0.8.9 | Opus-only | $9.55 | ≈ $7.37 | 71 | Run 33 stopped by hand |
-| 34 | 25 Sep | 0.8.9 | Opus + Flash | **$8.37** | ≈ $7.47 | 47 | cheapest full bill |
-| 35 | 25 Sep | 0.8.9 | Opus-only | $11.28 | ≈ $10.20 | 64 | |
+| Run | Plugin | Setup | Full bill | Work itself | Minutes | Note |
+|---|---|---|---|---|---|---|
+| — | 0.7.3 | Opus-only | $19.16 | — | 48 | starting point |
+| — | 0.7.3 | Opus + Sonnet | $23.36 | — | 53 | trial of Sonnet as the worker |
+| — | 0.7.3 | Opus + Flash | $26.02 | — | 60 | starting point |
+| A | 0.7.4 | Opus-only | $22.91 | — | 71 | |
+| B | 0.7.4 | Opus + Flash | $20.75 | — | 51 | first Flash win |
+| 9 | 0.7.5 | Opus + Flash | ($24.76) | — | — | invalid: laptop froze mid-run |
+| 10 | 0.7.5 | Opus-only | $17.96 | — | 50 | |
+| 11 | 0.7.5 | Opus + Flash | $17.41 | — | 53 | |
+| 12 | 0.7.7 | Opus + Flash | — | — | — | invalid: an old helper server was running |
+| 13 | 0.7.7 | Opus + Flash | $18.77 | — | 65 | |
+| 14 | 0.7.8 | Opus + Flash | $17.05 | ≈ $15.42 | 38 | |
+| 15 | 0.7.8 | Opus-only | $21.06 | ≈ $20.50 | 36 | unfair: ran Flash-only steps |
+| 16 | 0.7.9 | Opus-only | $14.86 | ≈ $13.70 | 41 | |
+| 17 | 0.8.0 | Opus + Flash | $15.93 | ≈ $14.60 | 43 | setup bug cost ≈ $1.10 |
+| 18 | 0.8.0 | Opus-only | $17.40 | ≈ $16.10 | 45 | same setup as 16: shows the noise |
+| 19 | 0.8.1 | Opus + Flash | $16.12 | ≈ $14.65 | 71 | |
+| 20 | 0.8.1 | Opus + Flash | $13.90 | ≈ $13.33 | 59 | |
+| 21 | 0.8.1 | Opus-only | $17.43 | ≈ $16.47 | 79 | 5-minute memory trial |
+| 22 | 0.8.2 | Opus-only | $10.78 | ≈ $9.93 | 47 | |
+| 23 | 0.8.2 | Opus + Flash | $12.67 | ≈ $11.96 | 53 | |
+| 24 | 0.8.3 | Opus-only | $13.17 | ≈ $11.27 | 57 | |
+| 25 | 0.8.4 | Opus + Flash | $17.52 | ≈ $16.10 | 65 | 3 import-repair rounds |
+| 26b | 0.8.4 | Opus-only | $11.60 | ≈ $10.79 | 50 | Run 26 died after 1 minute |
+| 27b | 0.8.5 | Opus + Flash | $11.94 | ≈ $11.61 | 59 | Run 27 lost to a network outage |
+| 28 | 0.8.6 | Opus + Flash | $15.32 | ≈ $14.91 | 64 | manager paused 3× (≈ $4.10) |
+| 29 | 0.8.6 | Opus-only | $14.18 | ≈ $12.84 | 69 | |
+| 30 | 0.8.8 | Opus + Flash | $9.79 | ≈ $8.79 | 46 | |
+| 31 | 0.8.8 | Opus-only | $13.98 | ≈ $12.65 | 77 | |
+| 32 | 0.8.9 | Opus + Flash | $9.36 | ≈ $8.15 | 61 | Google "too busy" 8× |
+| 33b | 0.8.9 | Opus-only | $9.55 | ≈ $7.37 | 71 | Run 33 stopped by hand |
+| 34 | 0.8.9 | Opus + Flash | **$8.37** | ≈ $7.47 | 47 | cheapest full bill |
+| 35 | 0.8.9 | Opus-only | $11.28 | ≈ $10.20 | 64 | |
 
 Every valid run passed its tests. From Row 4 onwards no run finished with a serious review issue left open; where a reviewer raised one, the run fixed it before finishing.
 
@@ -103,34 +103,34 @@ Same laptop, same 1-hour memory setting, same review steps. Each pair ran the sa
 - **Large job 2:** a team workload page showing who is working on what across a workspace (25 files: API endpoint, an AI-assistant tool, web page with 5 parts, tests, translations, docs).
 - **New feature:** project status updates, a new part of the app with its own database table, API, web pages and tests (43 files, run with `/mmo:feature-new`).
 
-| Run | Date | Plugin | Job | Setup | Full bill | Work itself | Minutes | Note |
-|---|---|---|---|---|---|---|---|---|
-| Small-A | 28 Sep | 0.8.10 | small | Opus + Flash | $9.39 | ≈ $8.31 | 61 | |
-| Small-B | 28 Sep | 0.8.10 | small | Opus-only | $11.71 | ≈ $10.63 | 96 | reviewer caught a real counting bug |
-| Small-C | 28 Sep | 0.8.10 | small | Opus + Flash | $10.09 | ≈ $9.06 | 66 | |
-| Small-D | 28 Sep | 0.8.10 | small | Opus-only | $9.98 | ≈ $8.77 | 70 | pair 2 a tie |
-| Large-A | 28 Sep | 0.8.10 | large 1 | Opus + Flash | $18.64 | ≈ $17.17 | 102 | 11 checks rewritten by hand (line endings) |
-| Large-B | 29 Sep | 0.8.10 | large 1 | Opus-only | $19.31 | ≈ $18.51 | 79 | first attempt stalled; re-run |
-| Large2-A | 29 Sep | 0.8.10 | large 2 | Opus + Flash | $18.70 | ≈ $16.68 | 84 | planner spent ≈ $6 shortening its plan and working around line endings |
-| Large2-B | 29 Sep | 0.8.10 | large 2 | Opus-only | $14.66 | ≈ $11.94 | 85 | 96% right first try |
-| Large2-C | 29 Sep | 0.8.11 | large 2 | Opus + Flash | $13.81 | ≈ $12.64 | 75 | 0.8.11 fixes held |
-| Large2-D | 30 Sep | 0.8.11 | large 2 | Opus-only | $15.26 | ≈ $14.63 | 74 | 92% right first try, 0 repair rounds |
-| Large2-E | 30 Sep | 0.8.12 | large 2 + docs | Opus + Flash | $11.71 | ≈ $10.78 | 79 | 28 files; 85% right first try, 1 repair round |
-| Large2-F | 30 Sep | 0.8.12 | large 2 + docs | Opus-only | $17.77 | ≈ $17.09 | 72 | 28 files; 96% right first try, 0 repair rounds |
-| Large2-G | 30 Sep | 0.8.12 | large 2 + docs | Opus-only | $18.15 | ≈ $16.99 | 87 | repeat of Large2-F, to check the $17 wasn't a fluke |
-| Large2-H | 1 Oct | 0.9.0 | large 2 + docs | Opus + Flash | $11.28 | ≈ $11.28 | 92 | ran in the main chat session; 92% right first try, 1 repair round |
-| Large2-J | 2 Oct | 0.9.0 | large 2 + docs | Opus-only | $20.62 | ≈ $20.19 | 89 | 89% right first try; reviewer caught a real time-zone bug |
-| Large2-K | 2 Oct | 0.9.1 | large 2 + docs | Opus + Flash | $13.86 | ≈ $12.64 | 87 | 97% right first try, 1 repair round |
-| Large2-L | 2 Oct | 0.9.1 | large 2 + docs | Opus-only | $18.50 | ≈ $17.62 | 89 | fresh helpers write the files; 26 / 26 right first try |
-| Large2-N | 5 Oct | 0.9.1 | large 2 + docs | Opus + Flash | $14.97 | ≈ $13.73 | 75 | splitter crashed once; 81% right first try, 1 repair round |
-| Large2-O | 5 Oct | 0.9.1 | large 2 + docs | Opus-only | $22.27 | ≈ $20.84 | 127 | 31 / 31 right first try; reviewer caught a display bug |
-| Large2-P | 5 Oct | 0.9.2 | large 2 + docs | Opus-only | $18.63 | ≈ $16.32 | 77 | lean Opus typist; 30 / 30 right first try, 1 repair round |
-| Large2-Q | 5 Oct | 0.9.2 | large 2 + docs | Opus + Flash | $16.18 | ≈ $14.48 | 131 | 4 repair rounds; reviewer caught a real time-zone bug |
-| Large2-R | 5 Oct | 0.9.2 | large 2 + docs | Opus + Flash | $14.56 | ≈ $12.76 | 83 | second 0.9.2 Flash sample; 2 repair rounds |
-| New1-A | 5 Oct | 0.9.2 | new feature | Opus + Flash | $19.95 | ≈ $17.44 | 130 | 57 / 57 tasks on Flash; 6 repair rounds |
-| New1-C | 6 Oct | 0.9.2 | new feature | Opus-only | $26.84 | ≈ $22.56 * | 143 * | 6 repair rounds; laptop slept 64 min mid-review |
-| Med-A | 6 Oct | 0.9.3 | medium | Opus + Flash | $15.25 | ≈ $12.56 | 92 | 1 repair round |
-| Med-B | 6 Oct | 0.9.3 | medium | Opus-only | $15.86 | ≈ $14.03 | 124 | 4 repair rounds |
+| Run | Plugin | Job | Setup | Full bill | Work itself | Minutes | Note |
+|---|---|---|---|---|---|---|---|
+| Small-A | 0.8.10 | small | Opus + Flash | $9.39 | ≈ $8.31 | 61 | |
+| Small-B | 0.8.10 | small | Opus-only | $11.71 | ≈ $10.63 | 96 | reviewer caught a real counting bug |
+| Small-C | 0.8.10 | small | Opus + Flash | $10.09 | ≈ $9.06 | 66 | |
+| Small-D | 0.8.10 | small | Opus-only | $9.98 | ≈ $8.77 | 70 | pair 2 a tie |
+| Large-A | 0.8.10 | large 1 | Opus + Flash | $18.64 | ≈ $17.17 | 102 | 11 checks rewritten by hand (line endings) |
+| Large-B | 0.8.10 | large 1 | Opus-only | $19.31 | ≈ $18.51 | 79 | first attempt stalled; re-run |
+| Large2-A | 0.8.10 | large 2 | Opus + Flash | $18.70 | ≈ $16.68 | 84 | planner spent ≈ $6 shortening its plan and working around line endings |
+| Large2-B | 0.8.10 | large 2 | Opus-only | $14.66 | ≈ $11.94 | 85 | 96% right first try |
+| Large2-C | 0.8.11 | large 2 | Opus + Flash | $13.81 | ≈ $12.64 | 75 | 0.8.11 fixes held |
+| Large2-D | 0.8.11 | large 2 | Opus-only | $15.26 | ≈ $14.63 | 74 | 92% right first try, 0 repair rounds |
+| Large2-E | 0.8.12 | large 2 + docs | Opus + Flash | $11.71 | ≈ $10.78 | 79 | 28 files; 85% right first try, 1 repair round |
+| Large2-F | 0.8.12 | large 2 + docs | Opus-only | $17.77 | ≈ $17.09 | 72 | 28 files; 96% right first try, 0 repair rounds |
+| Large2-G | 0.8.12 | large 2 + docs | Opus-only | $18.15 | ≈ $16.99 | 87 | repeat of Large2-F, to check the $17 wasn't a fluke |
+| Large2-H | 0.9.0 | large 2 + docs | Opus + Flash | $11.28 | ≈ $11.28 | 92 | ran in the main chat session; 92% right first try, 1 repair round |
+| Large2-J | 0.9.0 | large 2 + docs | Opus-only | $20.62 | ≈ $20.19 | 89 | 89% right first try; reviewer caught a real time-zone bug |
+| Large2-K | 0.9.1 | large 2 + docs | Opus + Flash | $13.86 | ≈ $12.64 | 87 | 97% right first try, 1 repair round |
+| Large2-L | 0.9.1 | large 2 + docs | Opus-only | $18.50 | ≈ $17.62 | 89 | fresh helpers write the files; 26 / 26 right first try |
+| Large2-N | 0.9.1 | large 2 + docs | Opus + Flash | $14.97 | ≈ $13.73 | 75 | splitter crashed once; 81% right first try, 1 repair round |
+| Large2-O | 0.9.1 | large 2 + docs | Opus-only | $22.27 | ≈ $20.84 | 127 | 31 / 31 right first try; reviewer caught a display bug |
+| Large2-P | 0.9.2 | large 2 + docs | Opus-only | $18.63 | ≈ $16.32 | 77 | lean Opus typist; 30 / 30 right first try, 1 repair round |
+| Large2-Q | 0.9.2 | large 2 + docs | Opus + Flash | $16.18 | ≈ $14.48 | 131 | 4 repair rounds; reviewer caught a real time-zone bug |
+| Large2-R | 0.9.2 | large 2 + docs | Opus + Flash | $14.56 | ≈ $12.76 | 83 | second 0.9.2 Flash sample; 2 repair rounds |
+| New1-A | 0.9.2 | new feature | Opus + Flash | $19.95 | ≈ $17.44 | 130 | 57 / 57 tasks on Flash; 6 repair rounds |
+| New1-C | 0.9.2 | new feature | Opus-only | $26.84 | ≈ $22.56 * | 143 * | 6 repair rounds; laptop slept 64 min mid-review |
+| Med-A | 0.9.3 | medium | Opus + Flash | $15.25 | ≈ $12.56 | 92 | 1 repair round |
+| Med-B | 0.9.3 | medium | Opus-only | $15.86 | ≈ $14.03 | 124 | 4 repair rounds |
 
 \* New1-C measured ≈ $24.97 over 207 minutes. The laptop slept for 64 minutes during the senior review, the 1-hour memory expired, and two helpers had to reload their whole context. The figure shown re-prices that reload as a normal read (−$2.41) and leaves the sleep out of the time.
 
@@ -146,21 +146,21 @@ Everything above measures a change to an existing app (kaneo). This section is t
 
 **Travel-operations service (large, about 115 files):**
 
-| Date | Plugin | Setup | Full bill | Time (min) | Files | Tests |
-|---|---|---|---|---|---|---|
-| 25 Sep | 0.7.6 | Opus-only | $36.52 | 88 | 82 | 95 pass |
-| 25 Sep | 0.7.6 | Opus + Flash | $25.12 | 78 | 100 | 153 pass |
-| 2 Oct | 0.9.0 | Opus + Flash | $34.11 | 80 | 118 | 151 of 151 pass |
-| 5 Oct | 0.9.0 | Opus-only | $38.16 | 102 | 115 | 216 of 216 pass |
-| 6 Oct | 0.9.3 | Opus + Flash | $37.87 | 91 | 114 | test suite would not load (see below) |
-| 6 Oct | 0.9.3 + test-database fix (trial build) | Opus-only | $48.86 | 201 | — | all 15 acceptance items pass |
+| Plugin | Setup | Full bill | Time (min) | Files | Tests |
+|---|---|---|---|---|---|
+| 0.7.6 | Opus-only | $36.52 | 88 | 82 | 95 pass |
+| 0.7.6 | Opus + Flash | $25.12 | 78 | 100 | 153 pass |
+| 0.9.0 | Opus + Flash | $34.11 | 80 | 118 | 151 of 151 pass |
+| 0.9.0 | Opus-only | $38.16 | 102 | 115 | 216 of 216 pass |
+| 0.9.3 | Opus + Flash | $37.87 | 91 | 114 | test suite would not load (see below) |
+| 0.9.3 + test-database fix (trial build) | Opus-only | $48.86 | 201 | — | all 15 acceptance items pass |
 
 **Notes service with a database (small, 30–45 files):**
 
-| Date | Plugin | Setup | Full bill | Time (min) | Source files | Tests |
-|---|---|---|---|---|---|---|
-| 6 Oct | 0.9.3 (e632e36) | Opus-only | $14.42 | 50 | 29 | 57 of 57 pass |
-| 6 Oct | 0.9.3 (e632e36) | Opus + Flash | $14.19 | 56 | 43 | 68 of 68 pass |
+| Plugin | Setup | Full bill | Time (min) | Source files | Tests |
+|---|---|---|---|---|---|
+| 0.9.3 (e632e36) | Opus-only | $14.42 | 50 | 29 | 57 of 57 pass |
+| 0.9.3 (e632e36) | Opus + Flash | $14.19 | 56 | 43 | 68 of 68 pass |
 
 - **Result:** on the travel-operations app, Opus + Flash was **31% cheaper** on 0.7.6 and **11% cheaper** on 0.9.0. On the notes service (0.9.3, the only fair pair on that version) the two setups **tied** ($14.19 vs $14.42). Each is one pair, so treat all three as first readings.
 - **The 0.9.3 travel-operations runs are not a fair pair.** The Opus-only run used a trial build with the test-database fix (below), and the Flash run did not. Read them as separate data points, not as a comparison.
