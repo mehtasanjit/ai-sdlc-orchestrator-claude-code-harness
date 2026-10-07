@@ -154,21 +154,21 @@
 
 <main>
   <header>
-    <div class="lbl">Cost study &middot; existing-app and new-app runs &middot; 16 Sep &ndash; 6 Oct 2026</div>
+    <div class="lbl">Cost study &middot; existing-app and new-app runs &middot; plugins 0.7.3 &ndash; 0.9.3</div>
     <h1>Where the Opus&nbsp;+&nbsp;Flash money actually goes</h1>
-    <p class="lede">Twenty-five rounds of fixes and about 60 complete runs over three weeks, on small, medium and large changes to an existing app, plus new apps built from an empty folder. Most of the saving came from cutting Opus overhead, which helped both setups. On existing apps Opus&nbsp;+&nbsp;Flash ends up 10&ndash;23% cheaper, and the bigger the job, the bigger the saving. On new apps the answer is still open.</p>
+    <p class="lede">Twenty-five rounds of fixes and about 60 complete runs, on small, medium and large changes to an existing app, plus new apps built from an empty folder. Most of the saving came from cutting Opus overhead, which helped both setups. On existing apps Opus&nbsp;+&nbsp;Flash ends up 10&ndash;23% cheaper, and the bigger the job, the bigger the saving. On new apps the answer is still open.</p>
   </header>
 
   <section>
     <div class="lbl">The task</div>
     <h2>What every run built</h2>
-    <p>Up to 25 Sep, each run did the same medium-sized task on the Kaneo codebase, started with this command in Claude Code:</p>
+    <p>Up to plugin 0.8.9, each run did the same medium-sized task on the Kaneo codebase, started with this command in Claude Code:</p>
     <div class="cmd">/mmo:brownfield "add a new public profile page with default profile image"</div>
-    <p>From 28 Sep we added three more jobs to see whether job size changes the answer: a <b>small</b> one (task count and &ldquo;last updated&rdquo; on the public project page, 7 files) and two <b>large</b> ones (a project insights page, and a team workload page, about 25 files each). From 30 Sep every pair ran the team workload page plus three docs files, 28 files: one pair on 30 Sep and four more from 1 to 5 Oct. On 5&ndash;6 Oct a new 43-file feature (project status updates, run with <code>/mmo:feature-new</code>) and a re-run of the medium task on plugin 0.9.3 were added.</p>
+    <p>From plugin 0.8.10 three more jobs were added to see whether job size changes the answer: a <b>small</b> one (task count and &ldquo;last updated&rdquo; on the public project page, 7 files) and two <b>large</b> ones (a project insights page, and a team workload page, about 25 files each). From plugin 0.8.12 every pair ran the team workload page plus three docs files, 28 files: five pairs on plugins 0.8.12 to 0.9.2. On 0.9.2 and 0.9.3 a new 43-file feature (project status updates, run with <code>/mmo:feature-new</code>) and a re-run of the medium task on plugin 0.9.3 were added.</p>
   </section>
 
   <section>
-    <div class="lbl">Verdict &middot; existing apps &middot; 6 Oct</div>
+    <div class="lbl">Verdict &middot; existing apps</div>
     <h2>Opus&nbsp;+&nbsp;Flash is cheaper, and by the most on the largest job</h2>
     <p>Across fifteen same-job pairs, Opus&nbsp;+&nbsp;Flash won 12, one was a tie, and Opus-only won 2. On small and medium jobs the wins were $1&ndash;3, about the size of normal run-to-run noise. On the 28-file job Opus&nbsp;+&nbsp;Flash won all five pairs, by $2&ndash;9 each, and on the 43-file feature by $5.</p>
     <div class="tw">
@@ -187,11 +187,11 @@
       <div class="stat hi"><div class="stat-v">10&ndash;23%</div><div class="stat-k">Flash saving by job size, work itself</div></div>
       <div class="stat"><div class="stat-v">100%</div><div class="stat-k">Runs that passed their tests, on both sides</div></div>
     </div>
-    <p class="note"><b>One large pair was biased.</b> Opus-only won it by 28%, but the Flash run went first and hit a file-format problem (Windows line endings) the Opus-only run never met. Plugin 0.8.11 fixed that, and on the re-run pair Flash was 14% cheaper ($12.64 vs $14.63). <b>The 28-file job, five pairs (30 Sep &ndash; 5 Oct):</b> Flash was 37%, 44%, 28%, 34% and 11% cheaper, on average &asymp; $12.58 against &asymp; $18.42 for Opus-only (&asymp; 32%). Opus&nbsp;+&nbsp;Flash stayed within $10.78&ndash;$14.48; Opus-only ranged $16.32&ndash;$20.84. <b>Plugin 0.9.2 narrowed the gap:</b> Opus-only now types through a lean, tool-free Opus call and came down to &asymp; $16.32; planning and review now cost the same in both setups, so the whole difference is the typing. Figures are &ldquo;work itself&rdquo;, leaving out our own chat that landed in a run&rsquo;s time window. <b>Advice:</b> use Opus&nbsp;+&nbsp;Flash as the default; the bigger the job, the more it saves. Opus-only still works and needs no second provider, but on a 28-file job it cost about $2&ndash;7 more per run.</p>
+    <p class="note"><b>One large pair was biased.</b> Opus-only won it by 28%, but the Flash run went first and hit a file-format problem (Windows line endings) the Opus-only run never met. Plugin 0.8.11 fixed that, and on the re-run pair Flash was 14% cheaper ($12.64 vs $14.63). <b>The 28-file job, five pairs (plugins 0.8.12 to 0.9.2):</b> Flash was 37%, 44%, 28%, 34% and 11% cheaper, on average &asymp; $12.58 against &asymp; $18.42 for Opus-only (&asymp; 32%). Opus&nbsp;+&nbsp;Flash stayed within $10.78&ndash;$14.48; Opus-only ranged $16.32&ndash;$20.84. <b>Plugin 0.9.2 narrowed the gap:</b> Opus-only now types through a lean, tool-free Opus call and came down to &asymp; $16.32; planning and review now cost the same in both setups, so the whole difference is the typing. Figures are &ldquo;work itself&rdquo;, leaving out the launching chat that landed in a run&rsquo;s time window. <b>Advice:</b> use Opus&nbsp;+&nbsp;Flash as the default; the bigger the job, the more it saves. Opus-only still works and needs no second provider, but on a 28-file job it cost about $2&ndash;7 more per run.</p>
   </section>
 
   <section>
-    <div class="lbl">Small, medium and large jobs &middot; 28 Sep &ndash; 6 Oct</div>
+    <div class="lbl">Small, medium and large jobs</div>
     <h2>Every run in the job-size phase</h2>
     <div class="tw">
       <table class="wide">
@@ -230,7 +230,7 @@
   </section>
 
   <section>
-    <div class="lbl">Medium task &middot; 25 Sep</div>
+    <div class="lbl">Medium task</div>
     <h2>On the medium task, Opus&nbsp;+&nbsp;Flash won all three newest pairs</h2>
     <p>We ran three same-version pairs on the two newest plugin versions. On the full bill, Opus&nbsp;+&nbsp;Flash was cheaper every time: <span class="mono">$9.79</span> vs <span class="mono">$13.98</span> (0.8.8), <span class="mono">$9.36</span> vs <span class="mono">$9.55</span> (0.8.9, a tie), and <span class="mono">$8.37</span> vs <span class="mono">$11.28</span> (0.8.9 again). Averaged, Opus&nbsp;+&nbsp;Flash cost <span class="mono">$9.17</span> a run against <span class="mono">$11.60</span> for Opus-only &mdash; about <b>21% less</b>. Counting only the work itself (leaving out chat that landed in the same time window), it is <span class="mono">$8.14</span> vs <span class="mono">$10.07</span>, about 19% less; there Opus-only won the middle pair by a small margin.</p>
     <div class="stats">
@@ -238,7 +238,7 @@
       <div class="stat hi"><div class="stat-v">&minus;50%</div><div class="stat-k">Opus-only since the start: $19.16 &rarr; $9.55</div></div>
       <div class="stat"><div class="stat-v">3&ndash;0</div><div class="stat-k">Newest same-version pairs won by Opus&nbsp;+&nbsp;Flash (full bill; one was a near tie)</div></div>
     </div>
-    <p class="note">This is three pairs, and identical runs can differ by about $2.50, so treat 21% as a trend, not a final number. Averaged over every run since 23 Sep, including older plugin versions where Flash still had problems, the two setups are about even (<b>Opus-only $12.08</b>, 7 runs; <b>Opus&nbsp;+&nbsp;Flash $12.14</b>, 7 runs). Flash only pulled ahead once the 0.8.8 fixes stopped Opus wasting money around it. <b>A fourth medium pair on 0.9.3 (6 Oct):</b> Opus&nbsp;+&nbsp;Flash &asymp; $12.56 against &asymp; $14.03 (Flash 10% cheaper, 32 minutes faster). Both cost more than on 0.8.9, because the typed plan makes the planner dearer on a small change (&asymp; $5.5 in each run).</p>
+    <p class="note">This is three pairs, and identical runs can differ by about $2.50, so treat 21% as a trend, not a final number. Averaged over every run from plugin 0.8.1 on, including older plugin versions where Flash still had problems, the two setups are about even (<b>Opus-only $12.08</b>, 7 runs; <b>Opus&nbsp;+&nbsp;Flash $12.14</b>, 7 runs). Flash only pulled ahead once the 0.8.8 fixes stopped Opus wasting money around it. <b>A fourth medium pair on 0.9.3:</b> Opus&nbsp;+&nbsp;Flash &asymp; $12.56 against &asymp; $14.03 (Flash 10% cheaper, 32 minutes faster). Both cost more than on 0.8.9, because the typed plan makes the planner dearer on a small change (&asymp; $5.5 in each run).</p>
   </section>
 
   <section>
@@ -275,7 +275,7 @@
     <h2>What we changed, what happened, what came next</h2>
     <div class="stages">
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.7.3 &middot; 16&ndash;17 Sep</div><h3>Starting point</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.7.3</div><h3>Starting point</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Opus plans and reviews; the coding is handed to a cheaper model (Flash, or Sonnet as a trial).</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus-only: <b>$19.16</b>, 48 min</li><li>Opus + Sonnet: <b>$23.36</b>, 53 min</li><li>Opus + Flash: <b>$26.02</b>, 60 min</li></ul></div>
@@ -289,7 +289,7 @@
         <div class="next"><b>Next row fixes:</b> Rows 1&ndash;3 &mdash; let Flash save its own files and check its own work.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.7.4 &middot; 18 Sep</div><h3>Rows 1&ndash;3 &middot; Flash saves and checks its own work</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.7.4</div><h3>Rows 1&ndash;3 &middot; Flash saves and checks its own work</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Flash saves files directly; Opus reads only a short note.</li><li>The system tests Flash's code and asks Flash to retry, without Opus.</li><li>Opus memory kept 1 hour instead of 5 minutes.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus-only (Run A): <b>$22.91</b>, 71 min</li><li>Opus + Flash (Run B): <b>$20.75</b>, 51 min</li></ul></div>
@@ -303,7 +303,7 @@
         <div class="next"><b>Next row fixes:</b> Row 4 &mdash; the plan describes the code instead of containing it.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.7.5 &middot; 18 Sep</div><h3>Row 4 &middot; Plan describes code, a checker enforces it</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.7.5</div><h3>Row 4 &middot; Plan describes code, a checker enforces it</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Planner writes short per-file instructions, not code.</li><li>A plan checker rejects plans with large amounts of code.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Run 9): $24.76 &mdash; invalid, the laptop froze mid-run</li><li>Opus-only (Run 10): <b>$17.96</b>, 50 min</li><li>Opus + Flash re-run (Run 11): <b>$17.41</b>, 53 min</li></ul></div>
@@ -331,7 +331,7 @@
         <div class="next"><b>Next row fixes:</b> Rows 6&ndash;7.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.7.7 &middot; 21 Sep</div><h3>Rows 6&ndash;7 &middot; Automatic task splitting, small edits, Flash reads the code first</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.7.7</div><h3>Rows 6&ndash;7 &middot; Automatic task splitting, small edits, Flash reads the code first</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>A script splits the plan into tasks at no AI cost.</li><li>Flash gets only the lines that change, not whole files.</li><li>Flash scans up to 40 files and gives the planner a map.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Two attempts killed by laptop sleep</li><li>Run 12: invalid &mdash; an old helper server ignored the new edit mode</li><li>Opus + Flash (Run 13): <b>$18.77</b>, 65 min</li></ul></div>
@@ -345,7 +345,7 @@
         <div class="next"><b>Next row fixes:</b> Row 8 &mdash; make edits reliable and cut Flash's thinking.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.7.8 &middot; 21 Sep</div><h3>Row 8 &middot; More reliable edits</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.7.8</div><h3>Row 8 &middot; More reliable edits</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Retries start from the original file.</li><li>Whole-project checks run once at the end.</li><li>Large edits are split; Flash told to think less.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Run 14): <b>$17.05</b>, 38 min</li><li>Opus-only (Run 15): <b>$21.06</b>, 36 min</li></ul></div>
@@ -359,7 +359,7 @@
         <div class="next"><b>Next row fixes:</b> Row 9 &mdash; Opus-only skips Flash-only steps; Flash gets tasks in one batch.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.7.9 / 0.8.0 &middot; 21 Sep</div><h3>Row 9 &middot; Fair Opus-only, batched Flash</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.7.9 / 0.8.0</div><h3>Row 9 &middot; Fair Opus-only, batched Flash</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Opus-only skips the code scan and writes a short plan.</li><li>Flash receives all tasks at once and works on four in parallel.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus-only (Run 16): <b>$14.86</b>, 41 min</li><li>Opus + Flash (Run 17): <b>$15.93</b>, 43 min</li><li>Opus-only again (Run 18): <b>$17.40</b>, 45 min</li></ul></div>
@@ -373,7 +373,7 @@
         <div class="next"><b>Next row fixes:</b> Row 10 &mdash; fix the setup bug, shorten the Flash plan, planner corrects instead of rewriting.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.1 &middot; 23 Sep</div><h3>Row 10 &middot; Setup and planning cleanup</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.1</div><h3>Row 10 &middot; Setup and planning cleanup</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Batch tool added to the setup.</li><li>Shorter Flash plan.</li><li>Planner edits its plan in place instead of rewriting it.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Run 19): <b>$16.12</b>, 71 min</li><li>Opus + Flash (Run 20): <b>$13.90</b>, 59 min</li><li>Opus-only, 5-minute memory (Run 21): <b>$17.43</b>, 79 min</li></ul></div>
@@ -387,7 +387,7 @@
         <div class="next"><b>Next row fixes:</b> Row 11 &mdash; task splitter accepts more plan formats.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.2 &middot; 23 Sep</div><h3>Row 11 &middot; Task splitter improvements</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.2</div><h3>Row 11 &middot; Task splitter improvements</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Splitter reads more plan layouts and drops tasks outside the allowed files with a warning.</li><li>Cost collector can price the newest Opus model.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus-only (Run 22): <b>$10.78</b>, 47 min</li><li>Opus + Flash (Run 23): <b>$12.67</b>, 53 min</li></ul></div>
@@ -401,7 +401,7 @@
         <div class="next"><b>Next row fixes:</b> Rows 12&ndash;13 &mdash; the splitter reads the plan's edit sections, ignores line numbers in sentences, and code is formatted automatically.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.3 &middot; 23 Sep</div><h3>Row 12 &middot; Shorter Flash plan, automatic formatting</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.3</div><h3>Row 12 &middot; Shorter Flash plan, automatic formatting</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>The Flash plan must be the same size as the Opus-only plan.</li><li>Line numbers in ordinary sentences are no longer read as edit spots.</li><li>Code is formatted automatically before each check, at no AI cost.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus-only (Run 24): <b>$13.17</b>, 57 min</li></ul></div>
@@ -415,7 +415,7 @@
         <div class="next"><b>Next row fixes:</b> Row 13 &mdash; the splitter reads that edit layout.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.4 &middot; 23&ndash;24 Sep</div><h3>Row 13 &middot; Splitter reads every edit layout</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.4</div><h3>Row 13 &middot; Splitter reads every edit layout</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>The splitter understands the planner's &ldquo;Edit&rdquo; sections, so small edits stay small instead of becoming full-file rewrites.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Run 25): <b>$17.52</b>, 65 min</li><li>Opus-only (Run 26b): <b>$11.60</b>, 50 min</li></ul></div>
@@ -429,7 +429,7 @@
         <div class="next"><b>Next row fixes:</b> Row 14 &mdash; the plan spells out every import, and a script checks them.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.5 &middot; 24 Sep</div><h3>Row 14 &middot; Exact imports and an import checker</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.5</div><h3>Row 14 &middot; Exact imports and an import checker</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>The plan writes out exactly how each file imports the others.</li><li>A free script checks every import before Opus looks at the result.</li><li>The Flash code-scan step was dropped; the planner reads the code itself.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Run 27b): <b>$11.94</b>, 59 min</li></ul></div>
@@ -443,7 +443,7 @@
         <div class="next"><b>Next row fixes:</b> Row 15 &mdash; fix the line-wrap bug.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.6 &middot; 24 Sep</div><h3>Row 15 &middot; Line-wrap bug fixed</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.6</div><h3>Row 15 &middot; Line-wrap bug fixed</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>The splitter reads a &ldquo;depends on&rdquo; line even when it wraps onto a second line, and warns when a task has none.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Run 28): <b>$15.32</b>, 64 min</li><li>Opus-only (Run 29): <b>$14.18</b>, 69 min</li></ul></div>
@@ -457,7 +457,7 @@
         <div class="next"><b>Next row fixes:</b> Rows 16&ndash;17 &mdash; leaner reviewers, and the manager never stops to wait.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.7 / 0.8.8 &middot; 24 Sep</div><h3>Rows 16&ndash;17 &middot; Leaner reviewers, no pauses, cheaper hand-off</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.7 / 0.8.8</div><h3>Rows 16&ndash;17 &middot; Leaner reviewers, no pauses, cheaper hand-off</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Reviewers load all changes in one step, have a step limit (about 12 and 10), and don't re-run tests.</li><li>The cost counter works on Opus-only runs without hand help.</li><li>The manager waits for reviewers and tests without stopping.</li><li>Flash gets a file location instead of the retyped task list, and reports back in one line per task.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Run 30): <b>$9.79</b>, 46 min</li><li>Opus-only (Run 31): <b>$13.98</b>, 77 min</li></ul></div>
@@ -471,7 +471,7 @@
         <div class="next"><b>Next row fixes:</b> Row 18 &mdash; Flash can delete lines; the splitter accepts everyday words.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.9 &middot; 24 Sep</div><h3>Row 18 &middot; Flash deletes lines, splitter accepts everyday words</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.9</div><h3>Row 18 &middot; Flash deletes lines, splitter accepts everyday words</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Flash can delete or replace several lines, so small clean-ups stay with Flash.</li><li>&ldquo;Create&rdquo; or &ldquo;modify&rdquo; in a plan no longer forces a redo.</li><li>The cost counter finds the run's name on Opus-only runs.</li><li>The web test command was corrected.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Run 32): <b>$9.36</b>, 61 min</li><li>Opus-only (Run 33b): <b>$9.55</b> (about $7.37 for the run itself), 71 min</li><li>Opus + Flash (Run 34): <b>$8.37</b> (about $7.47 for the run itself), 47 min</li><li>Opus-only (Run 35): <b>$11.28</b> (about $10.20 for the run itself), 64 min</li></ul></div>
@@ -485,7 +485,7 @@
         <div class="next"><b>Next row fixes:</b> Row 19 &mdash; 1-hour memory becomes the default, then test small and large jobs.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.10 &middot; 25&ndash;29 Sep</div><h3>Row 19 &middot; 1-hour memory everywhere, small and large jobs</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.10</div><h3>Row 19 &middot; 1-hour memory everywhere, small and large jobs</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Every shipped policy, Opus-only included, keeps Opus&rsquo;s memory for 1 hour.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Small job, 2 pairs: Flash &asymp; 10% cheaper (pair 2 a tie)</li><li>Large job 1: Flash &asymp; 7% cheaper</li><li>Large job 2: Opus-only &asymp; 28% cheaper ($11.94 vs $16.68)</li></ul></div>
@@ -498,7 +498,7 @@
         <div class="next"><b>Next row fixes:</b> Row 20 &mdash; no trimming, line-ending-aware checks, re-run large job 2.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.11 &middot; 29&ndash;30 Sep</div><h3>Row 20 &middot; No plan trimming, line-ending-aware checks</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.11</div><h3>Row 20 &middot; No plan trimming, line-ending-aware checks</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>The planner writes its plan once and never trims it for length.</li><li>The task splitter adds the right line-ending setting to formatting checks automatically.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Large2-C): <b>$13.81</b> (about $12.64 for the run itself), 75 min</li><li>Opus-only (Large2-D): <b>$15.26</b> (about $14.63 for the run itself), 74 min</li></ul></div>
@@ -512,7 +512,7 @@
         <div class="next"><b>Next row fixes:</b> Row 21 &mdash; fix those three issues, then one check pair.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.8.12 &middot; 30 Sep</div><h3>Row 21 &middot; Docs skip the formatter, repairs auto-format, companion files allowed</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.8.12</div><h3>Row 21 &middot; Docs skip the formatter, repairs auto-format, companion files allowed</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Docs files no longer get a formatting check they can never pass.</li><li>The server adds the auto-format step to repair tasks the manager writes by hand.</li><li>At the start, the plugin proposes the API spec and assistant-tool docs as allowed files.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Large2-E): <b>$11.71</b> (about $10.78 for the run itself), 79 min</li><li>Opus-only (Large2-F): <b>$17.77</b> (about $17.09 for the run itself), 72 min</li></ul></div>
@@ -526,7 +526,7 @@
         <div class="next"><b>Next row fixes:</b> Row 22 &mdash; carry the end-of-run checks into the tasks, then a new pair.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.9.0 &middot; 1&ndash;2 Oct</div><h3>Row 22 &middot; End-of-run checks carried into the tasks, memory setting built in</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.9.0</div><h3>Row 22 &middot; End-of-run checks carried into the tasks, memory setting built in</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>The plan&rsquo;s end-of-run checks (whole-project type checks, full test suites) now travel with the tasks.</li><li>The 1-hour memory setting lives inside the plugin&rsquo;s helper files, so no settings file has to be changed and no restart is needed.</li><li>The code-scan step is removed from every setup.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Large2-H): <b>$11.28</b>, 92 min</li><li>Opus-only (Large2-J): <b>$20.62</b> (about $20.19 for the run itself), 89 min</li></ul></div>
@@ -540,7 +540,7 @@
         <div class="next"><b>Next row fixes:</b> Row 23 &mdash; give Opus-only fresh helpers for the file writing, and run both sides the same way.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.9.1 &middot; 2&ndash;5 Oct</div><h3>Row 23 &middot; Opus-only hands the file writing to fresh helpers</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.9.1</div><h3>Row 23 &middot; Opus-only hands the file writing to fresh helpers</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Opus-only only: the manager hands the tasks to fresh &ldquo;packet-worker&rdquo; helpers in groups of up to six. Each helper starts with an empty memory, so it does not re-read the whole run.</li><li>Each helper auto-formats a file before checking it.</li><li>Opus&nbsp;+&nbsp;Flash is unchanged.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Large2-K): <b>$13.86</b> (about $12.64 for the run itself), 87 min</li><li>Opus-only (Large2-L): <b>$18.50</b> (about $17.62 for the run itself), 89 min</li><li>Opus + Flash (Large2-N): <b>$14.97</b> (about $13.73 for the run itself), 75 min</li><li>Opus-only (Large2-O): <b>$22.27</b> (about $20.84 for the run itself), 127 min</li></ul></div>
@@ -554,7 +554,7 @@
         <div class="next"><b>Next row fixes:</b> Row 24 &mdash; a typed, checked plan, and the new-app typists for the file writing.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.9.2 &middot; 5&ndash;6 Oct</div><h3>Row 24 &middot; Existing-app runs typed and checked the way new-app runs are</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.9.2</div><h3>Row 24 &middot; Existing-app runs typed and checked the way new-app runs are</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>The planner hands over a typed change plan in checked sections; code turns it into the task list.</li><li>The file writing goes to the new-app &ldquo;typists&rdquo;: Flash for Opus&nbsp;+&nbsp;Flash, a lean, tool-free Opus call for Opus-only (in place of Row 23&rsquo;s fresh helpers).</li><li>Edits are exact search-and-replace pairs; review findings become repair tasks by code.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus-only (Large2-P): <b>$18.63</b> (about $16.32 for the run itself), 77 min</li><li>Opus + Flash (Large2-Q): <b>$16.18</b> (about $14.48 for the run itself), 131 min</li><li>Opus + Flash (Large2-R): <b>$14.56</b> (about $12.76 for the run itself), 83 min</li><li>New 43-file feature, Opus + Flash (New1-A): <b>$19.95</b> (about $17.44), 130 min</li><li>New 43-file feature, Opus-only (New1-C): <b>$26.84</b> (about $22.56, sleep-corrected), about 143 min of work</li></ul></div>
@@ -568,7 +568,7 @@
         <div class="next"><b>Next row fixes:</b> Row 25 &mdash; every job type on the typed flow, and a fresh database for each check that needs one.</div>
       </article>
       <article class="stage">
-        <div class="stage-h"><div class="lbl">Plugin 0.9.3 &middot; 6 Oct</div><h3>Row 25 &middot; Every job on the typed flow</h3></div>
+        <div class="stage-h"><div class="lbl">Plugin 0.9.3</div><h3>Row 25 &middot; Every job on the typed flow</h3></div>
         <div class="stage-b">
           <div><h4>What we implemented</h4><ul><li>Every existing-app job type (docs, bugfix, feature-extend, feature-new, refactor, test, deps) runs on the Row 24 flow, with its review fixes.</li><li>Follow-up fix (e632e36): each check that needs a database gets a fresh database of its own.</li></ul></div>
           <div><h4>Runs and results</h4><ul><li>Opus + Flash (Med-A): <b>$15.25</b> (about $12.56 for the run itself), 92 min</li><li>Opus-only (Med-B): <b>$15.86</b> (about $14.03 for the run itself), 124 min</li></ul></div>
@@ -586,22 +586,22 @@
 
   <section>
     <div class="lbl">Building a new app from an empty folder</div>
-    <h2>New-app runs (25 Sep &ndash; 6 Oct)</h2>
+    <h2>New-app runs</h2>
     <p>Everything above measures a change to an existing app. This is the same question for a new app built from an empty folder with <code>/mmo:greenfield</code>, from one written brief: a travel-operations service of about 115 files, and a small notes service with a database (30&ndash;45 files). The figure is the full bill.</p>
     <div class="tw">
       <table class="fit">
         <thead><tr><th>Plugin</th><th class="n">Opus-only</th><th class="n">Opus + Flash</th><th>Result</th></tr></thead>
         <tbody>
-          <tr><td>0.7.6 &middot; 25 Sep</td><td class="n">$36.52<span class="t">88 min &middot; 95 tests pass</span></td><td class="n">$25.12<span class="t">78 min &middot; 153 tests pass</span></td><td><span class="chip c wrap">Flash 31% cheaper</span></td></tr>
-          <tr><td>0.9.0 &middot; 2 and 5 Oct</td><td class="n">$38.16<span class="t">102 min &middot; 216 tests pass</span></td><td class="n">$34.11<span class="t">80 min &middot; 151 tests pass</span></td><td><span class="chip c wrap">Flash 11% cheaper</span></td></tr>
-          <tr><td>0.9.3 &middot; 6 Oct (different builds)</td><td class="n">$48.86<span class="t">201 min &middot; all 15 checks pass &middot; trial database fix</span></td><td class="n">$37.87<span class="t">91 min &middot; test suite would not load</span></td><td><span class="chip e wrap">Not a fair pair</span></td></tr>
-          <tr><td>0.9.3 (e632e36) &middot; notes service &middot; 6 Oct</td><td class="n">$14.42<span class="t">50 min &middot; 57 tests pass</span></td><td class="n">$14.19<span class="t">56 min &middot; 68 tests pass</span></td><td><span class="chip e wrap">Tie</span></td></tr>
+          <tr><td>0.7.6</td><td class="n">$36.52<span class="t">88 min &middot; 95 tests pass</span></td><td class="n">$25.12<span class="t">78 min &middot; 153 tests pass</span></td><td><span class="chip c wrap">Flash 31% cheaper</span></td></tr>
+          <tr><td>0.9.0</td><td class="n">$38.16<span class="t">102 min &middot; 216 tests pass</span></td><td class="n">$34.11<span class="t">80 min &middot; 151 tests pass</span></td><td><span class="chip c wrap">Flash 11% cheaper</span></td></tr>
+          <tr><td>0.9.3 (different builds)</td><td class="n">$48.86<span class="t">201 min &middot; all 15 checks pass &middot; trial database fix</span></td><td class="n">$37.87<span class="t">91 min &middot; test suite would not load</span></td><td><span class="chip e wrap">Not a fair pair</span></td></tr>
+          <tr><td>0.9.3 (e632e36) &middot; notes service</td><td class="n">$14.42<span class="t">50 min &middot; 57 tests pass</span></td><td class="n">$14.19<span class="t">56 min &middot; 68 tests pass</span></td><td><span class="chip e wrap">Tie</span></td></tr>
           <tr><td>0.7.6 &middot; small app (unit converter)</td><td class="n">$6.52<span class="t">18 min</span></td><td class="n">$8.25<span class="t">28 min</span></td><td><span class="chip d wrap">Opus cheaper by $1.73</span></td></tr>
           <tr><td>0.7.6 &middot; small app (quick demo)</td><td class="n">$4.92<span class="t">17 min</span></td><td class="n">$5.70<span class="t">19 min</span></td><td><span class="chip d wrap">Opus cheaper by $0.78</span></td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">Each large result is one pair, so treat it as a first reading. Both sides cost more on 0.9.0 than on 0.7.6. On the 5 Oct Opus-only run the final &ldquo;start the app and try it&rdquo; check could not run: it resets a test database, and the database tool (Prisma) refuses that command from an AI assistant without the person&rsquo;s consent. Three of ten acceptance items are marked failed for that reason; tests, lint and build passed, and the run spent four retries on the blocked check. Commit e632e36 (now on develop) fixes this: each check that needs a database gets a fresh one, so nothing is reset; both notes-service runs and the 0.9.3 Opus-only travel run (a trial build of that fix) passed every check. <b>The 6 Oct travel runs are not a fair pair:</b> the Opus-only run used the trial build and the Flash run did not. The Flash run&rsquo;s app picked a framework version (NestJS 12) whose module format the test runner refuses, so 19 of 22 test suites could not start; the app built, passed lint and passed its start-and-try check once database consent was given by hand. The Opus-only run took 201 minutes, the longest in the study. <b>Cost went up on newer plugins:</b> Opus&nbsp;+&nbsp;Flash $25.12 &rarr; $34.11 &rarr; $37.87, Opus-only $36.52 &rarr; $38.16 &rarr; $48.86. Not counted: a first Opus-only attempt on 0.9.0 ($32.12) whose tests never ran, and five Opus-only attempts (two on 0.9.0, three on 0.9.3) that were stopped or cut off part-way.</p>
+    <p class="note">Each large result is one pair, so treat it as a first reading. Both sides cost more on 0.9.0 than on 0.7.6. On the 0.9.0 Opus-only run the final &ldquo;start the app and try it&rdquo; check could not run: it resets a test database, and the database tool (Prisma) refuses that command from an AI assistant without the person&rsquo;s consent. Three of ten acceptance items are marked failed for that reason; tests, lint and build passed, and the run spent four retries on the blocked check. Commit e632e36 (now on develop) fixes this: each check that needs a database gets a fresh one, so nothing is reset; both notes-service runs and the 0.9.3 Opus-only travel run (a trial build of that fix) passed every check. <b>The 0.9.3 travel runs are not a fair pair:</b> the Opus-only run used the trial build and the Flash run did not. The Flash run&rsquo;s app picked a framework version (NestJS 12) whose module format the test runner refuses, so 19 of 22 test suites could not start; the app built, passed lint and passed its start-and-try check once database consent was given by hand. The Opus-only run took 201 minutes, the longest in the study. <b>Cost went up on newer plugins:</b> Opus&nbsp;+&nbsp;Flash $25.12 &rarr; $34.11 &rarr; $37.87, Opus-only $36.52 &rarr; $38.16 &rarr; $48.86. Not counted: a first Opus-only attempt on 0.9.0 ($32.12) whose tests never ran, and five Opus-only attempts (two on 0.9.0, three on 0.9.3) that were stopped or cut off part-way.</p>
   </section>
 
   <section>
@@ -661,7 +661,7 @@
         <li>Depends on a second provider: Google's Flash service was too busy 8 times in Row 18.</li>
       </ul></div>
     </div>
-    <p class="note">Every comparison rests on one to three runs per setup. Identical runs differ by up to $2.50, so a single gap under that means little. Over all fifteen same-job pairs from 24 Sep to 6 Oct, Opus&nbsp;+&nbsp;Flash won 12, tied 1 and lost 2. On large jobs Opus-only got more tasks right first time (89&ndash;100% vs 79&ndash;97%).</p>
+    <p class="note">Every comparison rests on one to three runs per setup. Identical runs differ by up to $2.50, so a single gap under that means little. Over all fifteen same-job pairs from plugin 0.8.8 on, Opus&nbsp;+&nbsp;Flash won 12, tied 1 and lost 2. On large jobs Opus-only got more tasks right first time (89&ndash;100% vs 79&ndash;97%).</p>
   </section>
 
   <section>
@@ -678,7 +678,7 @@
       <li><b>Most of the saving came from removing waste, not from delegation.</b><span>The changes that paid best helped both setups equally.</span></li>
       <li><b>Flash's own cost is not the main factor.</b><span>It ranged from $0.05 to $0.66 a run, while over 90% of the bill is Opus thinking, reading and planning.</span></li>
       <li><b>Removing Opus overhead helped both setups.</b><span>Exact imports and the import checker made Flash reliable, but leaner reviewers and no pauses cut Opus-only's cost just as much.</span></li>
-      <li><b>A gap under $2 means nothing on its own.</b><span>Identical runs vary by around $2.50. Over every run since 23 Sep the setups are even ($12.08 vs $12.14); the gap only opened after the 0.8.8 fixes.</span></li>
+      <li><b>A gap under $2 means nothing on its own.</b><span>Identical runs vary by around $2.50. Over every run from plugin 0.8.1 on the setups are even ($12.08 vs $12.14); the gap only opened after the 0.8.8 fixes.</span></li>
       <li><b>Quality held throughout.</b><span>All tests passed in every run, and the latest runs had zero serious review issues.</span></li>
     </ul>
   </section>
@@ -690,7 +690,7 @@
       <table>
         <thead><tr><th>Step</th><th>Why</th></tr></thead>
         <tbody>
-          <tr><td>Run a fair new-app pair on 0.9.3 with the database fix</td><td>The 6 Oct travel-operations runs were on different builds. A same-build pair on the large app tells whether Flash still saves on new apps.</td></tr>
+          <tr><td>Run a fair new-app pair on 0.9.3 with the database fix</td><td>The 0.9.3 travel-operations runs were on different builds. A same-build pair on the large app tells whether Flash still saves on new apps.</td></tr>
           <tr><td>Pin the generated app&rsquo;s framework versions</td><td>The 0.9.3 Flash travel run picked a framework version whose module format the test runner refuses.</td></tr>
           <tr><td>Fix the issues found in Row 24</td><td>Formatting check set aside on Windows line-ending files, repair tasks for a missing test aimed at the wrong file, the write lock blocking the launching chat.</td></tr>
         </tbody>
