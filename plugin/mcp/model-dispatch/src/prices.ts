@@ -29,6 +29,8 @@ export const PRICE_LIST_VERIFIED = "2026-09-14";
  * PRICE_LIST_VERIFIED.
  */
 export const OPUS_5_5_VERIFIED = "2026-09-26";
+/** When the Claude Sonnet 5.5 and Gemini 4 Argon rows were verified. Only those rows carry this date. */
+export const SONNET_5_5_ARGON_VERIFIED = "2026-11-02";
 export const ANTHROPIC_PRICING_URL = "https://platform.claude.com/docs/en/about-claude/pricing";
 export const GEMINI_PRICING_URL = "https://ai.google.dev/gemini-api/docs/pricing";
 /**
@@ -164,6 +166,8 @@ export const PRICE_LIST: PriceList = deepFreeze({
   "claude-opus-4-5":   claude(5, 6.25, 10, 0.5, 25),
   "claude-opus-4-1":   claude(15, 18.75, 30, 1.5, 75),
   "claude-opus-4":     claude(15, 18.75, 30, 1.5, 75),
+  // Base $2, 5m write $2.50, 1h write $4, cache read $0.10 (0.05x input on this model), output $10; US-only inference 1.1x.
+  "claude-sonnet-5-5": claude(2, 2.5, 4, 0.1, 10, US_ONLY).map((p) => ({ ...p, verified: SONNET_5_5_ARGON_VERIFIED })),
   "claude-sonnet-5":   claude(2, 2.5, 4, 0.2, 10, US_ONLY),
   "claude-sonnet-4-6": claude(3, 3.75, 6, 0.3, 15, US_ONLY),
   "claude-sonnet-4-5": claude(3, 3.75, 6, 0.3, 15),
@@ -179,6 +183,17 @@ export const PRICE_LIST: PriceList = deepFreeze({
   // 3.1 Flash-Lite, and others) stays unpriced until its period is added the
   // same way.
 
+  // Verified 2026-11-02 on both pages. Changelog "October 13, 2026": "Gemini 4 Argon
+  // (`gemini-4-argon`) generally available (GA)". AI Studio: input "$2.00 through November 30,
+  // 2026. $4.00 starting December 1, 2026."; output "$10.00 through November 30, 2026. $20.00
+  // starting December 1, 2026."; context caching "$0.10 through November 30, 2026. $0.20 starting
+  // December 1, 2026.". Vertex: "Gemini 4 Argon* through November 30, 2026" input $2.00, cached
+  // $0.10, output $10.00; "Gemini 4 Argon (Starting December 1, 2026)" input $4.00, cached $0.20,
+  // output $20.00. Vertex's asterisk: the first card is delivered as 50% credits back.
+  "gemini-4-argon": [
+    gemini("2026-10-13", "2026-11-30", 2, 0.1, 10),
+    gemini("2026-12-01", null, 4, 0.2, 20),
+  ].map((p) => ({ ...p, verified: SONNET_5_5_ARGON_VERIFIED })),
   // Changelog "September 2, 2026": "Gemini 3.8 Flash generally available (GA)".
   // AI Studio: input "$0.75 through December 31, 2026. $1.50 starting January
   // 1, 2027."; output "$3.75 through December 31, 2026. $7.50 starting January

@@ -87,6 +87,9 @@ const ANTHROPIC_EFFORT_TIERS = ["off", "low", "medium", "high", "xhigh", "max"];
 // tools/test/policy-console-presets.test.mjs fails when this list and the
 // directory disagree.
 const SHIPPED_PRESETS = [
+  "argon4-agsdk-only",
+  "argon4-plus-flash38",
+  "argon4-plus-sonnet55",
   "fable51-plus-flash-v38",
   "flash-agsdk-only",
   "flash-agsdk-only-v38",

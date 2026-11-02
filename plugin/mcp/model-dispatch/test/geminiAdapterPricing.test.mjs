@@ -273,6 +273,8 @@ test("opus-plus-flash-v38 is opus-plus-flash-v37 with the mechanical tier on Gem
 // $0.15 / $7.50 and $1.65 / $0.165 / $8.25.
 const r3 = (input, input_cached, output) => ({ input, input_cached, output });
 const VERTEX_ROWS = {
+  "gemini-4-argon|2026-10-13": { global: r3(2, 0.1, 10), nonGlobal: r3(2.2, 0.11, 11) },
+  "gemini-4-argon|2026-12-01": { global: r3(4, 0.2, 20), nonGlobal: r3(4.4, 0.22, 22) },
   "gemini-3.5-flash|2026-05-19": { global: r3(1.5, 0.15, 9), nonGlobal: r3(1.65, 0.165, 9.9) },
   "gemini-3.5-flash-lite|2026-07-21": { global: r3(0.3, 0.03, 2.5), nonGlobal: r3(0.33, 0.033, 2.75) },
   "gemini-3.7-flash|2026-08-13": { global: r3(0.75, 0.075, 3.75), nonGlobal: r3(0.825, 0.0825, 4.125) },
