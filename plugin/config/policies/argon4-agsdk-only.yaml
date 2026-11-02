@@ -1,6 +1,7 @@
 # Argon only floor — every file a run types routes to Gemini 4 Argon via the
-# Antigravity SDK agent adapter (Vertex ADC). Same shape as flash-agsdk-only-v38;
-# only the model changes.
+# Antigravity SDK agent adapter (Vertex ADC). Same shape as flash-agsdk-only-v38,
+# with two differences: the model, and the leaf pins region: global (v38 follows
+# GOOGLE_CLOUD_LOCATION).
 #
 # IMPORTANT: the rules below govern only what the dispatch server types: codegen,
 # tests, docs and debug. Requirements, the change spec, both reviews and the gates

@@ -15,7 +15,10 @@
 # rules name a Gemini model. No Claude model belongs in this file: the ladder's last
 # attempt goes to a policy's first Claude leaf (executor/tools.ts fallbackLeaf), so
 # one here would type files. With none, the last attempt follows the rules below.
-version: 1
+# Version 2: the greenfield passes on runs/argon4-pairings (ai-sdlc-multi-model-orchestration)
+# ran a different policy under this name as version 1 (other rules and model ids). Telemetry
+# records policy_name and policy_version, so this one is version 2 to keep the two apart.
+version: 2
 name: argon4-plus-flash38
 
 models:
