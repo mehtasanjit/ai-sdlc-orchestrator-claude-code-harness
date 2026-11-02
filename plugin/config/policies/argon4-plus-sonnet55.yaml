@@ -1,0 +1,121 @@
+# Multi-model — Gemini 4 Argon as an Antigravity SDK agent session (Vertex ADC), and
+# Claude Sonnet 5.5 through the local `claude` binary. argon4-plus-flash38 is the
+# other half of this pair; the two rule lists differ only in the executer's id, so a
+# comparison between them isolates the executer.
+#
+# IMPORTANT: Argon cannot be this policy's planner in a brownfield run. The rules
+# below govern only what the dispatch server types: codegen, tests, docs and debug.
+# Requirements, the change spec, both reviews and the gates run on the Claude Code
+# session's own model whatever the rules say. So a run is "Claude plans and reviews,
+# Sonnet types each file's first attempt, Argon takes the first retry and fix
+# rounds". The manifest.model_breakdown shows a row for the session's model and one
+# for Sonnet: they are different work and must not be read as one tier.
+#
+# A file's third attempt is always Sonnet's, whatever the rules say: the ladder forces
+# the last attempt onto a policy's first Claude leaf (executor/tools.ts fallbackLeaf,
+# apply.ts). A rule that hands work to Argon at retry 2 never fires, which is why
+# this policy escalates at retry 1 and sends debug to Argon from the start. A run
+# with no retry and no fix round calls Argon only at pre-flight.
+#
+# Run it under auth_mode=vendor. The driver check refuses estimated when the judgment
+# rules name a Gemini model, and pointing them at Sonnet would instead require the
+# helpers to run on Sonnet. Under vendor with no ANTHROPIC_API_KEY set, Sonnet still
+# types on this computer's Claude login.
+version: 1
+name: argon4-plus-sonnet55
+
+models:
+  - id: argon
+    adapter: antigravity-worker
+    model_name: gemini-4-argon
+    display_name: gemini-4-argon (Antigravity agent)
+    # Gemini 4 Argon introductory card, in force 13 Oct 2026 – 30 Nov 2026. From 1 Dec 2026 the
+    # price list bills 4.00 / 0.20 / 20.00; on that day this card must change to match, and
+    # test/prices.test.mjs fails until it does. A December run is not halted: it bills the list's
+    # card, and this card draws a price warning until it is changed. Output includes thinking
+    # tokens. Argon has implicit caching only, so input_cached is that rate.
+    pricing: { input: 2.00, input_cached: 0.10, output: 10.00 }
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing
+    pricing_last_verified: 2026-11-02
+    # Pinned, not left to GOOGLE_CLOUD_LOCATION: a regional endpoint bills +10%
+    # (applyVertexSurcharge).
+    region: global
+    # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so
+    # no `auth:` block.
+    worker_timeout_sec: 540
+    # No `reasoning:`: every typist runs at low effort (executor/tools.ts
+    # TYPIST_EFFORT), so a tier here would read as a setting and change nothing.
+    # No max_output_tokens_absolute — agent sessions manage their own per-turn
+    # limits.
+
+  - id: sonnet
+    adapter: claude-cli
+    model_name: claude-sonnet-5-5
+    display_name: claude-sonnet-5-5
+    # The worker's cost is its own token ledger priced from the price list (src/prices.ts). This
+    # card is not billed; it must equal claude-sonnet-5-5 on the list, and test/prices.test.mjs
+    # fails when it does not. Cache writes are 2.50 (5m) and 4.00 (1h).
+    pricing: { input: 2.00, input_cached: 0.10, output: 10.00 }
+    pricing_source: https://platform.claude.com/docs/en/about-claude/pricing
+    pricing_last_verified: 2026-11-02
+    max_output_tokens_absolute: 16000
+
+rules:
+  # Judgment tier → Argon. The server is never asked to route these in a brownfield
+  # run (see the header); they state the policy's intent and keep the phases out of
+  # the default rule's telemetry.
+  - when: { phase: requirements_analysis }
+    use: argon
+    reason: "Judgment-heavy, low volume"
+  - when: { phase: architecture_design }
+    use: argon
+    reason: "Foundational, decision-bearing"
+  - when: { phase: plan_task_packets }
+    use: argon
+    reason: "Needs full context to slice work cleanly"
+  - when: { phase: senior_code_review }
+    use: argon
+    reason: "Cross-file reasoning + judgment"
+  - when: { phase: security_review }
+    use: argon
+    reason: "Risk-bearing, low volume"
+
+  # Brownfield-mode phases.
+  - when: { phase: discovery }
+    use: argon
+    reason: "Judgment: understanding an unknown repo is high-stakes"
+  - when: { phase: change_plan }
+    use: argon
+    reason: "Judgment: delta design for feature-extend / refactor / deps"
+
+  # A failed attempt goes to Argon at the first retry: the only retry the ladder leaves
+  # it (see the header). These come before the stage rules because the first match wins.
+  - when: { phase: codegen, retry_count: { gte: 1 } }
+    use: argon
+    reason: "Escalation: the executer's attempt failed"
+  - when: { phase: tests, retry_count: { gte: 1 } }
+    use: argon
+    reason: "Escalation: the executer's attempt failed"
+  - when: { phase: docs, retry_count: { gte: 1 } }
+    use: argon
+    reason: "Escalation: the executer's attempt failed"
+
+  # Every file's first attempt, whatever its language, name or kind: who types a file
+  # depends on the stage alone.
+  - when: { phase: codegen }
+    use: sonnet
+    reason: "Executer tier — schema-driven boilerplate"
+  - when: { phase: tests }
+    use: sonnet
+    reason: "Executer tier — scaffold-heavy, pattern-based"
+  - when: { phase: docs }
+    use: sonnet
+    reason: "Executer tier — volume work"
+
+  # Fix rounds are review findings and failed checks: judgment, so they start on Argon.
+  - when: { phase: debug }
+    use: argon
+    reason: "Fix round: the finding needs judgment, not typing"
+
+  - default: argon
+    reason: "Unrecognized task — fail safe to Argon"

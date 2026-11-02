@@ -32,6 +32,8 @@ const GEMINI_URL = "https://ai.google.dev/gemini-api/docs/pricing";
 const DAY = "2026-09-14";
 // Opus 5.5's row, from the same page, has its own verified date; the rest of the list keeps DAY.
 const OPUS_5_5_DAY = "2026-09-26";
+// Sonnet 5.5's and Argon's rows have their own verified date too.
+const SONNET_5_5_ARGON_DAY = "2026-11-02";
 const STD = { speed: "standard", service_tier: "standard", inference_geo: "not_available" };
 
 /** Build the pricing object from the page's column order: base input, 5m write, 1h write, cache read, output. */
@@ -122,6 +124,7 @@ const CLAUDE_PAGE = {
   "claude-opus-4-1":    card(15, 18.75, 30, 1.5, 75),
   "claude-opus-4":      card(15, 18.75, 30, 1.5, 75),
   "claude-opus-5-5":    card(4, 5, 8, 0.2, 20),
+  "claude-sonnet-5-5":  card(2, 2.5, 4, 0.1, 10),  // verified on SONNET_5_5_ARGON_DAY; cache read is 0.05x input on this model
   "claude-sonnet-5":    card(2, 2.5, 4, 0.2, 10),
   "claude-sonnet-4-6":  card(3, 3.75, 6, 0.3, 15),
   "claude-sonnet-4-5":  card(3, 3.75, 6, 0.3, 15),
@@ -142,7 +145,7 @@ test("T2 every Claude rate equals Anthropic's price page as verified 2026-09-14 
     assert.deepEqual(r.pricing, expected, id);
     assert.deepEqual(r.model, { id, tag: null, snapshotDate: null });
     assert.equal(r.period.source_url, ANTHROPIC_URL, id);
-    assert.equal(r.period.verified, id === "claude-opus-5-5" ? OPUS_5_5_DAY : DAY, id);
+    assert.equal(r.period.verified, id === "claude-opus-5-5" ? OPUS_5_5_DAY : id === "claude-sonnet-5-5" ? SONNET_5_5_ARGON_DAY : DAY, id);
     assert.equal(r.period.to, null, `${id}: no end date is published`);
     assert.deepEqual(r.applied_modifiers, { speed: "standard", service_tier: "standard", inference_geo: "not_available", multiplier: 1, defaulted: [] });
   }
@@ -229,11 +232,17 @@ const GEMINI_PAGE = {
     { from: "2026-08-13", to: "2026-12-31", rates: gcard(0.75, 0.075, 3.75) },
     { from: "2027-01-01", to: null, rates: gcard(1.5, 0.15, 7.5) },
   ],
+  "gemini-4-argon": [
+    { from: "2026-10-13", to: "2026-11-30", rates: gcard(2, 0.1, 10) },
+    { from: "2026-12-01", to: null, rates: gcard(4, 0.2, 20) },
+  ],
   "gemini-3.5-flash": [{ from: "2026-05-19", to: null, rates: gcard(1.5, 0.15, 9) }],
   "gemini-3.5-flash-lite": [{ from: "2026-07-21", to: null, rates: gcard(0.3, 0.03, 2.5) }],
 };
 
-test("T2 the list carries exactly these Gemini periods, each equal to Google's pages as verified 2026-09-14", () => {
+const verifiedOn = (id) => (id === "gemini-4-argon" ? SONNET_5_5_ARGON_DAY : DAY);
+
+test("T2 the list carries exactly these Gemini periods, each equal to Google's pages as verified", () => {
   const geminiIds = Object.keys(PRICE_LIST).filter((id) => id.startsWith("gemini-")).sort();
   assert.deepEqual(geminiIds, Object.keys(GEMINI_PAGE).sort());
   for (const [id, expected] of Object.entries(GEMINI_PAGE)) {
@@ -245,7 +254,7 @@ test("T2 the list carries exactly these Gemini periods, each equal to Google's p
     assert.deepEqual(listed, expected, id);
     for (const p of PRICE_LIST[id]) {
       assert.equal(p.source_url, GEMINI_URL, id);
-      assert.equal(p.verified, DAY, id);
+      assert.equal(p.verified, verifiedOn(id), id);
       assert.equal(p.web_search_per_request, undefined, `${id}: the list has no per-search price for Gemini`);
     }
     // Each period prices on its own first and last day, with no multiplier.
@@ -253,7 +262,7 @@ test("T2 the list carries exactly these Gemini periods, each equal to Google's p
       for (const day of to === null ? [from] : [from, to]) {
         const r = priced(id, day, {});
         assert.deepEqual(r.pricing, rates, `${id} on ${day}`);
-        assert.deepEqual(r.period, { from, to, source_url: GEMINI_URL, verified: DAY }, `${id} on ${day}`);
+        assert.deepEqual(r.period, { from, to, source_url: GEMINI_URL, verified: verifiedOn(id) }, `${id} on ${day}`);
         assert.equal(r.applied_modifiers.multiplier, 1, `${id} on ${day}`);
       }
     }

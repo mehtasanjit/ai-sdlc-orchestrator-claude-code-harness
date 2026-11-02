@@ -1,0 +1,85 @@
+# Argon only floor — every file a run types routes to Gemini 4 Argon via the
+# Antigravity SDK agent adapter (Vertex ADC). Same shape as flash-agsdk-only-v38;
+# only the model changes.
+#
+# IMPORTANT: the rules below govern only what the dispatch server types: codegen,
+# tests, docs and debug. Requirements, the change spec, both reviews and the gates
+# run on the Claude Code session's own model whatever the rules say, so a brownfield
+# run under this policy is "Claude plans and reviews, Argon types". The
+# manifest.model_breakdown shows a Claude row for that work; it is expected, and it
+# is most of the run's cost.
+#
+# Run it under auth_mode=vendor: the driver check refuses estimated when the judgment
+# rules name a Gemini model. No Claude model belongs in this file: the ladder's last
+# attempt goes to a policy's first Claude leaf (executor/tools.ts fallbackLeaf), so
+# one here would type files. With none, the last attempt stays on Argon.
+version: 1
+name: argon4-agsdk-only
+
+models:
+  - id: argon
+    adapter: antigravity-worker
+    model_name: gemini-4-argon
+    display_name: gemini-4-argon (Antigravity agent)
+    # Gemini 4 Argon introductory card, in force 13 Oct 2026 – 30 Nov 2026. From 1 Dec 2026 the
+    # price list bills 4.00 / 0.20 / 20.00; on that day this card must change to match, and
+    # test/prices.test.mjs fails until it does. A December run is not halted: it bills the list's
+    # card, and this card draws a price warning until it is changed. Output includes thinking
+    # tokens. Argon has implicit caching only, so input_cached is that rate.
+    pricing: { input: 2.00, input_cached: 0.10, output: 10.00 }
+    pricing_source: https://ai.google.dev/gemini-api/docs/pricing
+    pricing_last_verified: 2026-11-02
+    # Pinned, not left to GOOGLE_CLOUD_LOCATION: a regional endpoint bills +10%
+    # (applyVertexSurcharge).
+    region: global
+    # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so
+    # no `auth:` block.
+    worker_timeout_sec: 540
+    # No `reasoning:`: every typist runs at low effort (executor/tools.ts
+    # TYPIST_EFFORT), so a tier here would read as a setting and change nothing.
+    # No max_output_tokens_absolute — agent sessions manage their own per-turn
+    # limits.
+
+rules:
+  # Every phase → argon. Explicit rules per phase (not just a default) so
+  # telemetry rollups show the routing decision was intentional per-phase.
+  - when: { phase: requirements_analysis }
+    use: argon
+    reason: "Floor tier: judgment routed to Argon agent"
+  - when: { phase: architecture_design }
+    use: argon
+    reason: "Floor tier: judgment routed to Argon agent"
+  - when: { phase: plan_task_packets }
+    use: argon
+    reason: "Floor tier: judgment routed to Argon agent"
+  - when: { phase: senior_code_review }
+    use: argon
+    reason: "Floor tier: judgment routed to Argon agent"
+  - when: { phase: security_review }
+    use: argon
+    reason: "Floor tier: judgment routed to Argon agent"
+
+  # Brownfield-mode phases.
+  - when: { phase: discovery }
+    use: argon
+    reason: "Floor tier: brownfield discovery routed to Argon agent"
+  - when: { phase: change_plan }
+    use: argon
+    reason: "Floor tier: brownfield change plan routed to Argon agent"
+
+  # Mechanical tier.
+  - when: { phase: codegen }
+    use: argon
+    reason: "Mechanical tier — all codegen task types"
+  - when: { phase: tests }
+    use: argon
+    reason: "Mechanical tier"
+  - when: { phase: docs }
+    use: argon
+    reason: "Mechanical tier"
+  - when: { phase: debug }
+    use: argon
+    reason: "Mechanical tier — no escalation; this policy is the floor"
+
+  - default: argon
+    reason: "Single-model floor policy"
