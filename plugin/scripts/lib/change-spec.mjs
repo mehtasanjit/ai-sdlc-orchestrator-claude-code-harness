@@ -254,7 +254,10 @@ const offLimitsLabel = (hit) => `${hit.source === "hardcoded" ? "always" : "the 
 
 // Folders the search for another name of a refused file skips: git's own store (refused whole) and installed
 // dependencies and caches, which hold no file of the person's.
-const NAME_SEARCH_SKIP = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".next", ".nuxt", ".turbo", ".cache", "coverage"]);
+// The search for another name of a refused file passes over only git's store and installed dependencies, which hold no
+// file of the project's own: a refused file can sit in a build or cache folder (a copied .env), and a hard link to it is
+// that file (review: a link to coverage/.env was read).
+const NAME_SEARCH_SKIP = new Set([".git", "node_modules", ".venv", "venv"]);
 const REFUSED_FILE_IDS_MS = 60_000;
 const refusedFileIds = new Map();
 
@@ -310,9 +313,19 @@ function offLimitsOf(projectRoot, p, offLimits, base = HARDCODED_OFF_LIMITS) {
  * depth) or the live contract's off_limits — the one read rule for everything a model is sent (the server's
  * hydrateInputs applies the same). The run's own folder, `.sdlc/runs/<run-id>/`, is exempt: its briefs live there.
  */
+/** The project baseline's folder (discovery writes it; agents/brownfield-architect.md reads it). */
+const BASELINE = ".sdlc/baseline/";
+
 export function readRefusal(projectRoot, runId, p, offLimits = liveContract(projectRoot)?.off_limits ?? []) {
   const own = typeof runId === "string" ? `.sdlc/runs/${runId}/` : null;
   if (own && p.startsWith(own) && (realRel(projectRoot, p) ?? p).startsWith(own)) return null;
+  // The project baseline is discovery's record of the project, which the brownfield architect's instructions read: the
+  // contract's list (whose default holds .sdlc/**) does not keep it from a model, the always list does, and a link out
+  // of it is judged where it leads (review: the Gemini architect could not read .sdlc/baseline/stack-profile.md).
+  if (p.startsWith(BASELINE) && (realRel(projectRoot, p) ?? p).startsWith(BASELINE)) {
+    const why = offLimitsOf(projectRoot, p, [], READ_OFF_LIMITS);
+    return why ? `${p} is off-limits (${why})` : null;
+  }
   // A model reads by the read list: the always-off-limits list and every credential file.
   const why = offLimitsOf(projectRoot, p, offLimits, READ_OFF_LIMITS);
   return why ? `${p} is off-limits (${why})` : null;

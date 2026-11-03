@@ -229,6 +229,10 @@ export function readOffLimits(rel: string, binding: { contract: any; runId: stri
   for (const p of READ_OFF_LIMITS) if (matchesAtAnyDepth(name, foldName(p), true)) return `off-limits (hardcoded): ${p}`;
   if (!binding) return null;
   if (binding.runId && name.startsWith(`.sdlc/runs/${foldName(binding.runId)}/`)) return null;
+  // The project baseline (discovery's record of the project, which the brownfield architect reads) is not the
+  // contract's to keep from a model; the always list above still is. A link out of it is judged where it leads, by
+  // the caller's real-path check (modelReadOf).
+  if (name.startsWith(".sdlc/baseline/")) return null;
   const patterns: unknown[] = Array.isArray(binding.contract?.off_limits) ? binding.contract.off_limits : [];
   const off = patterns.find((p): p is string => typeof p === "string" && matchGlob(name, foldName(p), true));
   return off ? `off-limits (contract): ${off}` : null;
@@ -239,8 +243,10 @@ function foldName(s: string): string {
   return s.normalize("NFC").toUpperCase().toLowerCase();
 }
 
-// Folders the search for another name of a refused file skips: git's store and installed dependencies and caches.
-const NAME_SEARCH_SKIP = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".next", ".nuxt", ".turbo", ".cache", "coverage"]);
+// Folders the search for another name of a refused file skips: git's store and installed dependencies only, which hold
+// no file of the project's own. A refused file can sit in a build or cache folder (a copied .env), and a hard link to it
+// is that file (review: a link to coverage/.env was read).
+const NAME_SEARCH_SKIP = new Set([".git", "node_modules", ".venv", "venv"]);
 
 /**
  * Whether a file with more than one name is the same file as an off-limits one: a hard link to `.env` under another

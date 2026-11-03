@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -310,4 +310,30 @@ test("git_diff shows the files the run created, ignores line-ending changes, and
 test("the brownfield security reviewer has the file check its instructions allow", async () => {
   const { ROLE_TOOLS } = await import(pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "thinking-tools.mjs")).href);
   assert.ok(ROLE_TOOLS["brownfield-security-reviewer"].includes("run_file_check"));
+});
+
+test("under a run's contract the project baseline is read as the Claude architect reads it; the rest of .sdlc stays refused", async () => {
+  const root = project();
+  mkdirSync(join(root, ".sdlc", "baseline"), { recursive: true });
+  mkdirSync(join(root, ".sdlc", "local"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "baseline", "stack-profile.md"), "# Stack\nNestJS 11\n");
+  writeFileSync(join(root, ".sdlc", "baseline", ".env"), "KEY=1\n");
+  writeFileSync(join(root, ".sdlc", "local", "write-contract.json"), JSON.stringify({ schema_version: 1, active: true, mode: "brownfield", run_id: "r1", strict: true, allowlist: ["src/**"], off_limits: [".sdlc/**"] }));
+  symlinkSync(join("..", "local", "write-contract.json"), join(root, ".sdlc", "baseline", "contract.md"));
+  const t = tools(root, "brownfield-architect");
+  assert.match((await t.call("read_file", { path: ".sdlc/baseline/stack-profile.md" })).result, /NestJS 11/);
+  assert.match((await t.call("read_file", { path: ".sdlc/local/write-contract.json" })).error, /off-limits/);
+  assert.match((await t.call("read_file", { path: ".sdlc/baseline/contract.md" })).error, /off-limits/, "a link out of the baseline is judged where it leads");
+  assert.match((await t.call("read_file", { path: ".sdlc/baseline/.env" })).error, /off-limits/, "the always list holds inside it");
+});
+
+test("another name for a refused file is found wherever that file sits, a build or cache folder included", async () => {
+  const root = project();
+  mkdirSync(join(root, "coverage"));
+  writeFileSync(join(root, "coverage", ".env"), "STRIPE_KEY=sk_live_x\n");
+  linkSync(join(root, "coverage", ".env"), join(root, "src", "notes.txt"));
+  const t = tools(root, "senior-reviewer");
+  assert.match((await t.call("read_file", { path: "src/notes.txt" })).error, /hard link/);
+  const { hydrateInputs } = await import(pathToFileURL(resolve(HERE, "..", "dist", "apply.js")).href);
+  assert.throws(() => hydrateInputs({ id: "p", inputs: [{ path: "src/notes.txt", reason: "x" }] }, root), /hard link/);
 });
