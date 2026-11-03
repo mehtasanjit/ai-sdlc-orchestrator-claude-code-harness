@@ -1079,7 +1079,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
       }
       case "execute_judgment": {
-        const a = args as any;
+        // The agent runs in a scratch clone, so a telemetry_path relative to the project (where its brief and evidence
+        // are staged) would not resolve from the worker's folder.
+        const a0j = args as any;
+        const a = a0j?.telemetry_path && a0j.project_root ? { ...a0j, telemetry_path: resolvePath(a0j.project_root, a0j.telemetry_path) } : a0j;
         const { policy, run } = runFor(a);
         const executorCtx = {
           run: () => runState,

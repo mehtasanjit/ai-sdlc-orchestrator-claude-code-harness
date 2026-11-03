@@ -141,12 +141,11 @@ test("a policy that splits the judgment tier across models is an error, not a vo
   });
 });
 
-test("a judgment tier no Claude Code subagent can execute is an error directing to vendor mode", () => {
+test("a judgment tier routed entirely to another vendor, with no driver: block, is an error naming the block", () => {
   withPolicy(NON_ANTHROPIC_POLICY, (root) => {
     const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "gemini-3.5-flash" });
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /not a model Claude Code can run in-session/);
-    assert.match(r.stderr, /--auth=vendor/);
+    assert.match(r.stderr, /no driver: block/);
   });
 });
 
@@ -314,56 +313,73 @@ test("no stranded-value note appears when the project has no settings file", () 
 });
 
 
-// Under vendor, thinking steps routed to an agent run there (execute_judgment); the session is still checked, against
-// the policy's Claude-routed thinking steps or its driver: block.
+// Thinking steps routed to another vendor run on the server (execute_judgment) in both auth modes; the session is
+// checked against the policy's Claude-routed thinking steps or its driver: block.
 const AGENT_WITH_DRIVER = NON_ANTHROPIC_POLICY.replace("name: check-agentic\n", "name: check-agentic\ndriver:\n  model_name: claude-opus-5-5\n");
 
-test("vendor: a policy whose thinking steps all name an agent is checked against its driver: block", () => {
+test("a policy whose thinking steps all name an agent is checked against its driver: block", () => {
   withPolicy(AGENT_WITH_DRIVER, (root) => {
-    const ok = run(["--project-root", root, "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    const ok = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
     assert.equal(ok.code, 0, ok.stderr);
-    const wrong = run(["--project-root", root, "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5" });
+    const wrong = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5" });
     assert.equal(wrong.code, 1);
     assert.match(wrong.stderr, /claude-opus-5-5/);
   });
 });
 
-test("vendor: an agent-only policy with no driver: block is refused, naming the block to add", () => {
+test("an agent-only policy with no driver: block is refused, naming the block to add", () => {
   withPolicy(NON_ANTHROPIC_POLICY, (root) => {
-    const r = run(["--project-root", root, "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
     assert.equal(r.code, 1);
     assert.match(r.stderr, /no driver: block/);
   });
 });
 
-test("vendor: a Claude-routed policy pins the session to that model, as estimated does", () => {
+test("a Claude-routed policy pins the session to that model, as estimated does", () => {
   withPolicy(UNIFIED_POLICY, (root) => {
-    assert.equal(run(["--project-root", root, "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-4-8" }).code, 0);
-    assert.equal(run(["--project-root", root, "--auth=vendor"]).code, 1);
+    assert.equal(run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-4-8" }).code, 0);
+    assert.equal(run(["--project-root", root]).code, 1);
   });
 });
 
-test("vendor: a driver: block that disagrees with the Claude-routed thinking steps is refused", () => {
+test("a driver: block that disagrees with the Claude-routed thinking steps is refused", () => {
   const yaml = UNIFIED_POLICY.replace("name: check-unified\n", "name: check-unified\ndriver:\n  model_name: claude-opus-5-5\n");
   withPolicy(yaml, (root) => {
-    const r = run(["--project-root", root, "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-4-8" });
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-4-8" });
     assert.equal(r.code, 1);
     assert.match(r.stderr, /2 Claude models/);
   });
 });
 
-test("estimated still refuses a thinking tier no Claude Code subagent can run, driver: block or not", () => {
+test("the old --auth flag is refused: the check is the same in both modes", () => {
   withPolicy(AGENT_WITH_DRIVER, (root) => {
-    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    const r = run(["--project-root", root, "--auth=estimated"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /--auth=vendor/);
+    assert.match(r.stderr, /unknown argument '--auth=estimated'/);
   });
 });
 
-test("every shipped policy whose thinking steps name Gemini carries a driver: block the vendor check accepts", () => {
+test("every shipped policy whose thinking steps name Gemini carries a driver: block the check accepts", () => {
   const dir = join(HERE, "..", "..", "..", "config", "policies");
   for (const name of ["flash-agsdk-only", "flash-agsdk-only-v38", "argon4-agsdk-only", "argon4-plus-flash38", "argon4-plus-sonnet55"]) {
-    const r = run(["--policy-path", join(dir, `${name}.yaml`), "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    const r = run(["--policy-path", join(dir, `${name}.yaml`)], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
     assert.equal(r.code, 0, `${name}: ${r.stderr}`);
   }
+});
+
+test("a failure ends by saying not to print a settings file, and names the session model, not a price", () => {
+  withPolicy(UNIFIED_POLICY, (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5" });
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /names 'claude-opus-4-8' as this session's model/);
+    assert.match(r.stderr.trim(), /Do not print or read a settings file to check this[^\n]*$/);
+  });
+});
+
+test("a pass on the driver: block says so instead of a placeholder model id", () => {
+  withPolicy(AGENT_WITH_DRIVER, (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /\(its driver: block\)/);
+  });
 });

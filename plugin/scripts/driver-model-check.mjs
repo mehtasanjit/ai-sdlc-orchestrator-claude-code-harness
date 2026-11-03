@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 /**
- * driver-model-check — verify the estimated-mode driver tier will actually run
- * on the model the policy prices it at.
+ * driver-model-check — verify this session's driver tier will actually run
+ * on the Claude model the policy names, in either auth mode.
  *
- * The problem this closes: under `--auth=estimated` the premium-judgment tier
- * is not dispatched through the MCP server — it runs *in this Claude Code
- * session* as the five driver subagents (orchestrator, architect, discovery,
+ * The problem this closes: the driver tier is not dispatched through the MCP
+ * server — it runs *in this Claude Code session* as the five driver subagents (orchestrator, architect, discovery,
  * senior-reviewer, security-reviewer). Which model those subagents execute on
  * is decided by Claude Code itself, from the `CLAUDE_CODE_SUBAGENT_MODEL`
  * environment variable (field-verified to take precedence over agent
@@ -36,13 +35,16 @@
  *      loadPolicy from ../mcp/model-dispatch/dist/, which is guaranteed built
  *      before any run (verify-setup.mjs --fix / /mmo:setup step 1).
  *
- * Derivation: route every judgment phase through the policy and require them
- * all to land on one model. A single env var cannot honor a policy that
- * splits the judgment tier across models, so disagreement is an error, not a
- * majority vote (meeting decision: unresolvable → error and STOP).
+ * Derivation (deriveSessionModel): route every judgment phase through the
+ * policy; the phases that land on a Claude model, plus the policy's `driver:`
+ * block, must all name one model. A phase routed to another vendor runs on
+ * the server (execute_judgment) and does not count. A single env var cannot
+ * honor a policy that splits the Claude judgment tier across models, so
+ * disagreement is an error, not a majority vote (meeting decision:
+ * unresolvable → error and STOP).
  *
  * Exit codes: 0 = env var matches the derived driver model (or --print-only).
- * 1 = unset, mismatch, split judgment tier, non-Anthropic judgment model, or
+ * 1 = unset, mismatch, split judgment tier, no Claude model to drive with, or
  * any load/derivation failure. The orchestrator halts the run on non-zero.
  *
  * Usage:
@@ -110,6 +112,9 @@ function routeJudgmentPhases(policy, routing, overrides) {
 }
 
 /**
+ * The collector's driver label (collect-orchestrator-usage.mjs): every judgment phase on one in-session Claude model.
+ * The run-start check uses deriveSessionModel, which also accepts thinking steps routed to another vendor.
+ *
  * Route all judgment phases and require one model. Returns
  * { modelName, modelId, perPhase } or throws with a STOP-worthy message.
  * `routing` is the imported dist/routing.js module (injected so tests can
@@ -142,12 +147,13 @@ export function deriveDriverModel(policy, routing, overrides = {}) {
 }
 
 /**
- * Under `vendor` a thinking step whose rule names a non-Claude agent runs on that agent (execute_judgment), and
- * everything else runs in this session: the Claude-routed thinking steps, discovery, the orchestrator itself and any
- * step handed back from an agent. That is one Claude model: the one the Claude-routed steps name, or the policy's
- * `driver:` block when none names Claude. Throws when there is none or more than one.
+ * The Claude model this session must run on, in either auth mode. A thinking step whose rule names a non-Claude
+ * model is dispatched by the server (execute_judgment); everything else runs in this session: the Claude-routed
+ * thinking steps, discovery, the orchestrator itself and any step handed back from an agent. That is one Claude
+ * model: the one the Claude-routed steps name, or the policy's `driver:` block when none names Claude. Throws when
+ * there is none or more than one.
  */
-export function deriveVendorDriverModel(policy, routing, overrides = {}) {
+export function deriveSessionModel(policy, routing, overrides = {}) {
   const perPhase = routeJudgmentPhases(policy, routing, overrides);
   const claude = perPhase.filter((p) => IN_SESSION_ADAPTERS.has(p.adapter));
   const names = [...new Set([...claude.map((p) => p.modelName), ...(policy.driver ? [policy.driver.model_name] : [])])];
@@ -161,7 +167,7 @@ export function deriveVendorDriverModel(policy, routing, overrides = {}) {
   if (names.length > 1) {
     const table = claude.map((p) => `  ${p.phase} → ${p.modelName} (${p.modelId})`).join("\n");
     throw new Error(
-      `policy '${policy.name}' asks this session to run ${names.length} Claude models (${names.join(", ")}):\n${table}` +
+      `policy '${policy.name}' splits the judgment tier across ${names.length} Claude models (${names.join(", ")}):\n${table}` +
         `${policy.driver ? `\n  driver → ${policy.driver.model_name}` : ""}\n` +
         `CLAUDE_CODE_SUBAGENT_MODEL is a single value. Name one Claude model for every Claude-routed thinking step and the driver.`
     );
@@ -190,6 +196,11 @@ export function deriveVendorDriverModel(policy, routing, overrides = {}) {
  * (the file the terminal route now names) went undiagnosed.
  */
 export const PROJECT_SETTINGS_FILES = ["settings.local.json", "settings.json"];
+
+/** Closes every failure: a session that reads it never opens a settings file to check the value itself. */
+export const NO_PRINT_NOTE =
+  "Do not print or read a settings file to check this: settings files can hold keys (an API key, a gateway " +
+  "header). This check reads the environment itself; set the value as above and run it again.";
 
 /**
  * Every CLAUDE_CODE_SUBAGENT_MODEL value this project's settings files declare,
@@ -233,7 +244,7 @@ export function declarationNote(declaration, actual, expected, policyName) {
   if (actual !== undefined && actual !== "" && value === actual) {
     return (
       `NOTE: ${path} declares CLAUDE_CODE_SUBAGENT_MODEL=${value}, the value this session sees, ` +
-      `but policy '${policyName}' prices the driver tier as '${expected}': if that file is where ` +
+      `but policy '${policyName}' names '${expected}' as this session's model: if that file is where ` +
       `the value came from, change it to ${expected} there.`
     );
   }
@@ -253,7 +264,7 @@ export function declarationNote(declaration, actual, expected, policyName) {
 }
 
 function parseArgs(argv) {
-  const args = { projectRoot: undefined, policy: undefined, policyPath: undefined, printOnly: false, auth: "estimated" };
+  const args = { projectRoot: undefined, policy: undefined, policyPath: undefined, printOnly: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eat = (flag) => (a.startsWith(`${flag}=`) ? a.slice(flag.length + 1) : argv[++i]);
@@ -261,11 +272,7 @@ function parseArgs(argv) {
     else if (a === "--project-root" || a.startsWith("--project-root=")) args.projectRoot = eat("--project-root");
     else if (a === "--policy" || a.startsWith("--policy=")) args.policy = eat("--policy");
     else if (a === "--policy-path" || a.startsWith("--policy-path=")) args.policyPath = eat("--policy-path");
-    else if (a === "--auth" || a.startsWith("--auth=")) args.auth = eat("--auth");
-    else throw new Error(`unknown argument '${a}' (expected --project-root, --policy, --policy-path, --auth, --print-only)`);
-  }
-  if (args.auth !== "vendor" && args.auth !== "estimated") {
-    throw new Error(`--auth must be vendor or estimated, got '${args.auth}'`);
+    else throw new Error(`unknown argument '${a}' (expected --project-root, --policy, --policy-path, --print-only)`);
   }
   return args;
 }
@@ -292,9 +299,7 @@ export async function main(argv = process.argv.slice(2)) {
     ? policyMod.loadPolicyFromPath(resolve(args.policyPath))
     : policyMod.loadPolicy({ policyName: args.policy, projectRoot: args.projectRoot });
   const overrides = routingMod.parseSelectOverrides(process.env.MMO_SELECT);
-  const derived = args.auth === "vendor"
-    ? deriveVendorDriverModel(policy, routingMod, overrides)
-    : deriveDriverModel(policy, routingMod, overrides);
+  const derived = deriveSessionModel(policy, routingMod, overrides);
 
   if (args.printOnly) {
     console.log(derived.modelName);
@@ -305,7 +310,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (actual === derived.modelName) {
     console.log(
       `driver-model-check ok: CLAUDE_CODE_SUBAGENT_MODEL=${actual} matches policy ` +
-        `'${policy.name}' (driver model '${derived.modelId}').`
+        `'${policy.name}' (${derived.modelId === "driver" ? "its driver: block" : `driver model '${derived.modelId}'`}).`
     );
     return 0;
   }
@@ -314,8 +319,8 @@ export async function main(argv = process.argv.slice(2)) {
     actual === undefined || actual === ""
       ? `CLAUDE_CODE_SUBAGENT_MODEL is not set, so the driver tier would run on ` +
         `whatever this session's model happens to be`
-      : `CLAUDE_CODE_SUBAGENT_MODEL=${actual}, but policy '${policy.name}' prices ` +
-        `the driver tier as '${derived.modelName}'`;
+      : `CLAUDE_CODE_SUBAGENT_MODEL=${actual}, but policy '${policy.name}' names ` +
+        `'${derived.modelName}' as this session's model`;
   // Message only (Fix F, v0.7.3): name every project settings file that declares
   // a value, worded for that file, then give each launch route its own fix. The
   // pass/fail decision above is unchanged: it reads the environment the session
@@ -334,8 +339,8 @@ export async function main(argv = process.argv.slice(2)) {
   // login shell and ignores project settings files' "env". The previous text
   // said a project settings file is never applied, true only for the app.
   console.error(
-    `driver-model-check FAILED: ${problem} — the report would price driver work ` +
-      `against a model that did not run.${notes.map((n) => `\n\n${n}`).join("")}\n\n` +
+    `driver-model-check FAILED: ${problem} — the run would plan on a model the ` +
+      `policy did not name.${notes.map((n) => `\n\n${n}`).join("")}\n\n` +
       `Fix (must happen BEFORE claude launches — an export inside the session ` +
       `cannot reach the CLI process):\n\n` +
       `  Terminal:     export CLAUDE_CODE_SUBAGENT_MODEL=${model}\n` +
@@ -351,7 +356,8 @@ export async function main(argv = process.argv.slice(2)) {
       `                .claude/settings.local.json. That user file is machine-wide:\n` +
       `                it pins the driver model for every session on this machine,\n` +
       `                so remove the entry once the run is done\n\n` +
-      `then relaunch claude and restart the run.`
+      `then relaunch claude and restart the run.\n\n` +
+      `${NO_PRINT_NOTE}`
   );
   return 1;
 }

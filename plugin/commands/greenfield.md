@@ -198,7 +198,7 @@ The run records tokens and cost in one of two modes. Present the choice; do not 
   `.claude/settings.local.json`; from the desktop app, in the `env` block of
   `~/.claude/settings.json` (the app ignores project settings files). The orchestrator's run-start
   check stops the run otherwise and prints where to set it, because the driver subagents execute
-  whatever that variable names while the policy only prices the work.
+  whatever that variable names. Never read or print a Claude Code settings file (`~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json`) to check the value: settings files can hold keys (an API key, a gateway header), and the check reads the environment itself.
 
 If `ANTHROPIC_API_KEY` is set, recommend vendor and say why: the numbers reconcile against the
 console. If it is absent, recommend estimated and say what is lost: the judgment-phase figures are

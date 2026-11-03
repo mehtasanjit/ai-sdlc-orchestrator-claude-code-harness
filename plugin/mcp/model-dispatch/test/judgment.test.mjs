@@ -207,3 +207,10 @@ test("every role's instructions resolve from the shipped plugin", () => {
     assert.doesNotMatch(text, /^---\n/, name);
   }
 });
+
+test("the server resolves a relative telemetry_path against project_root before the agent runs in its clone", () => {
+  const src = readFileSync(resolve(PLUGIN_ROOT, "mcp", "model-dispatch", "src", "server.ts"), "utf8");
+  const at = src.indexOf('case "execute_judgment"');
+  assert.ok(at > 0);
+  assert.match(src.slice(at, at + 600), /telemetry_path: resolvePath\(a0j\.project_root, a0j\.telemetry_path\)/);
+});

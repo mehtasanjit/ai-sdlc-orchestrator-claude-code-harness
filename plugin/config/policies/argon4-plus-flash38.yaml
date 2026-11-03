@@ -3,8 +3,8 @@
 # the two rule lists differ only in the executer's id, so a comparison between them
 # isolates the executer.
 #
-# Run it under auth_mode=vendor: the driver check refuses estimated when the judgment
-# rules name a Gemini model. No Claude model belongs in this file: the ladder's last
+# Runs under either auth mode: the thinking steps go to Argon through the server in
+# both, and the session runs on the driver: model. No Claude model belongs in this file: the ladder's last
 # attempt goes to a policy's first Claude leaf (executor/tools.ts fallbackLeaf), so
 # one here would type files. With none, the last attempt follows the rules below.
 # Version 2: the greenfield passes on runs/argon4-pairings (ai-sdlc-multi-model-orchestration)
@@ -17,7 +17,7 @@
 # its checks after one fix round is handed back to the session's Claude helper, and its
 # telemetry events carry judgment_fallback. Discovery, the orchestrator's own turns and
 # the gates run on the driver: model, which the driver check pins
-# (CLAUDE_CODE_SUBAGENT_MODEL) under both auth modes. Version 2 of this policy ran
+# (CLAUDE_CODE_SUBAGENT_MODEL) under both auth modes; estimated and vendor alike. Version 2 of this policy ran
 # under plugins before 0.10.0, where the session's own model planned and reviewed
 # whatever the rules said; version 3 keeps those runs apart in telemetry.
 version: 3

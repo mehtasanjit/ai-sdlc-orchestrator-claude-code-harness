@@ -137,7 +137,7 @@ below still applies.
    plans on a model the policy did not choose. So run:
 
    ```bash
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/driver-model-check.mjs" --project-root "$(pwd)" --auth=<auth_mode>
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/driver-model-check.mjs" --project-root "$(pwd)"
    ```
 
    passing the run's policy the same way you pass it to `preflight_dispatch` (`--policy=<name>` for a
@@ -147,7 +147,7 @@ below still applies.
    process launches, and a Bash `export` here runs in a child shell that cannot reach it — the
    script's output already says where to set it (from a terminal, an export or the project's
    `.claude/settings.local.json`; from the desktop app, `~/.claude/settings.json`) and gives the
-   relaunch instruction.
+   relaunch instruction. Never read or print a Claude Code settings file (`~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json`) to check the value: settings files can hold keys (an API key, a gateway header), and the check reads the environment itself.
 
    Then call `preflight_dispatch` with the run's `auth_mode` (rule 6),
    its policy arguments and `executor`: `executor: true` on every new-app (greenfield) run, whose files
@@ -261,7 +261,7 @@ below still applies.
 
    **Vendor-authoritative mode (`vendor`)** — `ANTHROPIC_API_KEY` MUST also be set; if it is not, abort with: "vendor mode requires ANTHROPIC_API_KEY — export it, or rerun in estimated mode." Dispatch every mechanical call via `execute_with_model` and every thinking step via `execute_judgment`; this session's own turns, and any thinking step the policy routes to Claude, run in this session on the driver model. The MCP server hits the vendor API directly and records real vendor-reported `input_tokens`, `input_tokens_cached`, and `output_tokens` on the event. The server prices those vendor tokens into `cost_usd` itself, at the dated price list's rate for the model (the policy's `pricing` block only when the model sets `pricing_override: true`); you never compute or edit that figure. Every event's `provenance` field MUST be `"vendor"` — the MCP server stamps this on every dispatched event itself, so you never write it for `execute_with_model` calls.
 
-   **Estimator mode (`estimated`)** — dispatch mechanical-tier calls via MCP as usual (those events still carry vendor tokens and `provenance: "vendor"`). For your own direct-tier calls, use the character-count heuristic (≈3.8 chars/token) for tokens, take rates from that model's `effective_price.rates` in the `load_policy` result (see **Rates you apply yourself** below), and call `log_telemetry` with `provenance: "estimated"` on the event (the server also defaults an omitted stamp to `"estimated"` on this path, so a forgotten field can no longer make the report disown the run as "unknown"). `ANTHROPIC_API_KEY` is deliberately ignored in this mode even if set — the user chose estimated numbers, so estimated is what is emitted. What model that direct-tier work *executes* on is `CLAUDE_CODE_SUBAGENT_MODEL` — exported at launch, verified by rule 0's driver-model check — so the model being priced and the model doing the work are the same one; the agent files themselves carry no `model:` pin (a frontmatter pin would silently override the policy, which is the bug the check exists to prevent).
+   **Estimator mode (`estimated`)** — dispatch mechanical-tier calls via MCP as usual, and every thinking step via `execute_judgment` (those events still carry vendor tokens and `provenance: "vendor"`; a step the policy routes to Claude comes back `route: claude` and is yours, estimated as below). For your own direct-tier calls, use the character-count heuristic (≈3.8 chars/token) for tokens, take rates from that model's `effective_price.rates` in the `load_policy` result (see **Rates you apply yourself** below), and call `log_telemetry` with `provenance: "estimated"` on the event (the server also defaults an omitted stamp to `"estimated"` on this path, so a forgotten field can no longer make the report disown the run as "unknown"). `ANTHROPIC_API_KEY` is deliberately ignored in this mode even if set — the user chose estimated numbers, so estimated is what is emitted. What model that direct-tier work *executes* on is `CLAUDE_CODE_SUBAGENT_MODEL` — exported at launch, verified by rule 0's driver-model check — so the model being priced and the model doing the work are the same one; the agent files themselves carry no `model:` pin (a frontmatter pin would silently override the policy, which is the bug the check exists to prevent).
 
    This applies to escalations too. When a policy rule sends a packet to your own tier — `opus-plus-flash` escalates `debug` after two mechanical-tier retries — the routing decision stands, but under `estimated` the packet is handled in this conversation with the estimator, not dispatched via `execute_with_model`. Routing decides *which model*; `auth_mode` decides *which transport*. Confusing the two is what makes a run either abort on a credential it never needed or bill an API it was told not to use.
 
