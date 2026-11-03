@@ -321,10 +321,6 @@ async def run(args):
     fn_tools = tools_for(host, args.role)
     resume = args.resume_id or None
     message = task
-    if args.carry_on:
-        # The engine's kill rule stopped this step's last worker (frozen, or past a call's bound): its saved conversation
-        # already holds the task and everything since, so it is continued as the harness continues one it interrupted.
-        message = sv.CONTINUE_MESSAGE
     summary = {"done": False, "missing": [], "accepted": [], "conversation_id": resume, "text": "", "reason": None}
 
     def keep() -> None:
@@ -336,6 +332,15 @@ async def run(args):
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(summary, f)
         os.replace(tmp, args.summary_file)
+
+    if args.carry_on:
+        # The engine's kill rule stopped this step's last worker (frozen, or past a call's bound): its saved conversation
+        # already holds the task and everything since, so it is continued as the harness continues one it interrupted.
+        # Its tools started from that worker's state, and the summary keeps it from their first status, so a worker
+        # killed again before any session of its own ends still says what is accepted and owed.
+        message = sv.CONTINUE_MESSAGE
+        summary.update({k: json.loads(first["result"]).get(k) for k in ("done", "missing", "accepted")})
+        keep()
 
     def next_turn(said: str, status: dict) -> str:
         # The message of a turn after the first: `said`, in the step's own conversation, resumed by the SDK's id.
