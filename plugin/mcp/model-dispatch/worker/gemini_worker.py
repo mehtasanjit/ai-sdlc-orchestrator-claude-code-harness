@@ -166,18 +166,21 @@ class AgentSession:
         self.save_dir = os.path.join(args.out_dir, "_gemini_worker_save")
         self.thinking = _thinking_level(args.thinking)
 
-    def config(self, location: str, resume_id=None):
+    def config(self, location: str, resume_id=None, extra=None):
+        """The session's SDK configuration, built by LocalAgentConfig's constructor, which validates it (a pydantic
+        model_copy(update=) would not). `extra`: more of its fields, for a worker with its own (the thinking worker's
+        capabilities, tools and system instructions)."""
         a = self.args
         opts = types.GeminiModelOptions(thinking_level=self.thinking) if self.thinking else None
-        extra = {}
+        fields = {}
         if a.api_retries is not None:
-            extra["retry_config"] = types.RetryConfig(api_retry=types.ModelAPIRetryConfig(
+            fields["retry_config"] = types.RetryConfig(api_retry=types.ModelAPIRetryConfig(
                 max_retries=a.api_retries, initial_sleep_duration_ms=a.api_retry_initial_ms, exponential_multiplier=2.0))
         if resume_id:
             # The conversation the harness saved, carried on at another location (its contents and thought signatures
             # included): settled on the fake endpoint before this was built.
-            extra["conversation_id"] = resume_id
-            extra["session_continuation_mode"] = types.SessionContinuationMode.RESUME
+            fields["conversation_id"] = resume_id
+            fields["session_continuation_mode"] = types.SessionContinuationMode.RESUME
         return ag.LocalAgentConfig(
             model=types.ModelTarget(
                 name=a.model, types=[types.ModelType.TEXT],
@@ -187,7 +190,8 @@ class AgentSession:
             policies=[policy.allow_all()],
             workspaces=[a.workdir],
             save_dir=self.save_dir,
-            **extra,
+            **fields,
+            **(extra or {}),
         )
 
     def sidecar(self) -> dict:

@@ -238,8 +238,10 @@ class ThinkingSession(gw.AgentSession):
         self.resume_from = resume_id
 
     def config(self, location, resume_id=None):
-        cfg = super().config(location, resume_id or self.resume_from)
-        return cfg.model_copy(update={
+        # Built by the SDK config's constructor with the step's own fields, so the SDK validates them (review: a
+        # model_copy(update=) of the agent worker's config skipped that; 0.1.22 accepts there capabilities its
+        # constructor refuses): the SDK's own tools off but finish, and the step's tools.
+        return super().config(location, resume_id or self.resume_from, extra={
             "capabilities": types.CapabilitiesConfig(enable_subagents=False, enabled_tools=[types.BuiltinTools.FINISH]),
             "tools": self.fn_tools,
         })

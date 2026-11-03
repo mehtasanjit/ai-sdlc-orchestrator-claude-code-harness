@@ -229,6 +229,22 @@ test("without the SDK's conversation id a later turn opens a new conversation, s
   assert.match(waited.chats[1].message, /Still owed: requirements\.md \(write_requirements\)/);
 });
 
+// E-thinking-config. Review: the step's SDK configuration was a model_copy(update=) of the agent worker's, which runs
+// none of the SDK's validation (google-antigravity 0.1.22, offline: a copy takes capabilities its constructor refuses).
+test("a step's SDK configuration is built by its constructor: finish alone of the SDK's own tools, and the role's own tools", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const script = { sessions: [{ turns: [[{ at: 0, step: step.tool("write_requirements", "ACTIVE", REQUIREMENTS, "w4") }, ...textAnswer(0, "Handed in.", { prompt_token_count: 10 })]] }] };
+  const r = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000 });
+  assert.equal(r.code, 0, tail(r));
+  const [agent] = r.sessions;
+  assert.equal(agent.validated, true, "built by LocalAgentConfig's constructor, which validates it, never copied");
+  assert.deepEqual(agent.capabilities, { enable_subagents: false, enabled_tools: ["finish"] });
+  assert.deepEqual(agent.tools, ["read_file", "list_files", "search_files", "write_requirements"]);
+  // Each role gets its own tools.
+  const reviewer = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, role: "brownfield-security-reviewer", outputs: { security_review: "out/security_review.md" } });
+  assert.equal(reviewer.sessions[0].validated, true);
+  assert.deepEqual(reviewer.sessions[0].tools, ["read_file", "list_files", "search_files", "git_diff", "read_provenance", "run_file_check", "run_dependency_audit", "env_keys", "write_review"]);
+});
+
 // E-thinking-tool-limits. Review: no tool call had a time limit, and a tool process that died at start was found only
 // after Gemini had been paid.
 test("a tool call that never answers ends the step with its reason, at the call's limit", { skip: NO_PYTHON, timeout: 60_000 }, async () => {

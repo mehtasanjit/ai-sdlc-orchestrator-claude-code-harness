@@ -31,6 +31,10 @@ Script:
     {"at": s, "hold": true}                   nothing more until cancel()
     {"at": s, "os_sleep": seconds}            the computer sleeps that long (sitecustomize.py moves its clocks)
     {"at": s, "freeze": true}                 the worker's process stops itself (SIGSTOP), as a frozen worker does
+
+A session's "agent" log line also says how its configuration was built: `validated` (true when built by its
+constructor, as the SDK's pydantic models are validated there; false for a model_copy), `capabilities` (the SDK's own
+tools it leaves on) and `tools` (the worker's own tools, by name).
 """
 from __future__ import annotations
 
@@ -281,9 +285,16 @@ class Agent:
         endpoint = _attr(model, "endpoint")
         location = _attr(endpoint, "location") or _attr(cfg, "location")
         retry = _attr(_attr(cfg, "retry_config"), "api_retry")
+        caps = _attr(cfg, "capabilities")
         self._script = _session_script(str(location))
         log("agent", session=self._n, location=location, project=_attr(endpoint, "project") or _attr(cfg, "project"),
             model=_attr(model, "name"),
+            # Whether the configuration was built by its constructor (validated), the SDK's own tools it leaves on, and
+            # the worker's own tools by name.
+            validated=getattr(cfg, "_validated", None),
+            capabilities=None if caps is None else {"enable_subagents": _attr(caps, "enable_subagents"),
+                                                    "enabled_tools": [getattr(t, "value", t) for t in _attr(caps, "enabled_tools") or []]},
+            tools=[getattr(f, "__name__", str(f)) for f in _attr(cfg, "tools") or []],
             retry=None if retry is None else {k: _attr(retry, k) for k in ("max_retries", "initial_sleep_duration_ms", "exponential_multiplier", "jitter_range")},
             http_headers=_attr(endpoint, "http_headers"),
             continuation=str(_attr(cfg, "session_continuation_mode")) if _attr(cfg, "session_continuation_mode") is not None else None,
