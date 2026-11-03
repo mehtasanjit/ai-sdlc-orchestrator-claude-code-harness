@@ -48,3 +48,25 @@ test("a thinking phase routed to a model that cannot read the project fails clos
   assert.equal(problems.length, 1);
   assert.match(problems[0], /architecture_design is routed to 'flash' \(mcp:model-dispatch\)/);
 });
+
+// Review: change_plan was neither routed nor shown, so a policy's change_plan rule (every shipped policy has one) read
+// as a choice the run honours; the brownfield architect is routed by architecture_design, and code renders
+// change_plan.md and the packets. Discovery is the session's Claude helper whatever its rule says. The table shows
+// each such rule as having no effect, so a rule for these phases is never silently ignored, and never refused.
+test("phases no rule can route are shown as such: change_plan and plan_task_packets are code, discovery is the session's helper", () => {
+  const { rows, problems } = routeTable(load("argon4-agsdk-only"), {});
+  assert.deepEqual(problems, []);
+  for (const phase of ["change_plan", "plan_task_packets"]) {
+    assert.deepEqual(row(rows, phase), { phase, model: "none", model_id: null, who: "code", reason: "rendered by code; a rule for it has no effect" }, phase);
+  }
+  assert.deepEqual(row(rows, "discovery"), { phase: "discovery", model: "claude-opus-5-5", model_id: null, who: "session", reason: "a Claude helper; a rule for it has no effect" });
+  // A rule that sends them to a model reached as a plain completion changes nothing and stops nothing.
+  const policy = {
+    version: 1, name: "t", session_model: "claude-opus-5-5",
+    models: [{ id: "argon", adapter: "antigravity-worker", model_name: "gemini-4-argon" }, { id: "flash", adapter: "mcp:model-dispatch", model_name: "gemini-3.8-flash" }],
+    rules: [{ when: { phase: ["change_plan", "plan_task_packets", "discovery"] }, use: "flash" }, { default: "argon" }],
+  };
+  const t = routeTable(policy, {});
+  assert.deepEqual(t.problems, []);
+  assert.deepEqual(["discovery", "change_plan", "plan_task_packets"].map((p) => [row(t.rows, p).who, row(t.rows, p).model_id]), [["session", null], ["code", null], ["code", null]]);
+});
