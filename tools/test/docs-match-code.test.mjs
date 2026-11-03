@@ -851,7 +851,10 @@ test("every text that gives a thinking step's no-progress limit gives the worker
   assert.ok(n > 0, "the worker names its no-progress limit");
   assert.match(read("plugin", "mcp", "model-dispatch", "src", "thinking.ts"), new RegExp(`export const NO_PROGRESS_TURNS = ${n};`), "the step's reply counts what the worker counts");
   const said = new RegExp(`answers ${WORDS[n]} reminders in a row of what it owes without progress`);
-  assert.match(noteRow("Thinking-step routing", "0.10.0"), new RegExp(`answers ${WORDS[n]} such reminders in a row without progress`));
+  // The version that brought the limit says it; 0.10.0's own note keeps what 0.10.0 did (a fixed count of 8).
+  assert.match(noteRow("Worker", "0.10.1"), said);
+  assert.match(read("docs", "architecture.md"), said, "the tool table");
+  assert.match(noteRow("Thinking-step routing", "0.10.0"), /up to 8 times/);
   assert.match(read("plugin", "mcp", "model-dispatch", "src", "server.ts"), said, "run_thinking_step's description");
   // Each shipped policy whose header says what stops a thinking step.
   const headers = readdirSync(join(PLUGIN, "config", "policies")).filter((f) => f.endsWith(".yaml")).map((f) => [f, read("plugin", "config", "policies", f).replace(/\n#\s*/g, " ")]).filter(([, t]) => t.includes("A step that cannot finish within thinking_timeout_sec"));
