@@ -341,3 +341,29 @@ test("tools that cannot start stop the step before any model call", { skip: NO_P
   assert.equal(r.sessions.length, 0, "no session was opened, so nothing was paid");
   assert.match(r.stderr, /the step's tools could not start/);
 });
+
+// E-thinking-setup. Review: a check that could not run for the step's own setup (plan-lint's usage errors: a wrong run
+// id, a job that is not the run's, a section outside the run's folder) came back to Gemini as a refusal it cannot fix.
+test("a hand-in whose check cannot run for the step's setup stops the step at once, with that reason, and no further model turn", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  // Gate 0 recorded a bugfix; the step's tools were set up for a docs job.
+  const setup = (work) => {
+    mkdirSync(join(work, ".sdlc", "runs", "r1"), { recursive: true });
+    writeFileSync(join(work, ".sdlc", "runs", "r1", "intent_brief.md"), "# Intent Brief — bugfix — the ping route answers 500\n");
+  };
+  const header = { conventions: [], file_checks: [], project_checks: [] };
+  const script = { sessions: [{ turns: [[
+    { at: 0, step: step.tool("write_section", "ACTIVE", { name: "header.json", section_json: JSON.stringify(header) }, "w1") },
+    { at: 0, usage: { prompt_token_count: 10, candidates_token_count: 5 } },
+    // The model's next call, had the turn gone on: its answer to the tool's reply.
+    ...textAnswer(1, "I will fix the header.", { prompt_token_count: 12, candidates_token_count: 4 }),
+  ]] }] };
+  const r = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, role: "brownfield-architect", outputs: { sections_dir: ".sdlc/runs/r1/change.sections" }, config: { output_dir: ".sdlc/runs/r1", intent: "docs" }, setup });
+  assert.notEqual(r.code, 0, tail(r));
+  assert.equal(r.summary?.reason, "setup", JSON.stringify(r.summary));
+  assert.match(String(r.summary.setup_error), /^plan-lint could not check \.sdlc\/runs\/r1\/change\.sections\/header\.json: --intent docs is not this run's job: Gate 0 recorded bugfix/);
+  assert.equal(r.sidecar?.error, r.summary.setup_error, "the worker's own error is the setup reason");
+  assert.equal(r.chats.length, 1, "no further model turn");
+  assert.ok(r.cancels.length >= 1, "the turn in flight was cut");
+  assert.equal(r.log.filter((e) => e.ev === "usage").length, 1, "the model's next call was never answered");
+  assert.deepEqual(r.summary.missing, ["header.json, accepted", "at least one units file, accepted"], "no refusal is owed for it");
+});

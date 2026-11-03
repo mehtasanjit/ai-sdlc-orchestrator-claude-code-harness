@@ -132,3 +132,32 @@ test("a thinking step's Gemini session works in an empty folder of its own; a pr
     cleanup(bin, root);
   }
 });
+
+// E-thinking-setup. Review: a check that could not run for the step's own setup came back to Gemini as a refusal.
+test("a step whose own setup kept a hand-in from being checked stops, saying what was wrong and where, as a setup error", { timeout: 60_000 }, async () => {
+  // The worker's summary as thinking_worker.py writes it when a tool answers a setup error (thinkingWorker.test.mjs).
+  const setupError = "plan-lint could not check .sdlc/runs/r6/change.sections/header.json: --intent docs is not this run's job: Gate 0 recorded bugfix (intent_brief.md)";
+  const summary = { done: false, missing: ["header.json, accepted", "at least one units file, accepted"], accepted: [], conversation_id: "c1", text: "", reason: "setup", setup_error: setupError };
+  const fake = fakeWorkerPython({ runs: [{ holdMs: 50, sidecar: { sdk_version: "0.1.22", usage: { prompt_token_count: 10 }, error: setupError, error_type: "Stopped" }, summary, stdout: JSON.stringify(summary), stderr: `thinking_worker failed: ${setupError}\n`, exitCode: 1 }] });
+  const bin = standInClaude([receipt({})]);
+  const root = project({ contract: false });
+  writeFileSync(join(root, "policy.yaml"), [
+    "version: 1", "name: plan-think", "models:",
+    "  - id: opus", "    adapter: builtin-anthropic", "    model_name: claude-opus-5",
+    "  - id: flash", "    adapter: antigravity-worker", "    model_name: gemini-3.8-flash",
+    "rules:", "  - when: { phase: architecture_design }", "    use: flash", "  - default: opus", "",
+  ].join("\n"));
+  const policy_path = join(root, "policy.yaml");
+  try {
+    await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
+      assert.equal((await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r6", intent: "bugfix" })).json?.ok, true);
+      const r = await call("run_thinking_step", { role: "brownfield-architect", prompt: "Plan the fix.", project_root: root, run_id: "r6", output_dir: ".sdlc/runs/r6", policy_path });
+      assert.equal(r.json?.route, "stopped", r.text);
+      assert.equal(r.json.reason, `the gemini-3.8-flash step stopped on its own setup, which no hand-in can fix: ${setupError}`);
+      assert.deepEqual(r.json.missing, summary.missing);
+    });
+  } finally {
+    fake.cleanup();
+    cleanup(bin, root);
+  }
+});

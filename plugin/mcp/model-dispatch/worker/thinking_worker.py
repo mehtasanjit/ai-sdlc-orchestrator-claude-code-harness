@@ -23,8 +23,10 @@ limit counting own work only) and its usage sidecar. stdout carries one JSON lin
 every turn: {done, missing, accepted, conversation_id, text, reason}. `reason` says why the step stopped: done (every
 piece accepted), budget (its own work time reached --timeout), no_progress (NO_PROGRESS_TURNS reminders in a row
 answered without progress), busy (Google could not serve the model for the run's busy window), tool_dead (a tool
-call, the status one included, gave no answer in its limit, or the tools could not report the step's status), stopped (the worker was stopped), error (the model's call
-ended with another error); it is null in a summary kept while the step still runs. The worker exits 0 only when every
+call, the status one included, gave no answer in its limit, or the tools could not report the step's status),
+setup (the step's own setup kept a hand-in from being checked: the tool answered so, the turn in flight was cut at
+once, and `setup_error` says what was wrong and in which file, since nothing Gemini could do would fix it), stopped
+(the worker was stopped), error (the model's call ended with another error); it is null in a summary kept while the step still runs. The worker exits 0 only when every
 piece is accepted and its last turn answered; otherwise it exits 1, and its stderr line "thinking_worker failed: ..."
 says why in plain words and what is still owed.
 """
@@ -84,15 +86,21 @@ class ToolHost:
     `dead` says why; every later call answers that reason at once (review: no tool call had a limit, so one stuck call
     held the step until its whole work budget was spent). A call's answer is the line that carries its own id: anything
     else the tools print goes to stderr and is never taken for an answer (review: a stray line would have been read as
-    the next call's answer, and one that is not JSON failed the worker)."""
+    the next call's answer, and one that is not JSON failed the worker).
 
-    def __init__(self, node: str, script: str, config: str, call_timeout_s: float):
+    A tool that answers `setup` (the step's own setup keeps a hand-in from being checked: plan-lint's usage error) sets
+    `setup` to its reason and calls `on_setup`, which stops the step at once: nothing Gemini hands in can be checked,
+    and it is not Gemini's to fix."""
+
+    def __init__(self, node: str, script: str, config: str, call_timeout_s: float, on_setup=None):
         self.p = subprocess.Popen([node, script, "--config", config], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=sys.stderr, text=True, bufsize=1)
         self.lock = threading.Lock()
         self.n = 0
         self.call_timeout_s = call_timeout_s
         self.dead = None
+        self.setup = None
+        self.on_setup = on_setup
         self.lines = queue.Queue()
         threading.Thread(target=self._read, daemon=True).start()
 
@@ -128,8 +136,14 @@ class ToolHost:
                 except ValueError:
                     answer = None
                 if isinstance(answer, dict) and answer.get("id") == self.n:
-                    return answer
+                    break
                 sys.stderr.write(f"thinking_worker: the step's tools printed a line that is not this call's answer: {line.rstrip()[:500]}\n")
+        r = answer
+        if not r.get("ok") and r.get("setup") and self.setup is None:
+            self.setup = r.get("error") or "the step's setup keeps its hand-ins from being checked"
+            if self.on_setup is not None:
+                self.on_setup()
+        return r
 
     def text(self, op: str, **args) -> str:
         r = self.call(op, **args)
@@ -289,7 +303,11 @@ async def run(args):
         work_limit_reason=(f"the step's own work time reached the policy's limit (thinking_timeout_sec): {args.timeout} s, "
                            "the time Google held or refused its calls not counted"),
     )
-    host = ToolHost(args.node, args.tools_script, args.tools_config, args.tool_call_timeout_sec)
+    loop = asyncio.get_running_loop()
+    # A setup error cuts the turn in flight at once, as a stop does: from the event loop, since the SDK may call a tool
+    # from a thread of its own.
+    host = ToolHost(args.node, args.tools_script, args.tools_config, args.tool_call_timeout_sec,
+                    on_setup=lambda: loop.call_soon_threadsafe(sup.request_stop))
     # The tools answer before any model call: tools that cannot start (a missing project folder, a broken config) stop
     # the step here, before Gemini is paid (review: such a step was found out only after its first session).
     first = host.call("status")
@@ -344,6 +362,14 @@ async def run(args):
                 break
             status = json.loads(answer["result"])
             summary.update({k: status.get(k) for k in ("done", "missing", "accepted")})
+            if host.setup:
+                # The step's own setup keeps its hand-ins from being checked: it ends here, saying what was wrong and
+                # where, and Gemini is sent nothing more.
+                s.ok = False
+                s.error = host.setup
+                summary.update({"reason": "setup", "setup_error": host.setup})
+                keep()
+                break
             keep()
             if status.get("done"):
                 summary["reason"] = "done"

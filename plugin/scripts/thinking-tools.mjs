@@ -11,7 +11,9 @@
  * reviewer's file check runs the approved plan's check as the engine runs checks.
  *
  * Protocol: one JSON object per line on stdin, {id, op, args}; one per line on stdout, {id, ok, result} or
- * {id, ok: false, error}. Started with --config <file>, a JSON object written by the server (src/thinking.ts).
+ * {id, ok: false, error}, and {id, ok: false, error, setup: true} when the step's own setup keeps a hand-in from being
+ * checked (nothing Gemini could fix: the worker stops the step on it). Started with --config <file>, a JSON object
+ * written by the server (src/thinking.ts).
  */
 import { spawnSync } from "node:child_process";
 import v8 from "node:v8";
@@ -298,6 +300,10 @@ export class ThinkingTools {
     // No command the model wrote runs here, and none of its output comes back: the checks wait for dispatch, after
     // the person approves the plan at Gate 2 (lib/change-spec.mjs baselineErrors).
     const r = await checkSection(this.root, this.cfg.run_id, n.rel, { intent: this.cfg.intent, runCommands: false });
+    // A usage error is the step's own setup, not the section: a run id or run folder plan-lint cannot use, a job that is
+    // not the run's, a section outside the run's folder. Gemini cannot fix any of them, so it is answered as a setup
+    // error, on which the worker stops the step, never as a refusal to fix (review: Gemini was sent such errors to fix).
+    if (r.usage) return { error: `plan-lint could not check ${n.rel.split(sep).join("/")}: ${r.lines.join("; ")}`, setup: true };
     if (!r.ok) return this.refuse(name, r.lines);
     this.verdict(name, true);
     return { result: r.lines.join("\n") };
@@ -621,7 +627,7 @@ async function main(argv) {
     let msg;
     try { msg = JSON.parse(line); } catch { process.stdout.write(JSON.stringify({ id: null, ok: false, error: "not JSON" }) + "\n"); continue; }
     const r = await tools.call(msg.op, msg.args);
-    process.stdout.write(JSON.stringify(r.error !== undefined ? { id: msg.id, ok: false, error: r.error } : { id: msg.id, ok: true, result: r.result }) + "\n");
+    process.stdout.write(JSON.stringify(r.error !== undefined ? { id: msg.id, ok: false, error: r.error, ...(r.setup ? { setup: true } : {}) } : { id: msg.id, ok: true, result: r.result }) + "\n");
   }
   return 0;
 }

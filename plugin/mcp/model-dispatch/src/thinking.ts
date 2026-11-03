@@ -491,7 +491,8 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const { result, events } = await deps.dispatch(packet, { role: args.role, toolsConfig, saveDir, resumeId, timeoutSec: deps.thinkingTimeoutSec, system, task });
   const after = before ? projectSnapshot(args.project_root) : null;
   deps.record(events.map((e) => ({ ...e, judgment_role: args.role })));
-  const summary = (result.result ?? {}) as { done?: boolean; missing?: string[]; accepted?: string[]; conversation_id?: string; reason?: string | null };
+  // `reason: "setup"` with `setup_error`: the step's own setup kept a hand-in from being checked (worker/thinking_worker.py).
+  const summary = (result.result ?? {}) as { done?: boolean; missing?: string[]; accepted?: string[]; conversation_id?: string; reason?: string | null; setup_error?: string };
   if (summary.conversation_id) writeFileSync(recordPath, JSON.stringify({ conversation_id: summary.conversation_id }) + "\n");
 
   const stop = (why: string, missing?: string[]): ThinkingReply => {
@@ -515,6 +516,10 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
     return { ...base, route: "halt", reason, cost_usd: result.cost_usd };
   }
   if (changed.length) return stop(changedText);
+  // A hand-in's check could not run for the step's own setup (plan-lint's usage error: a run id or folder it cannot
+  // use, a job that is not the run's): the worker stopped at once, and the reply says what was wrong and where, as a
+  // setup error for the person, never as the model's failure (review: such errors went to Gemini as refusals to fix).
+  if (summary.reason === "setup") return stop(`the ${model.model_name} step stopped on its own setup, which no hand-in can fix: ${summary.setup_error ?? result.error ?? "no reason given"}`, summary.missing);
   if (!summary.done) return stop(stoppedReason(model.model_name, summary, result, deps.thinkingTimeoutSec), summary.missing);
   // Every piece is handed in and accepted by the checks a Claude helper's hand-over runs: the step is done, even when
   // its last turn ended with an error (review: a fully accepted step was reported stopped and its work thrown away).
