@@ -12,8 +12,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, posix as posixPath, relative, resolve, sep } from "node:path";
 
 import { holdsPrivateKey, modelReadOf } from "./apply.js";
@@ -405,6 +405,57 @@ function readRecord(path: string): SessionRecord {
   try { return JSON.parse(readFileSync(path, "utf8")); } catch { return {}; }
 }
 
+interface StepLock { pid?: unknown; started_at?: unknown; token?: unknown }
+
+/** A step's lock as its file holds it; undefined when there is none, null when it cannot be read. */
+function readLock(path: string): StepLock | null | undefined {
+  let text: string;
+  try { text = readFileSync(path, "utf8"); } catch (e: any) { return e?.code === "ENOENT" ? undefined : null; }
+  try { const v = JSON.parse(text); return v && typeof v === "object" ? v : null; } catch { return null; }
+}
+
+/** Whether a process runs with this id: process.kill(pid, 0) sends no signal, and fails with ESRCH when there is none. */
+function processAlive(pid: unknown): boolean {
+  if (!Number.isInteger(pid) || (pid as number) <= 0) return false;
+  try { process.kill(pid as number, 0); return true; } catch (e: any) { return e?.code === "EPERM"; }
+}
+
+/** A step as a person names it: its role, its review file when it has one, and its run. */
+function stepName(args: ThinkingArgs): string {
+  return `the ${args.role} step${args.review_path ? ` for ${args.review_path}` : ""}${args.run_id ? ` of run ${args.run_id}` : ""}`;
+}
+
+/**
+ * One call of a step at a time. The call holds `<stepDir>/<key>.lock`, created exclusively and holding the server's
+ * process id and the call's start time; it is removed when the call returns. A second call of the step while it is held
+ * is refused before it writes anything, so two workers never share one save folder, tools config, record and packet
+ * (review: nothing refused it). A lock whose process is gone (process.kill(pid, 0) finds none: the server stopped
+ * mid-step) is taken over. In one server, taking the lock is one synchronous step, so two calls there can never both
+ * hold it; between servers, a lock being taken over is first moved aside, in one step, and one that turns out to be
+ * another call's live lock is put back. Returns the release.
+ */
+export function takeStepLock(lockPath: string, step: string): () => void {
+  const mine = { pid: process.pid, started_at: new Date().toISOString(), token: randomUUID() };
+  const running = (held: StepLock) => new Error(`run_thinking_step: ${step} is already running (process ${String(held.pid)}, since ${String(held.started_at)}); nothing was sent. Two calls of one step would share its save folder, tools config and record: wait for that call to return.`);
+  for (let tries = 0; ; tries++) {
+    try { writeFileSync(lockPath, JSON.stringify(mine) + "\n", { flag: "wx" }); break; } catch (e: any) { if (e?.code !== "EEXIST") throw e; }
+    if (tries >= 3) throw new Error(`run_thinking_step: ${step} could not take its lock ${lockPath}; nothing was sent`);
+    const held = readLock(lockPath);
+    if (held === undefined) continue;
+    if (held && processAlive(held.pid)) throw running(held);
+    const aside = `${lockPath}.${mine.token}.stale`;
+    try { renameSync(lockPath, aside); } catch (e: any) { if (e?.code === "ENOENT") continue; throw e; }
+    const moved = readLock(aside);
+    if (moved && moved.token !== held?.token && processAlive(moved.pid)) {
+      try { writeFileSync(lockPath, readFileSync(aside), { flag: "wx" }); } catch { /* a third call holds it now */ }
+      rmSync(aside, { force: true });
+      throw running(moved);
+    }
+    rmSync(aside, { force: true });
+  }
+  return () => { if (readLock(lockPath)?.token === mine.token) rmSync(lockPath, { force: true }); };
+}
+
 export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): Promise<ThinkingReply> {
   const role = THINKING_ROLES[args.role];
   if (!role) throw new Error(`run_thinking_step: unknown role '${args.role}' (known: ${Object.keys(THINKING_ROLES).join(", ")})`);
@@ -427,6 +478,23 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
     if (args.revise) throw new Error("run_thinking_step: pass acceptance_fix or revise, not both: an acceptance fix answers the acceptance stage and changes no spec section");
     if (typeof args.acceptance_fix !== "string" || !args.acceptance_fix.trim()) throw new Error("run_thinking_step: acceptance_fix holds the acceptance receipt's failure and its log_path");
   }
+  const stepDir = join(args.project_root, args.output_dir, "thinking");
+  mkdirSync(stepDir, { recursive: true });
+  // Each step keeps its own files, conversation and packet: a run has one step per role, except the senior review,
+  // which greenfield runs once per module, each with its own review_path (review: one module's revise resumed another
+  // module's conversation, and both read one brief). One call of a step runs at a time: a second call while it runs is
+  // refused before it writes anything of the step's, its input copies and tools config included (takeStepLock).
+  const key = stepKey(args);
+  const release = takeStepLock(join(stepDir, `${key}.lock`), stepName(args));
+  try {
+    return await lockedStep(args, deps, role, brownfield, requirementsPath, stepDir, key);
+  } finally {
+    release();
+  }
+}
+
+/** The step itself, while its call holds the step's lock: its inputs, its route, its dispatch and its reply. */
+async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: ThinkingRole, brownfield: boolean, requirementsPath: string | undefined, stepDir: string, key: string): Promise<ThinkingReply> {
   // The step's inputs, through the read rule, before anything is routed or spent.
   const inputCopies = stepInputsCopied(args.project_root, args.output_dir, args.inputs);
 
@@ -443,12 +511,6 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
 
   const outputs = roleOutputs(args.role, args);
   const instructions = stepInstructions(deps.pluginRoot, role, args.project_root, args.output_dir);
-  const stepDir = join(args.project_root, args.output_dir, "thinking");
-  mkdirSync(stepDir, { recursive: true });
-  // Each step keeps its own files, conversation and packet: a run has one step per role, except the senior review,
-  // which greenfield runs once per module, each with its own review_path (review: one module's revise resumed another
-  // module's conversation, and both read one brief).
-  const key = stepKey(args);
   const toolsConfig = join(stepDir, `${key}.tools.json`);
   const recordPath = join(stepDir, `${key}.json`);
   const saveDir = join(stepDir, `${key}.save`);

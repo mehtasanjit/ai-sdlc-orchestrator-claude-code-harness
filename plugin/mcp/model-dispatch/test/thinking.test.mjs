@@ -10,7 +10,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -366,6 +367,44 @@ test("per-module reviews are separate steps: each keeps its own files, conversat
   const again = review("m1", "conv-m1");
   await runThinkingStep(args(root, { role: "senior-reviewer", output_dir: "out", review_path: "out/m1/review.json", prompt: "Review module m1", revise: "fix it" }), again.d);
   assert.equal(again.calls.dispatch[0].thinking.resumeId, "conv-m1");
+});
+
+test("a second call of a step while it runs is refused at once; a lock left by a process that is gone is taken over", async () => {
+  const root = project();
+  let letGo;
+  const held = new Promise((done) => { letGo = done; });
+  const { d, calls } = deps(AGENT, () => result());
+  // The first call's dispatch is in flight until the test lets it go.
+  const first = runThinkingStep(args(root), { ...d, dispatch: async (packet, thinking) => { calls.dispatch.push({ packet, thinking }); await held; return { result: result(), events: [] }; } });
+  while (calls.dispatch.length === 0) await new Promise((done) => setTimeout(done, 5));
+  const started = Date.now();
+  await assert.rejects(runThinkingStep(args(root), d), /the brownfield-architect step of run r1 is already running \(process \d+, since /);
+  assert.ok(Date.now() - started < 1000, "refused at once, not after the first call");
+  assert.equal(calls.dispatch.length, 1, "nothing was sent for the second call");
+  const lock = join(root, ".sdlc", "runs", "r1", "thinking", "brownfield-architect.lock");
+  assert.equal(JSON.parse(readFileSync(lock, "utf8")).pid, process.pid, "the running call holds the step's lock");
+  // Another step of the same run is not held by it.
+  assert.equal((await runThinkingStep(args(root, { role: "brownfield-senior-reviewer" }), deps(AGENT, () => result()).d)).route, "done");
+  letGo();
+  assert.equal((await first).route, "done");
+  assert.equal(existsSync(lock), false, "removed when the call returned");
+  // A call that is refused once it holds the lock (an input that does not exist) leaves no lock behind.
+  await assert.rejects(runThinkingStep(args(root, { inputs: [join(root, "no-such-brief.md")] }), d), /does not exist/);
+  assert.equal(existsSync(lock), false);
+
+  // A lock whose process is gone (a server stopped mid-step) is taken over, and removed when that call returns.
+  const gone = spawnSync(process.execPath, ["-e", ""]).pid;
+  writeFileSync(lock, JSON.stringify({ pid: gone, started_at: "2026-11-01T09:00:00.000Z", token: "left-behind" }) + "\n");
+  const again = deps(AGENT, () => result());
+  let holder;
+  const r = await runThinkingStep(args(root), { ...again.d, dispatch: async (packet, thinking) => { holder = JSON.parse(readFileSync(lock, "utf8")); return again.d.dispatch(packet, thinking); } });
+  assert.equal(r.route, "done");
+  assert.equal(holder.pid, process.pid, "taken over by this call");
+  assert.equal(existsSync(lock), false);
+  // So is one that cannot be read.
+  writeFileSync(lock, "");
+  assert.equal((await runThinkingStep(args(root), deps(AGENT, () => result()).d)).route, "done");
+  assert.deepEqual(readdirSync(join(root, ".sdlc", "runs", "r1", "thinking")).filter((f) => /lock/.test(f)), [], "nothing of the lock is left behind");
 });
 
 test("a step whose worker stopped after every piece was accepted is done; one with pieces owed says what is owed and what was kept", async () => {
