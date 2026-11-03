@@ -60,7 +60,8 @@ test("a hand-in writes its own fixed path, and never through a link", async () =
   assert.equal(readFileSync(join(root, ".sdlc/runs/r1/requirements.md"), "utf8"), "# Requirements\n");
   const linked = project();
   symlinkSync(join(linked, "src"), join(linked, ".sdlc", "runs", "r2"));
-  const t2 = tools(linked, "requirements", { outputs: { requirements: ".sdlc/runs/r2/requirements.md" } });
+  // The step's own folder is the link: its hand-in is refused, not written through it into src/.
+  const t2 = tools(linked, "requirements", { run_id: "r2", output_dir: ".sdlc/runs/r2", outputs: { requirements: ".sdlc/runs/r2/requirements.md" } });
   assert.match((await t2.call("write_requirements", { content: "x" })).error, /is a link/);
   assert.equal(existsSync(join(linked, "src", "requirements.md")), false);
 });

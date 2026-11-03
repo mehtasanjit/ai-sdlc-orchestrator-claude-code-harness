@@ -94,6 +94,20 @@ export function outputDirProblem(projectRoot: string, dir: string, brownfield: b
   return null;
 }
 
+/**
+ * A senior reviewer's review file, when the call names one: given relative to project_root and inside the run's own
+ * folder, as every hand-in is. Review: one given as `../x` was written beside the project, and one in `src/` into the
+ * source, before the step was stopped.
+ */
+export function reviewPathProblem(projectRoot: string, dir: string, reviewPath: unknown): string | null {
+  if (reviewPath === undefined) return null;
+  const rel = typeof reviewPath === "string" && reviewPath !== "" && !isAbsolute(reviewPath)
+    ? posix(relative(resolve(projectRoot, dir), resolve(projectRoot, reviewPath)))
+    : "..";
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return `review_path '${String(reviewPath)}' must be a file inside output_dir ('${dir}'), given relative to project_root`;
+  return null;
+}
+
 /** The fixed paths each role's hand-in tools write, all relative to project_root. */
 export function roleOutputs(role: string, args: ThinkingArgs): Record<string, string> {
   const d = posix(args.output_dir).replace(/\/+$/, "");
@@ -160,7 +174,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   if (!role) throw new Error(`run_thinking_step: unknown role '${args.role}' (known: ${Object.keys(THINKING_ROLES).join(", ")})`);
   if (!args.project_root) throw new Error("run_thinking_step: project_root is required");
   const brownfield = args.role.startsWith("brownfield-") || args.role === "discovery" || deps.contractActive(args.project_root);
-  const dirProblem = outputDirProblem(args.project_root, args.output_dir, brownfield);
+  const dirProblem = outputDirProblem(args.project_root, args.output_dir, brownfield) ?? reviewPathProblem(args.project_root, args.output_dir, args.review_path);
   if (dirProblem) throw new Error(`run_thinking_step: ${dirProblem}`);
 
   const { model, reason } = deps.route(role.phase);

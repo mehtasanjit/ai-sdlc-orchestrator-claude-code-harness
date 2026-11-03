@@ -189,3 +189,19 @@ test("run_file_check runs a check as the engine does: no vendor credentials, the
   assert.ok(denied.error, `a check the person's settings deny is refused: ${text(denied)}`);
   assert.match(denied.error, /deny/);
 });
+
+test("a hand-in is written only inside the step's own folder, never beside the project or into its source", async () => {
+  const base = mkdtempSync(join(tmpdir(), "mmo-own-"));
+  const root = join(base, "app");
+  mkdirSync(join(root, "src"), { recursive: true });
+  mkdirSync(join(root, ".sdlc", "runs", "r1"), { recursive: true });
+  const review = JSON.stringify({ findings: [] });
+  for (const where of ["../outside/review.json", "src/review.json"]) {
+    const t = new ThinkingTools({ role: "brownfield-senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: where } });
+    const r = await t.call("write_review", { content: review });
+    assert.ok(r.error, `write_review to "${where}" should be refused: ${text(r)}`);
+    assert.equal(existsSync(join(root, where)), false, `${where} was written`);
+  }
+  const ok = new ThinkingTools({ role: "brownfield-senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/m1/review.json" } });
+  assert.match(text(await ok.call("write_review", { content: review })), /wrote/);
+});

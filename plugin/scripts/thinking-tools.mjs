@@ -130,9 +130,13 @@ export class ThinkingTools {
     return { result: cut(hits.join("\n") + (hits.length >= MAX_SEARCH_HITS ? `\n[first ${MAX_SEARCH_HITS} matches only: narrow the pattern or the path]` : "")) };
   }
 
-  /** Write one file the step owns, under the project root and never through a link. */
+  /** Write one file the step owns, inside the step's own folder (output_dir) and never through a link. */
   own(rel, text) {
     const abs = join(this.root, rel);
+    const inOwn = relative(resolve(this.root, this.cfg.output_dir), abs);
+    if (inOwn === "" || inOwn.startsWith("..") || isAbsolute(inOwn)) {
+      throw new Error(`${rel} is outside the step's own folder (${this.cfg.output_dir}); nothing is written there`);
+    }
     let at = this.root;
     for (const part of relative(this.root, dirname(abs)).split(sep).filter(Boolean)) {
       at = join(at, part);

@@ -140,6 +140,15 @@ test("a brownfield step writes only in the run's folder under .sdlc", () => {
   assert.equal(outputDirProblem("/p", "examples/x/passes/p1", false), null);
 });
 
+test("a review_path outside the run's own folder is refused before anything is sent", async () => {
+  const root = project();
+  const { d, calls } = deps(AGENT, () => assert.fail("no dispatch"));
+  for (const review_path of ["../outside/review.json", "/tmp/review.json", "src/review.json", ".sdlc/runs/r1"]) {
+    await assert.rejects(runThinkingStep(args(root, { role: "brownfield-senior-reviewer", review_path }), d), /review_path/, review_path);
+  }
+  assert.equal(calls.dispatch.length, 0);
+});
+
 test("each role's hand-in paths are fixed under the run's folder", () => {
   const a = { output_dir: "out/" };
   assert.deepEqual(roleOutputs("requirements", a), { requirements: "out/requirements.md" });
