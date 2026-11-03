@@ -205,17 +205,34 @@ export class ThinkingTools {
   git_diff({ path }) {
     const head = this.provenance()?.git_head_before;
     if (!/^[0-9a-f]{7,64}$/.test(head ?? "")) return { error: "provenance.json names no git_head_before" };
-    const args = ["-C", this.root, "diff", head, "--"];
+    // git reads a path as a pattern, a folder as its whole tree and no path as the whole project, so the read rule
+    // judges each file git is given, never the argument: paths are literal, a folder is its changed files, one by one,
+    // and nothing is ever diffed unscoped.
+    const touched = (this.provenance()?.files_touched ?? []).map((f) => (typeof f === "string" ? f : f?.path)).filter((f) => typeof f === "string");
+    const allowed = (rel) => !readRefusal(this.root, this.cfg.run_id, rel);
+    const git = ["-C", this.root, "--literal-pathspecs"];
+    let files;
     if (path) {
       const r = this.readable(path);
-      if (r.error && !/does not exist/.test(r.error)) return { error: r.error };
-      args.push(path);
+      if (r.error) {
+        // A file the run deleted no longer exists: it is shown when the run touched it and the rule allows it.
+        const rel = typeof path === "string" ? relative(this.root, resolve(this.root, path)).split(sep).join("/") : "";
+        if (!/does not exist/.test(r.error) || !touched.includes(rel)) return { error: r.error };
+        const refusal = readRefusal(this.root, this.cfg.run_id, rel);
+        if (refusal) return { error: refusal };
+        files = [rel];
+      } else if (statSync(r.abs).isDirectory()) {
+        const names = spawnSync("git", [...git, "diff", "--name-only", "--relative", "-z", head, "--", r.rel || "."], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, maxBuffer: 20_000_000 });
+        if (names.status !== 0) return { error: `git could not list the changes under ${path}: ${(names.stderr ?? "").trim()}` };
+        files = names.stdout.split("\0").filter(Boolean).filter(allowed);
+      } else {
+        files = [r.rel.split(sep).join("/")];
+      }
     } else {
-      // The whole change, less every file the read rule keeps from models.
-      const touched = (this.provenance()?.files_touched ?? []).map((f) => (typeof f === "string" ? f : f?.path)).filter((f) => typeof f === "string" && !readRefusal(this.root, this.cfg.run_id, f));
-      args.push(...touched);
+      files = touched.filter(allowed);
     }
-    return this.fixed("git", args, this.root);
+    if (!files.length) return { result: "nothing to show: no changed file here is one the read rule lets you see" };
+    return this.fixed("git", [...git, "diff", head, "--", ...files], this.root);
   }
 
   /** One of the run's declared file checks, in its check form only (never its fix form). */
