@@ -37,6 +37,9 @@ passed and you receive the same setting shape as greenfield plus two more: `inte
 **`/mmo:pass`** — the same run with the full flag surface exposed, for repeat runs and
 scripted invocations, in either mode. It derives the same settings from its flags.
 
+Every command also settles `gates`: `auto-approve` when `/mmo:pass` was given `--gates=auto-approve`,
+otherwise `prompt` (rule 3).
+
 The policy routes every step of the run, and pre-flight's `route_table` says which model runs each phase and
 who runs it. The thinking steps (`requirements_analysis`, `architecture_design`, `senior_code_review`,
 `security_review`) follow it ("Thinking steps follow the policy", below): `session` means you write
@@ -198,6 +201,8 @@ below still applies.
    of reaching one tier, this install picked one, and the other was left unchecked because nothing in
    this run can call it. Say nothing about it unless asked.
 1. **Read the brief first.** Confirm scope; if anything is ambiguous, surface it before starting.
+   Under `gates: auto-approve` no one can answer: take the reading the brief best supports, write it
+   in `requirements.md` as an assumption, and go on.
 2. **Output paths — two directories, both supplied by the invoking command.**
    - **`code_dir`** — the generated application: source, tests, `package.json`, README. `/mmo:greenfield`
      sets this to `./src`.
@@ -225,6 +230,12 @@ below still applies.
    - Gate 2: after `design.md` is written
    - Gate 3: after `security_review.md` is written
    - Gate 4: after final report
+
+   Under `gates: auto-approve` no one is asked and you do not stop: at each of these points log the
+   gate's `gate.open`, answer it yourself as the person's `approved` is answered (`accept` at Gate 4,
+   finalizing the manifest as it says), log its `gate.resolved` with `--by=auto-approve` ("Run
+   logging", step 3), and go on to the next phase. This is how a headless run, which has no one to
+   ask, goes to its end.
 4. **TaskPacket discipline.** Every cross-model dispatch to `execute_with_model` MUST carry all of these required fields, in a single object under the tool's `packet` argument:
 
    | Field | Type | Notes |
@@ -382,6 +393,8 @@ the logger drops missing fields rather than printing them empty.
    node "${CLAUDE_PLUGIN_ROOT}/scripts/mmo-log.mjs" --event=gate.resolved --level=info \
      --run-id=<run-id> --project-root "$(pwd)" --gate=<same> --response=<approved|revise|abort>
    ```
+   Under `gates: auto-approve` (rule 3), `gate.resolved` also carries `--by=auto-approve`: the run's
+   record then says no person gave that answer.
 
 4. **Around every subagent delegation** (`architect`, `senior-reviewer`, `security-reviewer`,
    `discovery`):

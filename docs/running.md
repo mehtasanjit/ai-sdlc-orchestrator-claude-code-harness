@@ -62,7 +62,7 @@ Best when you want to script the run, redirect all output to a file, or run over
 
 ```bash
 export CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-7   # the policy's Claude model; the run-start check needs it in both auth modes
-claude --print "/mmo:pass --auth=vendor --gates=auto-approve --policy=opus-only --run-id=pass1 examples/workforce-ops/brief.md — run end to end without stopping: approve every HITL gate yourself, take the default on any open question, and do not ask me anything." \
+claude --print "/mmo:pass --auth=vendor --gates=auto-approve --policy=opus-only --run-id=pass1 examples/workforce-ops/brief.md" \
   --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
   --output-format stream-json --verbose \
   > examples/workforce-ops/passes/pass1/live-run.log
@@ -76,7 +76,7 @@ above allows those three, and with `Bash` any other shell command the session de
 a folder made for it. With `acceptEdits` alone the run stops at its first step, the run-start check ("This command
 requires approval"), before anything is spent.
 
-With `--gates=auto-approve` and the sentence after the brief, the session approves every HITL gate itself and takes the default on any open question, and the full transcript lands in `live-run.log`. Without them it stops at Gate 1, asking the gate's question; a script answers it with `claude --print --resume <session id> "approved"` (the same flags), and the run goes on to the next gate.
+With `--gates=auto-approve` the orchestrator approves every HITL gate itself, each logged as `gate.resolved response=approved by=auto-approve`, and writes an assumption into `requirements.md` wherever the brief is unclear; the full transcript lands in `live-run.log`. Without the flag the run stops at Gate 1, asking the gate's question; a script answers it with `claude --print --resume <session id> "approved"` (the same flags), and the run goes on to the next gate.
 
 ### How to choose
 
@@ -136,7 +136,7 @@ Steps:
 
    ```bash
    export CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-7   # the Claude model of the project's default policy (opus-plus-flash)
-   claude --print "/mmo:pass --auth=vendor --gates=auto-approve --study=my-project --run-id=pass1 my-brief.md — run end to end without stopping: approve every HITL gate yourself, take the default on any open question, and do not ask me anything." \
+   claude --print "/mmo:pass --auth=vendor --gates=auto-approve --study=my-project --run-id=pass1 my-brief.md" \
      --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
      --output-format stream-json --verbose \
      > examples/my-project/passes/pass1/live-run.log
@@ -165,7 +165,7 @@ The orchestrator pauses at four points during the run:
 - **Gate 3** — after `security_review.md` is written
 - **Gate 4** — after the final report
 
-In interactive mode each gate prints the artifact and waits for your input; approve to continue or provide direction to redirect the phase. In headless mode, with `--gates=auto-approve` and the sentence the headless examples above end their prompt with, all four gates are approved by the session itself.
+In interactive mode each gate prints the artifact and waits for your input; approve to continue or provide direction to redirect the phase. In headless mode, with `--gates=auto-approve`, all four gates are approved by the orchestrator itself, and the run's log records each as `by=auto-approve`.
 
 ## After the pass finishes
 
@@ -197,11 +197,11 @@ Each pass writes to a separate directory under `examples/<study-id>/passes/`. To
 
 ```bash
 # headless form
-claude --print "/mmo:pass --auth=vendor --gates=auto-approve --policy=opus-only --run-id=baseline examples/workforce-ops/brief.md — run end to end without stopping: approve every HITL gate yourself, take the default on any open question, and do not ask me anything." \
+claude --print "/mmo:pass --auth=vendor --gates=auto-approve --policy=opus-only --run-id=baseline examples/workforce-ops/brief.md" \
   --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
   --output-format stream-json --verbose > examples/workforce-ops/passes/baseline/live-run.log
 
-claude --print "/mmo:pass --auth=vendor --gates=auto-approve --policy=opus-plus-flash --run-id=multi-model examples/workforce-ops/brief.md — run end to end without stopping: approve every HITL gate yourself, take the default on any open question, and do not ask me anything." \
+claude --print "/mmo:pass --auth=vendor --gates=auto-approve --policy=opus-plus-flash --run-id=multi-model examples/workforce-ops/brief.md" \
   --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
   --output-format stream-json --verbose > examples/workforce-ops/passes/multi-model/live-run.log
 

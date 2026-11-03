@@ -244,3 +244,17 @@ test("step 1's dead-run case is reachable: session-hydrate reports a frozen run 
     assert.equal(resume(), null, "an ended run is not");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// Live test of 0.10.1: a project with its own routing-policy.yaml and no saved default reached Gate 0, whose policy
+// bullet read only the saved default and said to abort when it was missing, while the server loads the project's own
+// file first whenever it exists (policy.ts loadPolicy; pass.md "Policy resolution"). Gate 0 could abort a project that
+// has a policy, or show the person one policy while another ran.
+test("step 5: Gate 0 shows the policy the run will load, in the loader's order, and stops only when there is none", () => {
+  const s5 = flat(step(5));
+  const bullet = s5.slice(s5.indexOf("**Policy**"), s5.indexOf("**Existing AI setup**"));
+  const flag = bullet.indexOf("--policy");
+  const project = bullet.indexOf("routing-policy.yaml");
+  const saved = bullet.indexOf("default_policy");
+  assert.ok(flag >= 0 && project > flag && saved > project, `the loader's order: a --policy flag, the project's own file, the saved default: ${bullet}`);
+  assert.match(bullet, /If none of the three exists/, "it stops only when the project has no policy at all");
+});

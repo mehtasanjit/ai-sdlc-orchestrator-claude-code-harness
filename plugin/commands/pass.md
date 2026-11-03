@@ -12,6 +12,7 @@ Invoke the `orchestrator` subagent to execute one full SDLC run (with `--mode=br
 - `--policy=<name>` — routing policy name. When absent, resolves to the current project's `default_policy` field from `.sdlc/project.json` (written by `/mmo:setup`'s policy step or by `/mmo:policy`), or `opus-plus-flash` if no project default is set.
 - `--study=<study-id>` — case-study identifier. Defaults to `workforce-ops`. Set this to a project-specific id when running against a brief other than the shipped `examples/workforce-ops/brief.md`, so telemetry and packets stay grouped by project.
 - `--run-id=<run-id>` — run identifier within the study. Defaults to `pass1`.
+- `--gates=<prompt|auto-approve>` — who answers the run's gates. `prompt` (the default) asks the person at each one. `auto-approve` approves Gates 1 to 3 and accepts Gate 4 with no one asked, each logged as the flag's (orchestrator.md rule 3), so a run with no person at it, a headless one, goes to its end. Pass it to the orchestrator as `gates`. Any other value: stop before anything runs, naming the two.
 - Executor mode — always on for a greenfield brief: the typed-spec executor flow (the pipeline skill's **Executor mode**; `/mmo:greenfield` always runs it). The architect hands over a typed spec, and the `execute_stage` tool types, checks and writes every file by code, each with the typist the policy routes it to, and types review and test fixes the same way (the policy's `debug` rule, exact edits); the orchestrator never re-types a file. The same flow for every policy, so a solo policy and a multi-model policy differ only in who types. Ignored in brownfield.
 - `--executor` — accepted and changes nothing: executor mode is already on for a greenfield brief.
 - The remaining positional argument is the path to the brief file. Any markdown brief on disk works — see `docs/brief-template.md` for the section layout the requirements phase expects.
@@ -57,7 +58,7 @@ under a different policy than the run used is worse than no what-if.
 
 Until the run ends, show the user no cost total, at a gate or between gates, even when the orchestrator's message carries one: those figures leave out what this session and its helpers cost, and the run's full cost is only known when the run ends.
 
-When invoked headlessly (e.g. via `claude --print "/mmo:pass ..." --output-format stream-json --verbose`), all four HITL gates auto-approve so the session can complete end-to-end without prompts.
+A headless run (`claude --print "/mmo:pass ..."`) has no one to answer a gate: give it `--gates=auto-approve`, or it stops at Gate 1 with the gate's question. Under `auto-approve`, a gate the orchestrator returns all the same is answered here, `approved` (`accept` at Gate 4), and never shown as a question.
 
 ---
 
@@ -73,7 +74,8 @@ with the handover `intent: <--intent>`. The flags answer its questions:
 1. `--brief` is step 4's "bring your own file": with it, there is no interview.
 2. `--auth` and `--policy` are Gate 0's auth mode and policy.
 3. `--gates` decides Gate 0 as it decides the other gates: `auto-approve` approves it without asking,
-   `prompt` asks the person.
+   `prompt` asks the person. It goes on to the brownfield orchestrator as `gates` (the guide's step 6), which
+   answers Gates 1 to 4 by it.
 4. Gate 0's `approved` runs the guide's step 5 freeze, `write-contract.mjs --freeze` (with
    `--strict-write=off` only when it was passed).
 5. Only then delegate `brownfield-orchestrator` (step 6), whatever the `--intent`, never `orchestrator`, and

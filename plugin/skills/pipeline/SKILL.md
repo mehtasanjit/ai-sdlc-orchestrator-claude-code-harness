@@ -342,7 +342,8 @@ cd <repo-root>   # NOT <output_dir> — the app-under-test is the user's actual 
 If codegen introduced new required env vars (via `existing_file_edit` on `.env.example`):
 1. Append the new keys to `.env.example` (this IS a permitted write — .env.example is in the allowlist by default and holds no values, only key names).
 2. Print the list of new keys to the operator with a mini-gate: *"Codegen introduced N new required env vars: X, Y, Z. Populate them in your .env before Phase 7 continues, or say `skip` to run Phase 7 anyway (tests requiring these keys will fail)."*
-3. Wait for the user's response before invoking the test command.
+3. Wait for the user's response before invoking the test command. Under `gates: auto-approve` no one can populate
+   the person's `.env`: take `skip`, and the final report names the keys to populate.
 
 The test command in brownfield is `baseline.test_command` (confirmed at Gate 0), not hardcoded `npm test`. Working directory is the repo root (not `<output_dir>`); in monorepos, use the per-package scope from `baseline.monorepo.packages[].test_command` for whichever package the changed files belong to.
 
@@ -459,6 +460,9 @@ before emitting the message** — except in brownfield, where the write contract
 `.sdlc/` outside the run's own folder and the run's own log (`gate.open`, `gate.resolved`) is the record: a
 brownfield run that never ended is found from its contract's freeze record when the next `/mmo:brownfield`
 starts (the brownfield guide's step 1).
+
+Under `gates: auto-approve` (`/mmo:pass --gates=auto-approve`) no gate bubbles up: the orchestrator approves each
+one itself and logs it as the flag's (orchestrator.md rule 3), so a headless run goes to its end.
 
 ### Gate 0 — Brownfield only, before Gate 1
 
