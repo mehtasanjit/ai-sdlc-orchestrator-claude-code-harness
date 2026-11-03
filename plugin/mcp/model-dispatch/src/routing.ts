@@ -18,12 +18,21 @@ import { existsSync } from "node:fs";
 import { utcDay } from "./prices.js";
 import { defaultAdcPath, geminiDispatchEndpoint, vertexSurchargeFactor } from "./adapters/geminiEndpoint.js";
 import type {
+  Phase,
   Policy,
   Rule,
   RoutingDecision,
   RuleMatcher,
   SelectOverrides,
 } from "./types.js";
+
+/**
+ * The phases a run's thinking steps take (thinking.ts THINKING_ROLES): run in the session on a Claude model, or as a
+ * thinking step on an agent leaf. The one list the route table (routeTable.ts) and the run-start check
+ * (scripts/driver-model-check.mjs, through the bundle) both read, so they cannot disagree on which phases pin the
+ * session (review: the check also counted discovery, plan_task_packets and change_plan, which the table does not route).
+ */
+export const THINKING_PHASES: readonly Phase[] = Object.freeze(["requirements_analysis", "architecture_design", "senior_code_review", "security_review"]);
 
 export interface TaskContext {
   phase: string;

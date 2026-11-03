@@ -414,3 +414,47 @@ test("discovery is not a thinking phase of the check: a policy whose discovery r
     assert.equal(run(["--project-root", root, "--print-only"]).stdout.trim(), "claude-opus-5");
   });
 });
+
+// Review: the check counted plan_task_packets and change_plan, which code renders, and discovery, the session's
+// Claude helper whatever its rule says, among the phases that pin the session. A policy that thinks on Argon and
+// types on a Claude typist by its default rule was refused as a split across two Claude models, or, with no
+// session_model, pinned the session to the typist's model.
+const ARGON_THINKS_SONNET_TYPES = `
+version: 1
+name: argon-think-sonnet-default
+session_model: claude-opus-5-5
+models:
+  - id: argon
+    adapter: antigravity-worker
+    model_name: gemini-4-argon
+  - id: sonnet
+    adapter: claude-cli
+    model_name: claude-sonnet-5-5
+  - id: opus
+    adapter: builtin-anthropic
+    model_name: claude-opus-5-5
+rules:
+  - when: { phase: architecture_design, intent: refactor }
+    use: opus
+  - when: { phase: [requirements_analysis, architecture_design, senior_code_review, security_review, debug] }
+    use: argon
+  - default: sonnet
+`;
+
+test("phases code renders and discovery do not pin the session: only the thinking phases and session_model do", () => {
+  withPolicy(ARGON_THINKS_SONNET_TYPES, (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /\(its session_model\)/);
+    // A job whose own rule gives the design to a Claude model is pinned to that model (--intent, as the step routes).
+    const job = run(["--project-root", root, "--intent", "refactor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(job.code, 0, job.stderr);
+    assert.match(job.stdout, /driver model 'opus'/);
+  });
+  // Without session_model the session runs on its own model: the typist's model is never its pin.
+  withPolicy(ARGON_THINKS_SONNET_TYPES.replace("session_model: claude-opus-5-5\n", ""), (root) => {
+    const r = run(["--project-root", root, "--print-only"]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout.trim(), "");
+  });
+});

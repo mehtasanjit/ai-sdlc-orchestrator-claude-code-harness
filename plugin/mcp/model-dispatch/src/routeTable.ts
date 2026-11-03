@@ -6,7 +6,7 @@
 
 import { executorView } from "./executor/run.js";
 import { getModel } from "./policy.js";
-import { pickModel } from "./routing.js";
+import { pickModel, THINKING_PHASES } from "./routing.js";
 import { THINKING_MODULE, THINKING_TASK_TYPE } from "./thinking.js";
 import type { Phase, Policy, SelectOverrides } from "./types.js";
 
@@ -20,14 +20,13 @@ export interface RouteRow {
   reason: string;
 }
 
-const THINKING: Phase[] = ["requirements_analysis", "architecture_design", "senior_code_review", "security_review"];
 const TYPING: Phase[] = ["codegen", "tests", "docs", "debug"];
 const isClaude = (adapter: string) => adapter === "builtin-anthropic" || adapter === "claude-cli";
 
 export function routeTable(policy: Policy, overrides: SelectOverrides, intent?: string): { rows: RouteRow[]; problems: string[] } {
   const rows: RouteRow[] = [];
   const problems: string[] = [];
-  for (const phase of THINKING) {
+  for (const phase of THINKING_PHASES) {
     const d = pickModel({ phase, task_type: THINKING_TASK_TYPE, module: THINKING_MODULE, retry_count: 0, ...(intent ? { intent } : {}) }, policy, overrides);
     const m = getModel(policy, d.modelId);
     if (isClaude(m.adapter)) rows.push({ phase, model: m.model_name, model_id: m.id, who: "session", reason: d.reason });
