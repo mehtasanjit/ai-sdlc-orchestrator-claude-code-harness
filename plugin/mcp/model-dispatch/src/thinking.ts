@@ -245,9 +245,16 @@ export function stepOwnPaths(args: ThinkingArgs, outputs: Record<string, string>
   return own;
 }
 
-/** A step's own name in its run: its role, and for a senior review with its own review_path, that path too. */
+/**
+ * A step's own name in its run: its role, and for a senior review with its own review_path, that path too, readable
+ * (each run of other characters made "_") and followed by 8 hex characters of the path's sha256, so two paths that read
+ * the same (out/m1/review.json and out/m1_review.json) never share one step's files (review: they did). The path is
+ * taken in one spelling (runFolder), so ./out/m1/review.json is the same step as out/m1/review.json.
+ */
 export function stepKey(args: Pick<ThinkingArgs, "role" | "review_path">): string {
-  return typeof args.review_path === "string" && args.review_path !== "" ? `${args.role}--${posix(args.review_path).replace(/[^A-Za-z0-9._-]+/g, "_")}` : args.role;
+  if (typeof args.review_path !== "string" || args.review_path === "") return args.role;
+  const path = runFolder(args.review_path);
+  return `${args.role}--${path.replace(/[^A-Za-z0-9._-]+/g, "_")}-${createHash("sha256").update(path).digest("hex").slice(0, 8)}`;
 }
 
 /** The largest input file a step is given, as the step's own read_file reads (thinking-tools.mjs MAX_FILE_BYTES). */

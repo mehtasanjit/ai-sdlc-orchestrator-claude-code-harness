@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { THINKING_ROLES, outputDirProblem, roleInstructions, roleOutputs, runThinkingStep } from "../dist/thinking.js";
+import { THINKING_ROLES, outputDirProblem, roleInstructions, roleOutputs, runThinkingStep, stepKey } from "../dist/thinking.js";
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const CLAUDE = { id: "opus", adapter: "builtin-anthropic", model_name: "claude-opus-5-5" };
@@ -367,6 +367,18 @@ test("per-module reviews are separate steps: each keeps its own files, conversat
   const again = review("m1", "conv-m1");
   await runThinkingStep(args(root, { role: "senior-reviewer", output_dir: "out", review_path: "out/m1/review.json", prompt: "Review module m1", revise: "fix it" }), again.d);
   assert.equal(again.calls.dispatch[0].thinking.resumeId, "conv-m1");
+});
+
+test("two review paths never share a step key, the same path always gets the same key, and a step without one keeps its role", () => {
+  const key = (review_path) => stepKey({ role: "senior-reviewer", review_path });
+  // Both read out_m1_review.json once every other character is made "_" (review: they shared one step's files).
+  assert.notEqual(key("out/m1/review.json"), key("out/m1_review.json"));
+  assert.notEqual(key("out/m1 review.json"), key("out/m1_review.json"));
+  assert.match(key("out/m1/review.json"), /^senior-reviewer--out_m1_review\.json-[0-9a-f]{8}$/, "readable, with the path's own hash");
+  assert.equal(key("out/m1/review.json"), key("out/m1/review.json"));
+  assert.equal(key("./out/m1/review.json"), key("out/m1/review.json"), "another spelling of the same file is the same step");
+  assert.equal(stepKey({ role: "architect" }), "architect");
+  assert.equal(key(""), "senior-reviewer");
 });
 
 test("a second call of a step while it runs is refused at once; a lock left by a process that is gone is taken over", async () => {
