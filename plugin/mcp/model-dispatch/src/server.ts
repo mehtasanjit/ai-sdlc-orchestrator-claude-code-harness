@@ -1077,7 +1077,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "An architect step called again in the same run starts from the sections the run's spec already holds, and is " +
         "done at once, with nothing sent, when that spec is finalized (a new preflight_dispatch is a new run, whose spec " +
         "goes again in full). A second call of a step while it runs is refused, " +
-        "and nothing is sent for it. " +
+        "and nothing is sent for it. Every call passes the run's telemetry_path, where every call the step made is " +
+        "recorded. " +
         "A step that cannot finish replies 'stopped' with the reason, saying in plain words what stopped it, and what is still owed, " +
         "and Google serving nothing for the run's busy window replies 'halt': stop the run in both cases; no other " +
         "model takes the step over. A worker the agent door's kill rule stops (frozen) after a turn of its own is " +
@@ -1104,9 +1105,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           acceptance_fix: { type: "string", description: "Architect only: the acceptance receipt's failure routed to the architect and its log_path. Carries on the architect's conversation; changes no spec section; not with revise." },
           policy_name: { type: "string" },
           policy_path: { type: "string" },
-          telemetry_path: { type: "string" },
+          telemetry_path: { type: "string", description: "The run's telemetry.jsonl (relative to project_root, or absolute): every call the step makes is appended there with its cost, as an execute_stage call's are." },
         },
-        required: ["role", "prompt", "project_root", "output_dir", "run_id"],
+        required: ["role", "prompt", "project_root", "output_dir", "run_id", "telemetry_path"],
       },
     },
     ...EXECUTOR_TOOLS,
@@ -1181,10 +1182,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
       }
       case "run_thinking_step": {
-        // The worker's brief and evidence are staged beside telemetry_path; the worker runs from another folder, so a
-        // path relative to the project is made absolute first.
+        // Every call a step makes is spend, so the step has somewhere to record it before anything is sent (review: a
+        // step called without telemetry_path spent and left nothing in the run's records).
         const a0j = args as any;
-        const a1 = a0j?.telemetry_path && a0j.project_root ? { ...a0j, telemetry_path: resolvePath(a0j.project_root, a0j.telemetry_path) } : a0j;
+        if (typeof a0j?.telemetry_path !== "string" || a0j.telemetry_path === "") {
+          throw new Error("run_thinking_step: telemetry_path is required: the run's telemetry.jsonl, where every call the step makes is recorded with its cost. Nothing was sent.");
+        }
+        // The worker's brief and evidence are staged beside telemetry_path; the worker runs from another folder, so a
+        // path relative to the project is made absolute first, and the run's log goes beside that same file.
+        const a1 = a0j.project_root ? { ...a0j, telemetry_path: resolvePath(a0j.project_root, a0j.telemetry_path) } : a0j;
+        configureSinks({ telemetryPath: a1.telemetry_path });
         // A thinking step is routed by the run its pre-flight recorded, never by its own call's arguments: with no
         // recorded run the call's own policy (or the default) would route it, and with no job the run's job-scoped
         // rules would not apply (review: either turned a step the route table gave Gemini into the session's, on Claude).
@@ -1223,7 +1230,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             } else if (one.result.success || one.result.tokens.output > 0) ledger.served(leafName);
             return { result: one.result, events: one.events };
           },
-          record: (evs) => { if (a.telemetry_path) for (const ev of evs) appendEvent(a.telemetry_path, ev); },
+          record: (evs) => { for (const ev of evs) appendEvent(a.telemetry_path, ev); },
           log: (level, event, fields) => log(level, event, fields),
         };
         // A thinking step can run for hours (thinking_timeout_sec), so it sends progress as an agent-door dispatch does

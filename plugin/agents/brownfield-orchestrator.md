@@ -81,7 +81,8 @@ to the user with pre-flight's other lines, before anything is spent. At each thi
   the helper. The driver check pinned this session to that model.
 - **`who: engine, thinking`**: call `run_thinking_step` instead of the helper, with the step's `role`, the
   `prompt` you would give the helper, `project_root`, the run's `output_dir` (relative to `project_root`),
-  `run_id`, the run's policy arguments and `telemetry_path`:
+  `run_id`, the run's policy arguments and its `telemetry_path` (always: the step is refused without it, since
+  every call the step makes is recorded there with its cost):
 
   | Step | `role` | Also pass |
   |---|---|---|

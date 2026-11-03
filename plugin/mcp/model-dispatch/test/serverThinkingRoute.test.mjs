@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
-import { cleanup, project, receipt, standInClaude, withServer } from "./serverHarness.mjs";
+import { cleanup, events, project, receipt, standInClaude, withServer } from "./serverHarness.mjs";
 import { fakeWorkerPython, flagValue } from "./agyFakes.mjs";
 
 // E-thinking-route.
@@ -25,7 +25,7 @@ test("a thinking step is routed by its run's pre-flight: no recorded run, or ano
     "rules:", "  - when: { phase: requirements_analysis, intent: bugfix }", "    use: flash", "  - default: opus", "",
   ].join("\n"));
   const policy_path = join(root, "policy.yaml");
-  const step = (over) => ({ role: "requirements", prompt: "The brief is in brief.md.", project_root: root, output_dir: "out", policy_path, ...over });
+  const step = (over) => ({ role: "requirements", prompt: "The brief is in brief.md.", project_root: root, output_dir: "out", policy_path, telemetry_path: "out/telemetry.jsonl", ...over });
   try {
     await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
       const pf = await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r2", intent: "bugfix" });
@@ -63,7 +63,7 @@ test("a Gemini architect's step carries its run's spec token, the one submit_spe
     "rules:", "  - when: { phase: architecture_design }", "    use: flash", "  - default: opus", "",
   ].join("\n"));
   const policy_path = join(root, "policy.yaml");
-  const step = { role: "architect", prompt: "Design from requirements.md.", project_root: root, run_id: "r3", output_dir: "out", policy_path };
+  const step = { role: "architect", prompt: "Design from requirements.md.", project_root: root, run_id: "r3", output_dir: "out", policy_path, telemetry_path: "out/telemetry.jsonl" };
   // The run's requirements, which its requirements step hands in: the architect checks coverage against them.
   mkdirSync(join(root, "out"), { recursive: true });
   writeFileSync(join(root, "out", "requirements.md"), "# R\n- FR-1: ping.\n");
@@ -112,7 +112,7 @@ test("a thinking step's Gemini session works in an empty folder of its own; a pr
     "rules:", "  - when: { phase: requirements_analysis }", "    use: flash", "  - default: opus", "",
   ].join("\n"));
   const policy_path = join(root, "policy.yaml");
-  const step = { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, run_id: "r5", output_dir: "out", policy_path };
+  const step = { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, run_id: "r5", output_dir: "out", policy_path, telemetry_path: "out/telemetry.jsonl" };
   try {
     await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
       assert.equal((await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r5" })).json?.ok, true);
@@ -151,10 +151,49 @@ test("a step whose own setup kept a hand-in from being checked stops, saying wha
   try {
     await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
       assert.equal((await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r6", intent: "bugfix" })).json?.ok, true);
-      const r = await call("run_thinking_step", { role: "brownfield-architect", prompt: "Plan the fix.", project_root: root, run_id: "r6", output_dir: ".sdlc/runs/r6", policy_path });
+      const r = await call("run_thinking_step", { role: "brownfield-architect", prompt: "Plan the fix.", project_root: root, run_id: "r6", output_dir: ".sdlc/runs/r6", policy_path, telemetry_path: ".sdlc/runs/r6/telemetry.jsonl" });
       assert.equal(r.json?.route, "stopped", r.text);
       assert.equal(r.json.reason, `the gemini-3.8-flash step stopped on its own setup, which no hand-in can fix: ${setupError}`);
       assert.deepEqual(r.json.missing, summary.missing);
+    });
+  } finally {
+    fake.cleanup();
+    cleanup(bin, root);
+  }
+});
+
+// E-thinking-telemetry. Review: a Gemini step's spend reached the run's telemetry only when the call passed
+// telemetry_path, which the tool did not require: a step that reported $2.625 left nothing in the run's records.
+test("a thinking step's spend is always recorded: a call without telemetry_path is refused, and with it the step's events are appended there", { timeout: 60_000 }, async () => {
+  const summary = { done: true, missing: [], accepted: ["requirements"], conversation_id: "c1", text: "" };
+  const fake = fakeWorkerPython({ runs: [{ holdMs: 50, sidecar: { sdk_version: "0.1.22", usage: { prompt_token_count: 1000, candidates_token_count: 100 } }, stdout: JSON.stringify(summary), summary }] });
+  const bin = standInClaude([receipt({})]);
+  const root = project({ contract: false });
+  writeFileSync(join(root, "policy.yaml"), [
+    "version: 1", "name: think-flash", "models:",
+    "  - id: opus", "    adapter: builtin-anthropic", "    model_name: claude-opus-5",
+    "  - id: flash", "    adapter: antigravity-worker", "    model_name: gemini-3.8-flash",
+    "rules:", "  - when: { phase: requirements_analysis }", "    use: flash", "  - default: opus", "",
+  ].join("\n"));
+  const policy_path = join(root, "policy.yaml");
+  const step = { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, run_id: "r6", output_dir: "out", policy_path };
+  try {
+    await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
+      assert.equal((await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r6" })).json?.ok, true);
+      const refused = await call("run_thinking_step", step);
+      assert.equal(refused.isError, true, `a step with nowhere to record its spend is refused: ${refused.text}`);
+      assert.match(refused.text, /telemetry_path is required/);
+      assert.equal(fake.runs().length, 0, "nothing was sent");
+      // Relative to project_root, as the run's other calls give it.
+      const done = await call("run_thinking_step", { ...step, telemetry_path: "out/telemetry.jsonl" });
+      assert.equal(done.json?.route, "done", done.text);
+      const recorded = events(join(root, "out", "telemetry.jsonl"));
+      assert.ok(recorded.length >= 1, "the step's events are in the run's telemetry");
+      for (const ev of recorded) {
+        assert.equal(ev.judgment_role, "requirements");
+        assert.equal(ev.phase, "requirements_analysis");
+      }
+      assert.ok(recorded.reduce((sum, ev) => sum + (ev.cost_usd ?? 0), 0) > 0, "with the step's cost");
     });
   } finally {
     fake.cleanup();

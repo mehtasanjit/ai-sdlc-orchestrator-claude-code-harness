@@ -23,7 +23,7 @@ test("a thinking step that runs past one progress interval sends progress before
   try {
     await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
       assert.equal((await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r1" })).json?.ok, true);
-      const r = await call("run_thinking_step", { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, output_dir: "out", run_id: "r1", policy_path }, { onprogress: () => {}, timeout: 80_000 });
+      const r = await call("run_thinking_step", { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, output_dir: "out", run_id: "r1", policy_path, telemetry_path: "out/telemetry.jsonl" }, { onprogress: () => {}, timeout: 80_000 });
       assert.notEqual(r.isError, true, r.text);
       assert.equal(r.json?.route, "done", r.text);
       assert.ok(r.progress.length >= 1, "no progress was sent during a 38 s thinking step");
@@ -49,7 +49,7 @@ test("a thinking step's summary is read whatever its worker's exit: all accepted
   try {
     await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
       assert.equal((await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r1" })).json?.ok, true);
-      const step = { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, output_dir: "out", run_id: "r1", policy_path };
+      const step = { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, output_dir: "out", run_id: "r1", policy_path, telemetry_path: "out/telemetry.jsonl" };
       const done = await call("run_thinking_step", step);
       assert.equal(done.json?.route, "done", done.text);
       const owed = await call("run_thinking_step", step);
