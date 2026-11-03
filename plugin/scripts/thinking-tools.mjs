@@ -4,9 +4,11 @@
  *
  * Every read goes through readRefusal (lib/change-spec.mjs), the one read rule for everything a model is sent, so
  * credentials, MCP config, other AI tools' rules, git's own store and a brownfield contract's off-limits never leave
- * the machine. Every hand-in writes one fixed path the step owns and runs the same check the Claude helper's hand-over
- * runs: plan-lint's checkSection for the change spec, the spec store for the build spec, the findings shape for a
- * review. Nothing else writes, and no tool takes a shell command from the model.
+ * the machine, under any other name for them (a link, a hard link, another spelling). Every hand-in writes one fixed
+ * path the step owns and runs the same check the Claude helper's hand-over runs: plan-lint's checkSection for the
+ * change spec, the spec store for the build spec, the findings shape for a review. Nothing else writes. No command the
+ * model wrote runs before the person approves the plan at Gate 2: a hand-in's file checks wait for dispatch, and a
+ * reviewer's file check runs the approved plan's check as the engine runs checks.
  *
  * Protocol: one JSON object per line on stdin, {id, op, args}; one per line on stdout, {id, ok, result} or
  * {id, ok: false, error}. Started with --config <file>, a JSON object written by the server (src/thinking.ts).
@@ -17,7 +19,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { readRefusal } from "./lib/change-spec.mjs";
+import { readRefusal, runFileCheck } from "./lib/change-spec.mjs";
 import { holdsPrivateKey } from "./lib/off-limits.mjs";
 import { loadServerLib } from "./lib/server-lib.mjs";
 
@@ -241,17 +243,21 @@ export class ThinkingTools {
     return this.fixed("git", [...git, "diff", head, "--", ...files], this.root);
   }
 
-  /** One of the run's declared file checks, in its check form only (never its fix form). */
-  run_file_check({ path, check_id }) {
+  /**
+   * One of the run's declared file checks, in its check form only (never its fix form): a check of the plan the
+   * person approved at Gate 2, run as the engine runs checks (lib/change-spec.mjs runFileCheck): no vendor
+   * credentials, the person's deny rules, the whole process group stopped at the limit.
+   */
+  async run_file_check({ path, check_id }) {
     const r = this.readable(path);
     if (r.error) return { error: r.error };
     let header;
     try { header = JSON.parse(readFileSync(join(this.root, this.cfg.output_dir, "change-spec.json"), "utf8")); } catch { return { error: "this run has no change-spec.json" }; }
     const check = (header.file_checks ?? header.header?.file_checks ?? []).find((c) => c.id === check_id);
     if (!check) return { error: `no file check '${check_id}' in this run's spec` };
-    const quoted = `'${r.rel.replace(/'/g, "'\\''")}'`;
-    const res = spawnSync("sh", ["-c", check.run.replaceAll("{path}", quoted)], { cwd: this.root, encoding: "utf8", timeout: (check.timeout_s ?? 120) * 1000 });
-    return { result: cut(`exit ${res.status ?? "none"}\n${res.stdout ?? ""}${res.stderr ?? ""}`) };
+    const ran = await runFileCheck(this.root, check, r.rel.split(sep).join("/"), MAX_RESULT_CHARS);
+    if (ran.refused) return { error: ran.refused };
+    return { result: cut(`${ran.verdict}\n${ran.output}`) };
   }
 
   run_dependency_audit({ kind }) {

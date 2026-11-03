@@ -545,6 +545,28 @@ function runCheck(cmd, cwd, timeoutSec, tailChars) {
 }
 
 /**
+ * One declared file check on one file, run as the server and plan-lint run checks: the command filled with the path
+ * (quotePath, fillPath), refused when the person's Bash deny rules forbid it or when it cannot be read for them, run
+ * without the vendor credentials (checkEnv), and at its time limit the whole process group stopped (runCheck). A path
+ * that starts with `-` is refused: a command would read it as an option. Resolves { ok, verdict, output } or
+ * { refused }. A Gemini reviewer's run_file_check (thinking-tools.mjs) runs its checks through this.
+ */
+export async function runFileCheck(projectRoot, check, path, tailChars) {
+  if (typeof path !== "string" || path.startsWith("-")) return { refused: `${path} starts with "-", which a command reads as an option: name the file another way` };
+  let template;
+  let cmd;
+  try { template = quotePath(check.run); cmd = fillPath(template, path); } catch (e) { return { refused: String(e?.message ?? e) }; }
+  const rule = deniedBy(cmd, projectRoot);
+  if (rule) return { refused: `the check runs \`${cmd}\`, which the person's Claude settings deny (${rule})` };
+  if (bashDenyRules(projectRoot).length > 0 && serverCommandUnchecked({ template, path })) {
+    return { refused: `the check runs \`${cmd}\`, whose shell syntax cannot be checked against the person's deny rules` };
+  }
+  const limit = check.timeout_s ?? 120;
+  const r = await runCheck(cmd, projectRoot, limit, tailChars);
+  return { ok: r.ok, verdict: r.timedOut ? `timed out after ${limit}s` : r.exit === null ? "could not run" : `exit ${r.exit}`, output: r.output };
+}
+
+/**
  * Each unit's file checks, run on the file as it is before the change — an edit's own file, a new file's style file —
  * which is the baseline the server takes at dispatch (apply.ts baselineChecks). Returns error lines naming the unit
  * and the check, with the check's output.

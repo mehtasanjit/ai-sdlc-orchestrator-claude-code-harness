@@ -151,3 +151,41 @@ test("the person's deny rules still refuse a hand-in's command, which is checked
   assert.ok(u.error, "a denied command is refused");
   assert.match(u.error, /deny/);
 });
+
+/** A reviewer's project with the run's change spec naming one file check, `node {path}`, with a 3 s limit. */
+function checkProject(settings) {
+  const root = mkdtempSync(join(tmpdir(), "mmo-filecheck-"));
+  const put = (rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
+  put("test/env.test.js", 'console.log("seen:", ["ANTHROPIC_API_KEY","CLAUDE_CODE_OAUTH_TOKEN","GEMINI_API_KEY"].map(k => k + "=" + process.env[k]).join(" "));\n');
+  put("test/hold.test.js", `const c = require("child_process").spawn("sleep", ["30"], { stdio: "inherit" }); require("fs").writeFileSync(${JSON.stringify(join(root, "child.pid"))}, String(c.pid)); setTimeout(() => {}, 60000);\n`);
+  put("-rf.js", "console.log(1);\n");
+  put(".sdlc/runs/r1/change-spec.json", JSON.stringify({ header: { file_checks: [{ id: "unit", run: "node {path}", timeout_s: 3 }] } }));
+  if (settings) put(".claude/settings.json", JSON.stringify(settings));
+  return root;
+}
+const fileReviewer = (root) =>
+  new ThinkingTools({ role: "brownfield-senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/review.json" } });
+
+test("run_file_check runs a check as the engine does: no vendor credentials, the person's deny rules, the whole group stopped at the limit", async () => {
+  const saved = { ...process.env };
+  Object.assign(process.env, { ANTHROPIC_API_KEY: `sk-ant-${SECRET}`, CLAUDE_CODE_OAUTH_TOKEN: `oauth-${SECRET}`, GEMINI_API_KEY: `gem-${SECRET}` });
+  try {
+    const root = checkProject();
+    const t = fileReviewer(root);
+    const env = text(await t.call("run_file_check", { path: "test/env.test.js", check_id: "unit" }));
+    assert.doesNotMatch(env, new RegExp(SECRET), `the check saw a vendor credential: ${env}`);
+    const held = text(await t.call("run_file_check", { path: "test/hold.test.js", check_id: "unit" }));
+    assert.match(held, /timed out after 3 ?s/, `a check over its limit says so: ${held}`);
+    const pid = Number((await import("node:fs")).readFileSync(join(root, "child.pid"), "utf8"));
+    let alive = true;
+    try { process.kill(pid, 0); } catch { alive = false; }
+    if (alive) process.kill(pid, "SIGKILL");
+    assert.equal(alive, false, "the check's own child was left running after its limit");
+    assert.ok((await t.call("run_file_check", { path: "-rf.js", check_id: "unit" })).error, "a path that reads as an option is refused");
+  } finally {
+    for (const k of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY"]) if (k in saved) process.env[k] = saved[k]; else delete process.env[k];
+  }
+  const denied = await fileReviewer(checkProject({ permissions: { deny: ["Bash(node:*)"] } })).call("run_file_check", { path: "test/env.test.js", check_id: "unit" });
+  assert.ok(denied.error, `a check the person's settings deny is refused: ${text(denied)}`);
+  assert.match(denied.error, /deny/);
+});
