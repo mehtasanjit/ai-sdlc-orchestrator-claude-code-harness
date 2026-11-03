@@ -1,14 +1,21 @@
 # Flash-only floor — every dispatched task (judgment AND mechanical) routes to
 # Gemini 3.7 Flash via the Antigravity SDK agent adapter.
 #
-# IMPORTANT: the orchestrator subagent's OWN turns (planning, tool-calling,
-# Gate answers) still run on whatever model the Claude Code session is on —
-# subagents in this harness are Claude, unavoidably. Only the dispatched
-# `execute_with_model` calls this policy governs actually route to Flash.
-# The manifest.model_breakdown will still show a Claude row for the
-# orchestrator's session turns; that is expected and correct.
-version: 2
+# Thinking steps follow the rules below (plugin 0.10.0). Requirements, the architect
+# and both reviewers run on Flash through run_thinking_step: the helper's own
+# instructions, read-only tools that apply the engine's read rule, and hand-in tools that
+# run the Claude helper's own checks piece by piece. A step that cannot finish within
+# thinking_timeout_sec (default four hours of its own work) stops the run; no other model
+# takes it over. Discovery (before Gate 0), the orchestrator's own turns and the gates run on
+# session_model, which the driver check pins (CLAUDE_CODE_SUBAGENT_MODEL) in both auth modes. Versions up to 2 of
+# this policy ran under plugins before 0.10.0, where the session's own model planned and
+# reviewed whatever the rules said; version 3 keeps those runs apart in telemetry.
+version: 3
 name: flash-agsdk-only
+
+# The Claude model the session runs on: the orchestrator and the gates. Outside models:
+# so no rule or typist ladder reaches it.
+session_model: claude-opus-5-5
 
 # Pricing blocks mirror the dated price list (plugin/mcp/model-dispatch/src/prices.ts),
 # which bills every dispatch and the orchestrator's transcript; test/prices.test.mjs

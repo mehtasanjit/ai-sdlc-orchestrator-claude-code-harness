@@ -90,6 +90,21 @@ against them; the server does not check them.
      list and let them read, rather than reading the files yourself and quoting them into the delegation
      prompt.
 
+   **Thinking steps in this run.** Instead of the table in "Thinking steps follow the policy": every
+   `run_thinking_step` call in this run passes `output_dir: .sdlc/runs/<run_id>` and the run's `intent`, and
+   the prompt the input contracts below give:
+
+   | Step | `role` | Hands in |
+   |---|---|---|
+   | Phase 1, requirements | `requirements` | `requirements.md` |
+   | Phase 2, the architect | `brownfield-architect` | `change.sections/`, each section checked by `plan-lint --section` as it arrives |
+   | Phase 6, senior review | `brownfield-senior-reviewer` | `review.json` |
+   | Phase 8, security review | `brownfield-security-reviewer` | `security_review.md` |
+
+   On `done` for the architect, run `plan-to-packets.mjs --spec` as when the architect returns
+   (brownfield-runs.md, Phase 2); an exit 1 there calls `run_thinking_step` again with the printed lines as
+   `revise`, which carries on the architect's conversation. Discovery runs before Gate 0, on the session.
+
    **Architect input contract (brownfield).** Delegate `brownfield-architect`, never `architect` (the same
    instructions with this run's planning rules, and Glob and Grep for finding files). The delegation prompt carries `mode: brownfield`,
    `intent`, `run_id`, the paths to `requirements.md` and `intent_brief.md`. No inlined file contents, and

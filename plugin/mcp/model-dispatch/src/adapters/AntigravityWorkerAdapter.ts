@@ -63,13 +63,15 @@ import {
   type Heartbeat,
 } from "../executor/stall.js";
 import { log } from "../log.js";
-import { WORKER_DIR } from "../paths.js";
+import { PLUGIN_ROOT, WORKER_DIR } from "../paths.js";
 
 // Module-location relative, not cwd — the server runs in the user's project.
 // dist/adapters/ → package root two levels up.
 // The worker folder comes from the package root (paths.ts): in the single-file bundle this module's own location
 // does not say where the package is.
 const WORKER_SCRIPT = join(WORKER_DIR, "gemini_worker.py");
+const THINKING_SCRIPT = join(WORKER_DIR, "thinking_worker.py");
+const THINKING_TOOLS = join(PLUGIN_ROOT, "scripts", "thinking-tools.mjs");
 
 // Tail (exception is at the bottom of the traceback) kept when the worker fails.
 const STDERR_TAIL_CHARS = 4000;
@@ -333,17 +335,19 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     try {
       mkdirSync(outDir, { recursive: true });
       keepEarlierDispatch(outDir, stem);
-      writeFileSync(taskFile, workerTaskMarkdown(packet, { workdir }), "utf8");
+      // A thinking step's brief is the step's own text: it has read and hand-in tools, not the agent's file tools.
+      writeFileSync(taskFile, runContext?.thinking ? packet.instruction : workerTaskMarkdown(packet, { workdir }), "utf8");
     } catch (err: any) {
       return this.failure(started, `Could not stage the delegation brief: ${err?.message ?? err}`);
     }
 
-    const timeoutSec = this.modelConfig.worker_timeout_sec ?? DEFAULT_WORKER_TIMEOUT_SEC;
+    const thinking = runContext?.thinking;
+    const timeoutSec = thinking ? thinking.timeoutSec : this.modelConfig.worker_timeout_sec ?? DEFAULT_WORKER_TIMEOUT_SEC;
     const failover = (this.modelConfig.failover_locations ?? []).length > 0;
     const stallSec = stallSecFor(this.modelConfig);
     const retry = failover ? FAILOVER_API_RETRY : AGENT_API_RETRY;
     const args = buildWorkerArgs({
-      script: WORKER_SCRIPT,
+      script: thinking ? THINKING_SCRIPT : WORKER_SCRIPT,
       taskFile,
       model: this.modelConfig.model_name,
       region: this.location,
@@ -360,6 +364,11 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       apiRetries: retry.retries,
       apiRetryInitialMs: retry.initialMs,
     });
+    if (thinking) {
+      args.push("--role", thinking.role, "--tools-config", thinking.toolsConfig, "--save-dir", thinking.saveDir,
+        "--node", process.execPath, "--tools-script", THINKING_TOOLS);
+      if (thinking.resumeId) args.push("--resume-id", thinking.resumeId);
+    }
 
     // Inventoried as late as possible so nothing this adapter wrote appears
     // in the delta. `outDir` is excluded because it sits inside the workspace
@@ -516,6 +525,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         error,
         attempts: [attempt],
         terminal_reason: "vendor_error",
+        workspace_changes: [...diff.added, ...diff.modified, ...diff.removed],
       };
     }
 
@@ -550,6 +560,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       success: true,
       attempts: [attempt],
       terminal_reason: "success",
+      workspace_changes: [...diff.added, ...diff.modified, ...diff.removed],
     };
   }
 

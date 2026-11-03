@@ -3,30 +3,35 @@
 # other half of this pair; the two rule lists differ only in the executer's id, so a
 # comparison between them isolates the executer.
 #
-# IMPORTANT: Argon cannot be this policy's planner in a brownfield run. The rules
-# below govern only what the dispatch server types: codegen, tests, docs and debug.
-# Requirements, the change spec, both reviews and the gates run on the Claude Code
-# session's own model whatever the rules say. So a run is "Claude plans and reviews,
-# Sonnet types each file's first attempt, Argon takes the first retry and fix
-# rounds". The manifest.model_breakdown shows a row for the session's model and one
-# for Sonnet: they are different work and must not be read as one tier.
-#
 # A file's third attempt is always Sonnet's, whatever the rules say: the ladder forces
 # the last attempt onto a policy's first Claude leaf (executor/tools.ts fallbackLeaf,
 # apply.ts). A rule that hands work to Argon at retry 2 never fires, which is why
 # this policy escalates at retry 1 and sends debug to Argon from the start. A run
 # with no retry and no fix round calls Argon only at pre-flight.
 #
-# Run it under auth_mode=vendor. The driver check refuses estimated when the judgment
-# rules name a Gemini model, and pointing them at Sonnet would instead require the
-# helpers to run on Sonnet. Under vendor with no ANTHROPIC_API_KEY set, Sonnet still
-# types on this computer's Claude login.
+# Runs under either auth mode: the thinking steps go to Argon through the server in
+# both, and the session runs on session_model. Sonnet types on this computer's
+# Claude login (no ANTHROPIC_API_KEY needed for it).
 # Version 2: the greenfield passes on runs/argon4-pairings (ai-sdlc-multi-model-orchestration)
 # ran a different policy under this name as version 1 (other rules, model ids and Sonnet's cache
 # price). Telemetry records policy_name and policy_version, so this one started at version 2 to
 # keep the two apart (version 3 turns failover on).
-version: 3
+#
+# Thinking steps follow the rules below (plugin 0.10.0). Requirements, the architect
+# and both reviewers run on Argon through run_thinking_step: the helper's own
+# instructions, read-only tools that apply the engine's read rule, and hand-in tools that
+# run the Claude helper's own checks piece by piece. A step that cannot finish within
+# thinking_timeout_sec (default four hours of its own work) stops the run; no other model
+# takes it over. Discovery (before Gate 0), the orchestrator's own turns and the gates run on
+# session_model, which the driver check pins (CLAUDE_CODE_SUBAGENT_MODEL) in both auth modes. Versions up to 3 of
+# this policy ran under plugins before 0.10.0, where the session's own model planned and
+# reviewed whatever the rules said; version 4 keeps those runs apart in telemetry.
+version: 4
 name: argon4-plus-sonnet55
+
+# The Claude model the session runs on: the orchestrator and the gates. Outside models:
+# so no rule or typist ladder reaches it.
+session_model: claude-opus-5-5
 
 models:
   - id: argon

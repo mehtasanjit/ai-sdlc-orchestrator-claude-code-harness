@@ -44,7 +44,8 @@ test("rule 0 runs the free driver-model check before the pre-flight call that pr
   const probe = RULE0.indexOf("probe_typists: true");
   assert.ok(check > 0 && probe > 0, "rule 0 names both");
   assert.ok(check < probe, "the driver-model check is given before the call that probes the typists");
-  assert.match(flat(RULE0), /Under `estimated`, run the driver-model check first, before you call `preflight_dispatch`/);
+  assert.match(flat(RULE0), /Run the driver-model check first, under both auth modes, before you call `preflight_dispatch`/);
+  assert.match(flat(RULE0), /driver-model-check\.mjs" --project-root "\$\(pwd\)"/);
   assert.match(flat(RULE0), /print the script's output verbatim and STOP/i, "the check still stops the run");
 });
 
@@ -53,7 +54,7 @@ test("the pipeline skill orders pre-flight the same way and never calls it free"
   assert.ok(machine, "the state machine's pre-flight line");
   assert.doesNotMatch(machine, /free, no API call/, "pre-flight is not free: it probes every typist");
   assert.match(machine, /one test call through each typist/);
-  assert.match(flat(PHASE_MINUS_1), /Under `estimated`, the orchestrator's driver-model check \(rule 0\) runs first/);
+  assert.match(flat(PHASE_MINUS_1), /Under both auth modes, the orchestrator's driver-model check \(rule 0\) runs first/);
   assert.doesNotMatch(flat(PHASE_MINUS_1), /still free to stop/, "the probe calls are paid by then");
 });
 
@@ -107,5 +108,14 @@ test("the setup check /mmo:greenfield runs offers no separate paid probe of what
     const { problems } = vs.evaluate({ ...machine, env, vertex: vs.vertexCredentialState({ env, adcFile: absent }) });
     assert.ok(problems.length > 0, "the project-only state is reported");
     for (const p of problems) assert.doesNotMatch(`${p.message} ${p.fix}`, PAID_PROBE, p.id);
+  }
+});
+
+// A run's session once printed ~/.claude/settings.json to check CLAUDE_CODE_SUBAGENT_MODEL, and with it a gateway
+// key. Every text that tells a session where that value is set also tells it never to open the file.
+test("every text that names where CLAUDE_CODE_SUBAGENT_MODEL is set forbids reading or printing a settings file", () => {
+  for (const f of ["plugin/agents/orchestrator.md", "plugin/agents/brownfield-orchestrator.md", "plugin/skills/brownfield-guide/SKILL.md", "plugin/commands/pass.md", "plugin/commands/greenfield.md"]) {
+    const text = readFileSync(join(ROOT, f), "utf8");
+    assert.match(text, /Never read or print a Claude Code settings file/, f);
   }
 });

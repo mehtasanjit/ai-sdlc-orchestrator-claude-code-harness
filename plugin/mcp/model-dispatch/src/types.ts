@@ -196,6 +196,10 @@ export interface TelemetryEvent {
    */
   model_id?: string;
   routed_by: "orchestrator" | "fallback" | "manual";
+  /** A thinking step run on a non-Claude agent (judgment.ts): the helper whose instructions it ran. */
+  judgment_role?: string;
+  /** Set when that step was handed back to the session's Claude helper: why. */
+  judgment_fallback?: string;
   /**
    * Which typist typed the call — `lean-opus` (a `claude -p` with no tools),
    * `flash-completion` (Gemini through the completion door) or `agy` (Gemini
@@ -596,6 +600,11 @@ export interface RunContext {
    * program kills its process group, so a stopped run stops billing.
    */
   signal?: AbortSignal;
+  /**
+   * A thinking step (thinking.ts): the agent door runs worker/thinking_worker.py instead of the agent worker, with the
+   * step's own tools, its saved conversation and its own work budget.
+   */
+  thinking?: { role: string; toolsConfig: string; saveDir: string; resumeId?: string; timeoutSec: number };
 }
 
 export type RuleMatcher = {
@@ -634,6 +643,10 @@ export interface Policy {
   rules: Rule[];
   /** Optional; absent from policies written before slots existed. */
   select?: Record<string, SelectSlot>;
+  /** The Claude model the session runs on (the orchestrator, and any thinking step the policy gives Claude) when no thinking phase names one. */
+  session_model?: string;
+  /** A Gemini thinking step's own work budget, in seconds (thinking.ts DEFAULT_THINKING_TIMEOUT_SEC when absent). */
+  thinking_timeout_sec?: number;
 }
 
 export interface RoutingDecision {
@@ -665,6 +678,8 @@ export interface ExecutionResult {
   attempts?: AttemptRecord[];
   /** Set when the run stops here: Google could not serve the model for the busy ledger's whole window. */
   halt?: string;
+  /** Agent door: the project files that changed while the worker ran (added, modified or removed). */
+  workspace_changes?: string[];
   /**
    * Why the doubling loop stopped. `_budget_exhausted` means "retries used but
    * model still had headroom" (raise the cap); `_at_model_absolute` means "hit

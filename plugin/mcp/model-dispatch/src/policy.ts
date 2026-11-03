@@ -97,6 +97,7 @@ function validatePolicy(raw: any): Policy {
     log("warn", "policy.setting_ignored", { policy: raw.name, key: "hard_cost_cap_usd", value: raw.hard_cost_cap_usd, applies: "no cost cap: nothing stops a run for its cost" });
     delete raw.hard_cost_cap_usd;
   }
+  validateSessionSettings(raw);
   const modelIds = new Set<string>(raw.models.map((m: ModelConfig) => m.id));
   const slotNames = validateSelect(raw, modelIds);
   // Every rule references a known model id or a declared slot; check at load
@@ -112,6 +113,21 @@ function validatePolicy(raw: any): Policy {
     }
   });
   return raw as Policy;
+}
+
+/**
+ * Two optional policy-level settings. `session_model` names the Claude model the session runs on when no thinking
+ * phase names one; it sits outside `models:` so no rule and no typist ladder ever reaches it. `thinking_timeout_sec`
+ * is a Gemini thinking step's own work budget.
+ */
+function validateSessionSettings(raw: any): void {
+  if (raw.driver !== undefined) throw new Error("Policy: 'driver' is now 'session_model: <a Claude model id>'");
+  if (raw.session_model !== undefined && (typeof raw.session_model !== "string" || !raw.session_model.startsWith("claude-"))) {
+    throw new Error("Policy: 'session_model' must be a Claude model id, e.g. claude-opus-5-5");
+  }
+  if (raw.thinking_timeout_sec !== undefined && (!Number.isInteger(raw.thinking_timeout_sec) || raw.thinking_timeout_sec <= 0)) {
+    throw new Error("Policy: 'thinking_timeout_sec' must be a whole number of seconds above 0");
+  }
 }
 
 /**

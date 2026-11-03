@@ -35,6 +35,17 @@ const FAILOVER_VERSIONS = {
   "opus-plus-flash-v38": 2,
   "opus-plus-flash": 2,
 };
+/**
+ * The policies whose thinking steps name Gemini went one version higher again in 0.10.0, when those steps started to
+ * follow the policy (their session_model): telemetry keeps 0.9.4's runs, where Claude planned, apart from them.
+ */
+const ROUTED_THINKING_VERSIONS = {
+  "argon4-agsdk-only": 3,
+  "argon4-plus-flash38": 4,
+  "argon4-plus-sonnet55": 4,
+  "flash-agsdk-only-v38": 3,
+  "flash-agsdk-only": 3,
+};
 /** The shipped policies with no Antigravity leaf, at their versions, which do not change. */
 const UNCHANGED_VERSIONS = { "opus-only-v5": 1, "opus-only": 1, "opus-plus-sonnet-max": 1, "opus-plus-sonnet": 1 };
 
@@ -49,7 +60,7 @@ test("every shipped policy with an antigravity-worker leaf lists failover_locati
     assert.equal(agy.length > 0, name in FAILOVER_VERSIONS, `${name}: an Antigravity leaf exactly when it is listed as one`);
     for (const m of agy) assert.deepEqual(m.failover_locations, ["us", "eu"], `${name}: leaf ${m.id}`);
     for (const m of policy.models.filter((x) => x.adapter !== "antigravity-worker")) assert.equal(m.failover_locations, undefined, `${name}: leaf ${m.id} (${m.adapter})`);
-    assert.equal(policy.version, FAILOVER_VERSIONS[name] ?? UNCHANGED_VERSIONS[name], `${name}: its version`);
+    assert.equal(policy.version, ROUTED_THINKING_VERSIONS[name] ?? FAILOVER_VERSIONS[name] ?? UNCHANGED_VERSIONS[name], `${name}: its version`);
   }
 });
 

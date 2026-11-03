@@ -185,13 +185,13 @@ template from `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md` (search for
 - **Stack** — top-detected from `baseline.stacks`. Ask if it's right; accept overrides.
 - **Test command** — `baseline.test_command_proposed`. Accept an override.
 - **Auth mode** — ask `vendor` (billed via API keys) or `estimated` (Claude Code subscription
-  auth, cost is an estimate). Required — the orchestrator aborts without it. `estimated` also
-  requires `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched (it is what
+  auth, cost is an estimate). Required — the orchestrator aborts without it. Both modes
+  require `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched (it is what
   the driver subagents execute on): from a terminal, exported or in the `env` block of the
   project's `.claude/settings.local.json`; from the desktop app, in the `env` block of
   `~/.claude/settings.json`, since the app ignores project settings files. The orchestrator's
   run-start driver-model check stops the run, printing where to set it, when it is unset or
-  disagrees with the policy's driver model.
+  disagrees with the policy's driver model. Never read or print a Claude Code settings file (`~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json`) to check the value: settings files can hold keys (an API key, a gateway header), and the check reads the environment itself.
 - **Policy** — read `payload.project.default_policy` from the session-hydrate output already
   captured in step 1 of this command. This is what setup wrote to `.sdlc/project.json`. If
   it is null, setup was not completed for this project — abort Gate 0 and tell the user to

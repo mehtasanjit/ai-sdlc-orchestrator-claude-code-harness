@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 /**
- * driver-model-check — verify the estimated-mode driver tier will actually run
- * on the model the policy prices it at.
+ * driver-model-check — verify this session's driver tier will actually run
+ * on the Claude model the policy names, in either auth mode.
  *
- * The problem this closes: under `--auth=estimated` the premium-judgment tier
- * is not dispatched through the MCP server — it runs *in this Claude Code
- * session* as the five driver subagents (orchestrator, architect, discovery,
+ * The problem this closes: the driver tier is not dispatched through the MCP
+ * server — it runs *in this Claude Code session* as the five driver subagents (orchestrator, architect, discovery,
  * senior-reviewer, security-reviewer). Which model those subagents execute on
  * is decided by Claude Code itself, from the `CLAUDE_CODE_SUBAGENT_MODEL`
  * environment variable (field-verified to take precedence over agent
@@ -36,13 +35,16 @@
  *      loadPolicy from ../mcp/model-dispatch/dist/, which is guaranteed built
  *      before any run (verify-setup.mjs --fix / /mmo:setup step 1).
  *
- * Derivation: route every judgment phase through the policy and require them
- * all to land on one model. A single env var cannot honor a policy that
- * splits the judgment tier across models, so disagreement is an error, not a
- * majority vote (meeting decision: unresolvable → error and STOP).
+ * Derivation (deriveSessionModel): route every judgment phase through the
+ * policy; the phases that land on a Claude model, plus the policy's
+ * `session_model`, must all name one model. A phase routed to another vendor runs on
+ * the server (run_thinking_step) and does not count. A single env var cannot
+ * honor a policy that splits the Claude judgment tier across models, so
+ * disagreement is an error, not a majority vote (meeting decision:
+ * unresolvable → error and STOP).
  *
  * Exit codes: 0 = env var matches the derived driver model (or --print-only).
- * 1 = unset, mismatch, split judgment tier, non-Anthropic judgment model, or
+ * 1 = unset, mismatch, split judgment tier, no Claude model to drive with, or
  * any load/derivation failure. The orchestrator halts the run on non-zero.
  *
  * Usage:
@@ -86,21 +88,12 @@ export const JUDGMENT_PHASES = [
  */
 export const IN_SESSION_ADAPTERS = new Set(["builtin-anthropic", "claude-cli"]);
 
-/**
- * Route all judgment phases and require one model. Returns
- * { modelName, modelId, perPhase } or throws with a STOP-worthy message.
- * `routing` is the imported dist/routing.js module (injected so tests can
- * exercise derivation without spawning a process).
- */
-export function deriveDriverModel(policy, routing, overrides = {}) {
-  const perPhase = JUDGMENT_PHASES.map((phase) => {
-    // task_type/module are empty and retry_count 0: shipped policies match
-    // judgment phases on `phase:` alone, and a rule that additionally
-    // requires a task_type deliberately does not describe the phase-level
-    // driver route this check verifies. intent stays undefined (greenfield
-    // packet shape) so intent-scoped rules never match here either.
+function routeJudgmentPhases(policy, routing, overrides, intent) {
+  return JUDGMENT_PHASES.map((phase) => {
+    // The context run_thinking_step routes a thinking step with (thinking.ts THINKING_TASK_TYPE, THINKING_MODULE, the
+    // run's intent), so this check pins the model the step actually gets.
     const decision = routing.pickModel(
-      { phase, task_type: "", module: "", retry_count: 0 },
+      { phase, task_type: "judgment", module: "judgment", retry_count: 0, ...(intent ? { intent } : {}) },
       policy,
       overrides
     );
@@ -113,7 +106,19 @@ export function deriveDriverModel(policy, routing, overrides = {}) {
     }
     return { phase, modelId: model.id, modelName: model.model_name, adapter: model.adapter };
   });
+}
 
+/**
+ * The collector's driver label (collect-orchestrator-usage.mjs): every judgment phase on one in-session Claude model.
+ * The run-start check uses deriveSessionModel, which also accepts thinking steps routed to another vendor.
+ *
+ * Route all judgment phases and require one model. Returns
+ * { modelName, modelId, perPhase } or throws with a STOP-worthy message.
+ * `routing` is the imported dist/routing.js module (injected so tests can
+ * exercise derivation without spawning a process).
+ */
+export function deriveDriverModel(policy, routing, overrides = {}) {
+  const perPhase = routeJudgmentPhases(policy, routing, overrides);
   const names = [...new Set(perPhase.map((p) => p.modelName))];
   if (names.length > 1) {
     const table = perPhase.map((p) => `  ${p.phase} → ${p.modelName} (${p.modelId})`).join("\n");
@@ -138,6 +143,42 @@ export function deriveDriverModel(policy, routing, overrides = {}) {
   return { modelName: first.modelName, modelId: first.modelId, perPhase };
 }
 
+/** The phases run_thinking_step runs (src/thinking.ts THINKING_ROLES): on a Claude model in the session, or on an agent leaf. */
+export const THINKING_PHASES = new Set(["requirements_analysis", "architecture_design", "senior_code_review", "security_review", "discovery"]);
+const AGENT_ADAPTER = "antigravity-worker";
+
+/**
+ * The Claude model this session must run on, in either auth mode. A thinking step whose rule names an agent leaf runs
+ * on that model through the server (run_thinking_step); everything else the policy gives Claude runs in this session,
+ * with the orchestrator itself. That is one Claude model: the one the Claude-routed phases name, or the policy's
+ * `session_model` when none names Claude. With neither, `modelName` is null: the session runs on its own model, as
+ * before. Throws on a thinking phase nothing can run as a thinking step (a model reached as a plain completion), and on
+ * more than one Claude model.
+ */
+export function deriveSessionModel(policy, routing, overrides = {}, intent) {
+  const perPhase = routeJudgmentPhases(policy, routing, overrides, intent);
+  const cannot = perPhase.filter((p) => THINKING_PHASES.has(p.phase) && !IN_SESSION_ADAPTERS.has(p.adapter) && p.adapter !== AGENT_ADAPTER);
+  if (cannot.length) {
+    throw new Error(
+      `policy '${policy.name}' routes a thinking phase to a model that cannot read the project:\n` +
+        cannot.map((p) => `  ${p.phase} → ${p.modelName} (${p.modelId}, ${p.adapter})`).join("\n") +
+        `\nRoute each to an antigravity-worker leaf or a Claude model.`
+    );
+  }
+  const claude = perPhase.filter((p) => IN_SESSION_ADAPTERS.has(p.adapter));
+  const names = [...new Set([...claude.map((p) => p.modelName), ...(policy.session_model ? [policy.session_model] : [])])];
+  if (names.length > 1) {
+    const table = claude.map((p) => `  ${p.phase} → ${p.modelName} (${p.modelId})`).join("\n");
+    throw new Error(
+      `policy '${policy.name}' splits the judgment tier across ${names.length} Claude models (${names.join(", ")}):\n${table}` +
+        `${policy.session_model ? `\n  session_model → ${policy.session_model}` : ""}\n` +
+        `CLAUDE_CODE_SUBAGENT_MODEL is a single value. Name one Claude model for every Claude-routed phase and session_model.`
+    );
+  }
+  const leaf = claude.find((p) => p.modelName === names[0]);
+  return { modelName: names[0] ?? null, modelId: leaf?.modelId ?? (names.length ? "session_model" : null), perPhase };
+}
+
 /**
  * The project settings files whose `env` block is read for a stranded value, in
  * Claude Code's precedence order (local over shared).
@@ -158,6 +199,11 @@ export function deriveDriverModel(policy, routing, overrides = {}) {
  * (the file the terminal route now names) went undiagnosed.
  */
 export const PROJECT_SETTINGS_FILES = ["settings.local.json", "settings.json"];
+
+/** Closes every failure: a session that reads it never opens a settings file to check the value itself. */
+export const NO_PRINT_NOTE =
+  "Do not print or read a settings file to check this: settings files can hold keys (an API key, a gateway " +
+  "header). This check reads the environment itself; set the value as above and run it again.";
 
 /**
  * Every CLAUDE_CODE_SUBAGENT_MODEL value this project's settings files declare,
@@ -201,7 +247,7 @@ export function declarationNote(declaration, actual, expected, policyName) {
   if (actual !== undefined && actual !== "" && value === actual) {
     return (
       `NOTE: ${path} declares CLAUDE_CODE_SUBAGENT_MODEL=${value}, the value this session sees, ` +
-      `but policy '${policyName}' prices the driver tier as '${expected}': if that file is where ` +
+      `but policy '${policyName}' names '${expected}' as this session's model: if that file is where ` +
       `the value came from, change it to ${expected} there.`
     );
   }
@@ -221,7 +267,7 @@ export function declarationNote(declaration, actual, expected, policyName) {
 }
 
 function parseArgs(argv) {
-  const args = { projectRoot: undefined, policy: undefined, policyPath: undefined, printOnly: false };
+  const args = { projectRoot: undefined, policy: undefined, policyPath: undefined, printOnly: false, intent: undefined };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eat = (flag) => (a.startsWith(`${flag}=`) ? a.slice(flag.length + 1) : argv[++i]);
@@ -229,7 +275,8 @@ function parseArgs(argv) {
     else if (a === "--project-root" || a.startsWith("--project-root=")) args.projectRoot = eat("--project-root");
     else if (a === "--policy" || a.startsWith("--policy=")) args.policy = eat("--policy");
     else if (a === "--policy-path" || a.startsWith("--policy-path=")) args.policyPath = eat("--policy-path");
-    else throw new Error(`unknown argument '${a}' (expected --project-root, --policy, --policy-path, --print-only)`);
+    else if (a === "--intent" || a.startsWith("--intent=")) args.intent = eat("--intent");
+    else throw new Error(`unknown argument '${a}' (expected --project-root, --policy, --policy-path, --intent, --print-only)`);
   }
   return args;
 }
@@ -256,10 +303,14 @@ export async function main(argv = process.argv.slice(2)) {
     ? policyMod.loadPolicyFromPath(resolve(args.policyPath))
     : policyMod.loadPolicy({ policyName: args.policy, projectRoot: args.projectRoot });
   const overrides = routingMod.parseSelectOverrides(process.env.MMO_SELECT);
-  const derived = deriveDriverModel(policy, routingMod, overrides);
+  const derived = deriveSessionModel(policy, routingMod, overrides, args.intent);
 
   if (args.printOnly) {
-    console.log(derived.modelName);
+    console.log(derived.modelName ?? "");
+    return 0;
+  }
+  if (derived.modelName === null) {
+    console.log(`driver-model-check ok: policy '${policy.name}' names no Claude model for this session (no Claude thinking phase, no session_model); it runs on its own model.`);
     return 0;
   }
 
@@ -267,7 +318,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (actual === derived.modelName) {
     console.log(
       `driver-model-check ok: CLAUDE_CODE_SUBAGENT_MODEL=${actual} matches policy ` +
-        `'${policy.name}' (driver model '${derived.modelId}').`
+        `'${policy.name}' (${derived.modelId === "session_model" ? "its session_model" : `driver model '${derived.modelId}'`}).`
     );
     return 0;
   }
@@ -276,8 +327,8 @@ export async function main(argv = process.argv.slice(2)) {
     actual === undefined || actual === ""
       ? `CLAUDE_CODE_SUBAGENT_MODEL is not set, so the driver tier would run on ` +
         `whatever this session's model happens to be`
-      : `CLAUDE_CODE_SUBAGENT_MODEL=${actual}, but policy '${policy.name}' prices ` +
-        `the driver tier as '${derived.modelName}'`;
+      : `CLAUDE_CODE_SUBAGENT_MODEL=${actual}, but policy '${policy.name}' names ` +
+        `'${derived.modelName}' as this session's model`;
   // Message only (Fix F, v0.7.3): name every project settings file that declares
   // a value, worded for that file, then give each launch route its own fix. The
   // pass/fail decision above is unchanged: it reads the environment the session
@@ -296,8 +347,8 @@ export async function main(argv = process.argv.slice(2)) {
   // login shell and ignores project settings files' "env". The previous text
   // said a project settings file is never applied, true only for the app.
   console.error(
-    `driver-model-check FAILED: ${problem} — the report would price driver work ` +
-      `against a model that did not run.${notes.map((n) => `\n\n${n}`).join("")}\n\n` +
+    `driver-model-check FAILED: ${problem} — the run would plan on a model the ` +
+      `policy did not name.${notes.map((n) => `\n\n${n}`).join("")}\n\n` +
       `Fix (must happen BEFORE claude launches — an export inside the session ` +
       `cannot reach the CLI process):\n\n` +
       `  Terminal:     export CLAUDE_CODE_SUBAGENT_MODEL=${model}\n` +
@@ -313,7 +364,8 @@ export async function main(argv = process.argv.slice(2)) {
       `                .claude/settings.local.json. That user file is machine-wide:\n` +
       `                it pins the driver model for every session on this machine,\n` +
       `                so remove the entry once the run is done\n\n` +
-      `then relaunch claude and restart the run.`
+      `then relaunch claude and restart the run.\n\n` +
+      `${NO_PRINT_NOTE}`
   );
   return 1;
 }

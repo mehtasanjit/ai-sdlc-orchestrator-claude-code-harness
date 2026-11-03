@@ -189,16 +189,16 @@ phases that would have gone to the cheaper model.
 
 The run records tokens and cost in one of two modes. Present the choice; do not decide silently.
 
-- **Vendor** — every call goes through the bundled server, and the numbers are the ones the vendor
-  reports. Requires `ANTHROPIC_API_KEY`. Use this whenever the numbers will be shown to anyone.
+- **Vendor** — every dispatched call goes through the bundled server, and the numbers are the ones the
+  vendor reports. Requires `ANTHROPIC_API_KEY`. Use this whenever the numbers will be shown to anyone.
 - **Estimated** — the judgment-phase tokens are estimated from character counts. No API key needed;
   a Claude Code subscription covers the run. The mechanical-phase numbers are still vendor-reported.
-  This mode also requires `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched,
+  Both modes require `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched,
   to the policy's driver model: from a terminal, exported or in the `env` block of the project's
   `.claude/settings.local.json`; from the desktop app, in the `env` block of
   `~/.claude/settings.json` (the app ignores project settings files). The orchestrator's run-start
   check stops the run otherwise and prints where to set it, because the driver subagents execute
-  whatever that variable names while the policy only prices the work.
+  whatever that variable names. Never read or print a Claude Code settings file (`~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json`) to check the value: settings files can hold keys (an API key, a gateway header), and the check reads the environment itself.
 
 If `ANTHROPIC_API_KEY` is set, recommend vendor and say why: the numbers reconcile against the
 console. If it is absent, recommend estimated and say what is lost: the judgment-phase figures are

@@ -115,6 +115,8 @@ export interface RunBinding {
   plugin_version: string;
   sdk_version: string | null;
   leaves: BoundLeaf[];
+  /** The run's route table (routeTable.ts): every phase's model and who runs it, as pre-flight computed it. */
+  route_table?: unknown[];
   written_at: string;
 }
 

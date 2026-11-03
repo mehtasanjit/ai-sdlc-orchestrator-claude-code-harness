@@ -3,19 +3,26 @@
 # with two differences: the model, and the leaf pins region: global (v38 follows
 # GOOGLE_CLOUD_LOCATION).
 #
-# IMPORTANT: the rules below govern only what the dispatch server types: codegen,
-# tests, docs and debug. Requirements, the change spec, both reviews and the gates
-# run on the Claude Code session's own model whatever the rules say, so a brownfield
-# run under this policy is "Claude plans and reviews, Argon types". The
-# manifest.model_breakdown shows a Claude row for that work; it is expected, and it
-# is most of the run's cost.
-#
-# Run it under auth_mode=vendor: the driver check refuses estimated when the judgment
-# rules name a Gemini model. No Claude model belongs in this file: the ladder's last
+# Runs under either auth mode: the thinking steps go to Argon through the server in
+# both, and the session runs on session_model. No Claude model belongs in this file: the ladder's last
 # attempt goes to a policy's first Claude leaf (executor/tools.ts fallbackLeaf), so
 # one here would type files. With none, the last attempt stays on Argon.
-version: 2
+#
+# Thinking steps follow the rules below (plugin 0.10.0). Requirements, the architect
+# and both reviewers run on Argon through run_thinking_step: the helper's own
+# instructions, read-only tools that apply the engine's read rule, and hand-in tools that
+# run the Claude helper's own checks piece by piece. A step that cannot finish within
+# thinking_timeout_sec (default four hours of its own work) stops the run; no other model
+# takes it over. Discovery (before Gate 0), the orchestrator's own turns and the gates run on
+# session_model, which the driver check pins (CLAUDE_CODE_SUBAGENT_MODEL) in both auth modes. Versions up to 2 of
+# this policy ran under plugins before 0.10.0, where the session's own model planned and
+# reviewed whatever the rules said; version 3 keeps those runs apart in telemetry.
+version: 3
 name: argon4-agsdk-only
+
+# The Claude model the session runs on: the orchestrator and the gates. Outside models:
+# so no rule or typist ladder reaches it.
+session_model: claude-opus-5-5
 
 models:
   - id: argon
