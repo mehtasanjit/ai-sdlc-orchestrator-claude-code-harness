@@ -59,6 +59,9 @@ const ACCEPTANCE_FIX_ONLY = "this step is an acceptance fix: hand in its answer 
 
 const cut = (s) => (s.length > MAX_RESULT_CHARS ? `${s.slice(0, MAX_RESULT_CHARS)}\n[cut at ${MAX_RESULT_CHARS} characters: read the rest by line range]` : s);
 
+/** A JSON value as text with every object's keys in order, so the same content compares equal however its keys were typed. */
+const canonical = (value) => JSON.stringify(value, (_, v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v));
+
 export class ThinkingTools {
   /**
    * cfg: {role, project_root, run_id, intent, output_dir (relative to project_root), outputs: {requirements,
@@ -72,6 +75,48 @@ export class ThinkingTools {
     this.accepted = new Map();
     this.refused = new Map();
     this.written = new Set();
+    // What the step starts from, read once before its first tool runs (loadAccepted).
+    this.loading = null;
+  }
+
+  /**
+   * What this step had handed in and had accepted before this process started, so a step called again in the same run
+   * (its worker stopped, the server restarted) resumes from it instead of owing it again: for the greenfield architect,
+   * this run's spec as the spec store holds it on disk, the record the Claude architect resumes from too. Its header
+   * counts as handed in, and so does each units file of the step whose every unit the spec holds as the file stands.
+   * Only the spec this run's pre-flight opened counts (runSpec): a run started again with a new preflight_dispatch has a
+   * new run token, so its header opens a new spec and its whole spec goes again, at full cost. That is by design: the
+   * token is what keeps one run's units out of another run's spec. finalize is never carried over: each call ends with
+   * its own, which checks the spec against the requirements as they are then.
+   */
+  async loadAccepted() {
+    if (this.cfg.role !== "architect" || this.cfg.acceptance_fix) return;
+    const held = await this.runSpec();
+    if (!held) return;
+    this.accepted.set("header.json", true);
+    const { specStore } = await loadServerLib();
+    const specDir = join(this.root, this.cfg.spec_dir);
+    const sections = join(this.root, this.cfg.outputs.sections_dir);
+    for (const name of existsSync(sections) ? readdirSync(sections).filter((f) => /^units-\d{3}\.json$/.test(f)).sort() : []) {
+      const loaded = specStore.readSectionFile(specDir, relative(specDir, join(sections, name)), "units");
+      if (!loaded.error && held.holds(loaded.value)) this.accepted.set(name, true);
+    }
+  }
+
+  /**
+   * The spec this run is writing in spec_dir, as the store holds it, or null when there is none of this run's: none yet,
+   * another run's (its pre-flight's token differs), no run token to tell, or, on a revise, the finalized spec the revise
+   * answers (a revise hands in a new spec; the approved one counts only through approvedUnits). `holds(units)`: whether
+   * every one of these units is in it exactly as given.
+   */
+  async runSpec() {
+    if (!this.cfg.run_token) return null;
+    const { specStore } = await loadServerLib();
+    const specDir = join(this.root, this.cfg.spec_dir);
+    if (specStore.openedSpec(specDir)?.run !== this.cfg.run_token) return null;
+    if (this.cfg.revise && existsSync(join(specDir, "spec.json"))) return null;
+    const stored = new Map(specStore.storedUnits(specDir).map((u) => [u.id, canonical(u)]));
+    return { holds: (units) => Array.isArray(units) && units.length > 0 && units.every((u) => u && typeof u === "object" && stored.get(u.id) === canonical(u)) };
   }
 
   /** A path the model names, as a project-relative path, or why it may not be read. */
@@ -278,10 +323,20 @@ export class ThinkingTools {
     const kind = name === "header.json" ? "header" : "units";
     const loaded = specStore.readSectionFile(specDir, relative(specDir, join(this.root, n.rel)), kind);
     if (loaded.error) return this.refuse(name, [loaded.error], loaded.error);
+    // A units file handed in again as this run's spec already holds it (the step called again in the same run, its
+    // earlier hand-ins on disk) is accepted as unchanged; one with a changed or new unit goes to the store, which
+    // refuses an id it already holds (review: the same units sent again were refused as duplicates, so a step called
+    // again could never be done).
+    if (kind === "units" && (await this.runSpec())?.holds(loaded.value)) {
+      this.verdict(name, true);
+      return { result: `accepted ${name}: unchanged, its ${loaded.value.length} unit(s) already in the spec` };
+    }
     // With the run's token, as submit_spec_section sends it: a new run's header opens a new spec, and units go only
     // into the spec this run opened.
     const r = specStore.submitSpecSection(specDir, kind === "header" ? { section: "header", header: loaded.value } : { section: "units", units: loaded.value }, this.cfg.run_token ? { run: this.cfg.run_token } : {});
     if (!r.ok) return this.refuse(name, r.errors.map((e) => `${e.path} ${e.message}`));
+    // A header that opened a new spec moved the earlier one aside, its units with it: none of them is in this spec.
+    if (r.previous) for (const k of [...this.accepted.keys()]) if (/^units-\d{3}\.json$/.test(k)) this.accepted.delete(k);
     this.verdict(name, true);
     this.accepted.delete("finalize");
     return { result: `accepted ${name}: ${r.total_units} unit(s) in the spec` };
@@ -549,7 +604,10 @@ export class ThinkingTools {
   async call(op, args) {
     const allowed = new Set([...READ_TOOLS, ...(ROLE_TOOLS[this.cfg.role] ?? []), "status"]);
     if (!allowed.has(op)) return { error: `${op} is not a tool of the ${this.cfg.role} step` };
-    try { return await this[op](args ?? {}); } catch (e) { return { error: e?.message ?? String(e) }; }
+    try {
+      await (this.loading ??= this.loadAccepted());
+      return await this[op](args ?? {});
+    } catch (e) { return { error: e?.message ?? String(e) }; }
   }
 }
 

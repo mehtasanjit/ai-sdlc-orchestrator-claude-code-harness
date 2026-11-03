@@ -183,6 +183,60 @@ test("a revise keeps every unit of the approved spec, or removes one only by nam
   assert.match((await again.call("finalize", {})).result, /finalized: 1 unit/);
 });
 
+test("an architect called again in the same run resumes from the spec the store holds for the run; a file handed in again unchanged is accepted", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-resume-"));
+  mkdirSync(join(root, "out"));
+  const header = {
+    stack: ["Python 3.13", "FastAPI", "pytest"],
+    commands: [{ name: "backend tests", run: "pytest -q", cwd: "backend", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }],
+    no_audit_reason: "a test", decisions: [{ topic: "ids", choice: "integer", rejected: ["uuid"], reason: "simplest" }],
+    shared: { conventions: ["snake_case"], data_model: [{ name: "Todo", fields: [{ name: "id", type: "int", constraints: "primary key" }] }], api: [{ method: "POST", path: "/todos", access: "any", request: "TodoCreate", response: "Todo", success_status: 201, error_statuses: [422] }] },
+  };
+  const unit = (id, path, behaviour) => ({ id, path, phase: "codegen", import_line: "", exports: [{ name: "Todo", kind: "class", params: [], returns: "Todo" }], behaviour, depends_on: [], style_from: { reason: "first file of its kind" }, covers: ["FR-1.1"], tests: [{ name: "valid", given: "a title", expect: "a Todo" }], approx_lines: 20 });
+  const U01 = unit("U01", "backend/app/models.py", "the models");
+  const U02 = unit("U02", "backend/app/api.py", "the routes");
+  // Each run_thinking_step call is a new tools process; one run's calls share its run token.
+  const architect = (over = {}) => new ThinkingTools({ role: "architect", project_root: root, run_id: "r1", output_dir: "out", outputs: { sections_dir: "out/spec.sections" }, spec_dir: "out", run_token: "run-1", ...over });
+  const hand = (t, name, value) => t.call("submit_section", { name, json: value === undefined ? "" : JSON.stringify(value) });
+  const status = async (t) => JSON.parse((await t.call("status", {})).result);
+
+  // The first call hands in the header and two units files, then stops before finalize.
+  const first = architect();
+  await hand(first, "header.json", header);
+  await hand(first, "units-001.json", [U01]);
+  await hand(first, "units-002.json", [U02]);
+
+  // Called again in the same run, the step starts from what the spec holds, and finalize alone completes it.
+  const second = architect();
+  let s = await status(second);
+  assert.deepEqual(s.missing, ["finalize, after every section is accepted"], JSON.stringify(s));
+  assert.deepEqual(s.accepted, ["header.json", "units-001.json", "units-002.json"]);
+  assert.match((await second.call("finalize", {})).result, /finalized: 2 unit/);
+  assert.equal((await status(second)).done, true);
+
+  // A file handed in again as the spec holds it is accepted as unchanged, with its JSON (its keys in any order) or by
+  // its name alone; a changed one is refused with the store's reason, and owed until it is handed in as it stands.
+  const third = architect();
+  assert.deepEqual((await status(third)).missing, ["finalize, after every section is accepted"], "finalize is never carried over: each call checks the spec again");
+  assert.match((await hand(third, "units-001.json", [Object.fromEntries(Object.entries(U01).reverse())])).result, /^accepted units-001\.json: unchanged/);
+  assert.match((await hand(third, "units-002.json")).result, /^accepted units-002\.json: unchanged/);
+  assert.match((await hand(third, "units-002.json", [{ ...U02, behaviour: "the routes; 409 on a duplicate title" }])).error, /^refused:\n\/units\/0\/id duplicate unit id U02/);
+  assert.ok((await status(third)).missing.some((m) => /^units-002\.json was refused: \/units\/0\/id duplicate unit id U02/.test(m)));
+  assert.match((await hand(third, "units-002.json", [U02])).result, /unchanged/);
+  assert.match((await third.call("finalize", {})).result, /finalized: 2 unit/);
+  s = await status(third);
+  assert.equal(s.done, true, JSON.stringify(s));
+  // A header that opens a new spec (one sent after finalize) leaves the earlier spec's units behind: they are owed again.
+  assert.match((await hand(third, "header.json", { ...header, stack: ["Python 3.13", "FastAPI", "pytest", "httpx"] })).result, /accepted header\.json: 0 unit/);
+  assert.deepEqual((await status(third)).missing, ["at least one units file, accepted", "finalize, after every section is accepted"]);
+
+  // Another run's spec, or the spec a revise answers, is not this step's to resume.
+  assert.deepEqual((await status(architect({ run_token: "run-2" }))).missing, ["header.json, accepted", "at least one units file, accepted", "finalize, after every section is accepted"]);
+  await hand(third, "units-001.json", [U01]);
+  assert.match((await third.call("finalize", {})).result, /finalized: 1 unit/);
+  assert.deepEqual((await status(architect({ revise: true }))).accepted, [], "a revise hands in a new spec");
+});
+
 test("a refused finalize lists every problem in one answer: the coverage gap and each of the store's errors", async () => {
   const root = mkdtempSync(join(tmpdir(), "mmo-finalize-"));
   mkdirSync(join(root, "out"));
