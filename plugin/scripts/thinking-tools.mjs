@@ -161,7 +161,9 @@ export class ThinkingTools {
     try { JSON.parse(json); } catch (e) { return { error: `${name} is not valid JSON: ${e.message}` }; }
     this.own(n.rel, json);
     const { checkSection } = await import(pathToFileURL(join(HERE, "plan-lint.mjs")).href);
-    const r = await checkSection(this.root, this.cfg.run_id, n.rel, { intent: this.cfg.intent });
+    // No command the model wrote runs here, and none of its output comes back: the checks wait for dispatch, after
+    // the person approves the plan at Gate 2 (lib/change-spec.mjs baselineErrors).
+    const r = await checkSection(this.root, this.cfg.run_id, n.rel, { intent: this.cfg.intent, runCommands: false });
     if (r.ok) { this.accepted.set(name, true); this.refused.delete(name); } else { this.accepted.delete(name); this.refused.set(name, r.lines); }
     return r.ok ? { result: r.lines.join("\n") } : { error: `refused:\n${r.lines.join("\n")}` };
   }

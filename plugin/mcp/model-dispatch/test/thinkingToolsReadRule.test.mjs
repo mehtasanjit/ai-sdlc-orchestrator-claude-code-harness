@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -116,4 +116,38 @@ test("another spelling of a refused file's name is refused on a disk that opens 
     assert.ok(r.error, `read_file "${path}" should be refused: ${text(r)}`);
     assert.doesNotMatch(text(r), new RegExp(SECRET));
   }
+});
+
+/** A brownfield project whose run's job is known, for the architect's hand-ins. */
+function handInProject() {
+  const root = mkdtempSync(join(tmpdir(), "mmo-handin-"));
+  const put = (rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
+  put(".env", `STRIPE_KEY=${SECRET}\n`);
+  put("src/x.ts", "export const x = 1;\n");
+  put(".sdlc/runs/r1/intent_brief.md", "# Intent Brief — feature-new — a test run\n\n## Goal\n\nAdd b.\n");
+  return { root, put };
+}
+const architectFor = (root) =>
+  new ThinkingTools({ role: "brownfield-architect", project_root: root, run_id: "r1", intent: "feature-new", output_dir: ".sdlc/runs/r1", outputs: { sections_dir: ".sdlc/runs/r1/change.sections" } });
+const headerWith = (run) => ({ conventions: ["c"], decisions: [], file_checks: [{ id: "lint", run, timeout_s: 10 }], project_checks: [] });
+const unitB = [{ id: "U01", path: "src/b.ts", action: "create", phase: "codegen", behaviour: "Exports b.", exports: [{ name: "b", params: [], returns: "number" }], import_line: 'import { b } from "./b";', style_from: { path: "src/x.ts", reason: "same style" }, depends_on: [], covers: ["FR-1"], checks: ["lint"] }];
+
+test("a Gemini architect's hand-in runs no command it wrote: nothing runs, nothing comes back, the baseline waits for dispatch", async () => {
+  const { root } = handInProject();
+  const t = architectFor(root);
+  assert.ok((await t.call("write_section", { name: "header.json", json: JSON.stringify(headerWith("cat .env; touch ran.txt; false {path}")) })).result);
+  const u = await t.call("write_section", { name: "units-001.json", json: JSON.stringify(unitB) });
+  assert.doesNotMatch(text(u), new RegExp(SECRET), "the check's output came back to the model");
+  assert.equal(existsSync(join(root, "ran.txt")), false, "a command the model wrote ran at hand-in");
+  assert.match(text(u), /accepted units-001\.json/, "the section is accepted; its checks' baseline is taken at dispatch");
+});
+
+test("the person's deny rules still refuse a hand-in's command, which is checked without being run", async () => {
+  const { root, put } = handInProject();
+  put(".claude/settings.json", JSON.stringify({ permissions: { deny: ["Bash(cat:*)"] } }));
+  const t = architectFor(root);
+  assert.ok((await t.call("write_section", { name: "header.json", json: JSON.stringify(headerWith("cat {path}")) })).result);
+  const u = await t.call("write_section", { name: "units-001.json", json: JSON.stringify(unitB) });
+  assert.ok(u.error, "a denied command is refused");
+  assert.match(u.error, /deny/);
 });

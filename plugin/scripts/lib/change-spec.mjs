@@ -569,8 +569,13 @@ function runCheck(cmd, cwd, timeoutSec, tailChars) {
  * (ambient/lib/own-steps.mjs serverCommandUnchecked: `$`, backquotes, brackets, redirects, quotes beyond the path's own,
  * or a path that is not a plain path) is not run either: its baseline is left to dispatch, where the call keeps Claude
  * Code's prompt.
+ *
+ * With `runCommands: false` no command runs at all: only the static check against the person's deny rules, and every
+ * baseline is left to dispatch, after the person approves the plan at Gate 2. A Gemini thinking step's hand-in checks
+ * this way (thinking-tools.mjs write_section): the commands are the model's own, and running them, or sending it their
+ * output, would give it the shell it is denied (review: `cat .env` as a file check sent .env's value back).
  */
-export async function baselineErrors(units, { projectRoot, runDir, header }) {
+export async function baselineErrors(units, { projectRoot, runDir, header, runCommands = true }) {
   const { executorRun } = await loadServerLib();
   const tail = executorRun.RECEIPT_MAX_BYTES;
   const checkById = new Map((header?.file_checks ?? []).map((c) => [c.id, c]));
@@ -626,6 +631,7 @@ export async function baselineErrors(units, { projectRoot, runDir, header }) {
     if (u.action === "tooling") continue;
     const denied = deniedErrors(u);
     if (denied.length) { errors.push(...denied); continue; }
+    if (!runCommands) continue;
     // A new file's style file is its baseline; a style unit's file does not exist until that unit is typed.
     const target = u.action === "edit" ? u.path : u.style_from?.path;
     if (!target || fileLines(projectRoot, target) === null) continue;
