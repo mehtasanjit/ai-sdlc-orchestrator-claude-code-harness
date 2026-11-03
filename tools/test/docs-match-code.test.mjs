@@ -845,3 +845,16 @@ test("the v0.10.0 note says how thinking steps are routed, as thinking.ts does i
   assert.match(thinking, /export const DEFAULT_THINKING_TIMEOUT_SEC = 14_400;/);
   assert.match(noteRow("Session model", "0.10.0"), /`session_model`/);
 });
+
+test("every text that gives a thinking step's no-progress limit gives the worker's own", () => {
+  const n = Number(/^NO_PROGRESS_TURNS = (\d+)$/m.exec(read("plugin", "mcp", "model-dispatch", "worker", "thinking_worker.py"))?.[1]);
+  assert.ok(n > 0, "the worker names its no-progress limit");
+  assert.match(read("plugin", "mcp", "model-dispatch", "src", "thinking.ts"), new RegExp(`export const NO_PROGRESS_TURNS = ${n};`), "the step's reply counts what the worker counts");
+  const said = new RegExp(`answers ${WORDS[n]} reminders in a row of what it owes without progress`);
+  assert.match(noteRow("Thinking-step routing", "0.10.0"), new RegExp(`answers ${WORDS[n]} such reminders in a row without progress`));
+  assert.match(read("plugin", "mcp", "model-dispatch", "src", "server.ts"), said, "run_thinking_step's description");
+  // Each shipped policy whose header says what stops a thinking step.
+  const headers = readdirSync(join(PLUGIN, "config", "policies")).filter((f) => f.endsWith(".yaml")).map((f) => [f, read("plugin", "config", "policies", f).replace(/\n#\s*/g, " ")]).filter(([, t]) => t.includes("A step that cannot finish within thinking_timeout_sec"));
+  assert.ok(headers.length > 0, "the Gemini policies' headers say what stops a step");
+  for (const [f, t] of headers) assert.match(t, said, f);
+});
