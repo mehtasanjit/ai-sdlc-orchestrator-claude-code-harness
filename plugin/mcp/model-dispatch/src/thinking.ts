@@ -229,23 +229,45 @@ export function snapshotChanges(before: ProjectSnapshot, after: ProjectSnapshot)
 /** Files an operating system writes on its own beside a project's (a file browser's folder records): never its content. */
 const OS_FILES = /(^|\/)(\.DS_Store|\._[^/]+|Thumbs\.db|desktop\.ini|Icon\r)$/i;
 
+/** The debug log the plugin's logger falls back to when it has no run log (log.ts configureSinks). */
+const DEBUG_LOG = ".sdlc/local/debug.log";
+
 /**
  * What a step itself writes, which its change check spares: in brownfield the run's own records folder; in greenfield
- * only the step's records, its inputs, each piece it hands in, the spec store's records, and the dispatch's evidence and
- * telemetry. Not the rest of the run's folder: under /mmo:pass the code under review lies inside it (review: a change
+ * only the step's records, its inputs, each piece it hands in, the spec store's records, the dispatch's evidence and
+ * telemetry, and the plugin's own logs (stepOwns spares the pieces its logger rotates out). Not the rest of the run's folder: under /mmo:pass the code under review lies inside it (review: a change
  * to it during a review went unseen, as did one to .sdlc/project.json).
  */
 export function stepOwnPaths(args: ThinkingArgs, outputs: Record<string, string>, brownfield: boolean): string[] {
   const d = runFolder(args.output_dir);
-  if (brownfield) return [`${d}/`];
-  const own = [`${d}/thinking/`, `${d}/inputs/`, `${d}/delegation/`, `${d}/telemetry.jsonl`, ".sdlc/delegation/"];
+  // The plugin's own logs, which its logger writes while the step runs (log.ts): the run's log beside its telemetry,
+  // the run's own under .sdlc/runs/<run_id>/, and the debug log it falls back to; each with the pieces it rotates out
+  // (stepOwns; live test of 0.10.1: a step whose requirements were accepted was stopped, naming the log the server had
+  // just written). The debug log alone, never its folder: the write contract beside it is checked.
+  if (brownfield) return [`${d}/`, DEBUG_LOG];
+  const own = [`${d}/thinking/`, `${d}/inputs/`, `${d}/delegation/`, `${d}/telemetry.jsonl`, `${d}/orchestrator.log`, ".sdlc/delegation/", DEBUG_LOG];
+  if (typeof args.run_id === "string" && args.run_id) own.push(`.sdlc/runs/${args.run_id.toLowerCase()}/orchestrator.log`);
   for (const [key, p] of Object.entries(outputs)) own.push(key === "sections_dir" ? `${runFolder(p)}/` : runFolder(p));
   if (args.role === "architect") own.push(`${d}/spec.parts/`, `${d}/spec.json`, `${d}/design.md`, `${d}/previous/`);
   if (typeof args.telemetry_path === "string" && args.telemetry_path) {
     const t = posix(relative(resolve(args.project_root), resolve(args.project_root, args.telemetry_path)));
-    if (!t.startsWith("..")) own.push(t, `${posixPath.dirname(t)}/delegation/`);
+    if (!t.startsWith("..")) own.push(t, `${posixPath.dirname(t)}/delegation/`, `${posixPath.dirname(t)}/orchestrator.log`);
   }
   return own;
+}
+
+/** A piece the plugin's logger rotates out of a log, or the lock it takes to do so: `<log>.<n>`, `<log>.rotating` (log.ts rotateIfNeeded). */
+const LOG_PIECE = /^(.+\.log)(\.\d+|\.rotating)$/;
+
+/**
+ * Whether a path the change check found is the step's own (stepOwnPaths): under one of its folders, one of its files,
+ * an operating system's own file, or a piece the plugin's logger rotated out of a log the step owns.
+ */
+export function stepOwns(own: string[], p: string): boolean {
+  if (OS_FILES.test(p) || own.some((o) => (o.endsWith("/") ? p.startsWith(o) : p === o))) return true;
+  const piece = LOG_PIECE.exec(posixPath.basename(p));
+  const dir = posixPath.dirname(p);
+  return piece !== null && own.includes(`${dir === "." ? "" : `${dir}/`}${piece[1]}`);
 }
 
 /**
@@ -641,7 +663,7 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
   // project, before and after; what git ignores is not the project's (a test runner's cache: review, pytest's cache
   // stopped a finished step). Outside git it is the workers' walked inventories, which the reply calls partial.
   const own = stepOwnPaths(args, outputs, brownfield);
-  const mine = (p: string) => own.some((o) => (o.endsWith("/") ? p.startsWith(o) : p === o)) || OS_FILES.test(p);
+  const mine = (p: string) => stepOwns(own, p);
   const dispatched: ExecutionResult[] = [];
   let checkedByGit = false;
   const changedSince = (): string[] => {

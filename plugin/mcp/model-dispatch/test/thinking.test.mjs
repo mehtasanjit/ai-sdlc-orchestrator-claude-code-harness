@@ -533,6 +533,28 @@ test("only the step's own hand-ins are spared: the code under review, the plugin
   assert.match((await runThinkingStep(args(bf), changing(() => put(bf, ".sdlc/local/write-contract.json", "{\"active\":false}\n")))).reason, /write-contract\.json/);
 });
 
+test("the run log the plugin writes during a step is the step's own: the log beside the run's telemetry, its rotated pieces, the run's own log; a file of that name elsewhere is not", async () => {
+  // Live test of 0.10.1: the server's logger writes orchestrator.log beside the run's telemetry while the step runs
+  // (log.ts configureSinks), and the change check stopped a step whose requirements were accepted, naming that log.
+  const root = await gitProject({ "src/a.ts": "export const a = 1;\n" });
+  const step = (edit, over = {}) => runThinkingStep(args(root, { role: "senior-reviewer", intent: undefined, output_dir: "examples/s/passes/r1", telemetry_path: "examples/s/passes/r1/telemetry.jsonl", ...over }), changing(() => { put(root, "examples/s/passes/r1/review.json", "{}\n"); edit(); }));
+  const logs = () => {
+    put(root, "examples/s/passes/r1/orchestrator.log", "MMO: thinking.start\n");
+    put(root, "examples/s/passes/r1/orchestrator.log.1", "MMO: an older piece\n");
+    put(root, "examples/s/passes/r1/orchestrator.log.rotating", "");
+    put(root, ".sdlc/runs/r1/orchestrator.log", "MMO: the run's own log\n");
+    put(root, ".sdlc/local/debug.log", "MMO: the debug log the logger falls back to\n");
+    put(root, ".sdlc/local/debug.log.2", "MMO: an older piece of it\n");
+  };
+  assert.equal((await step(logs)).route, "done", "the plugin's own logs are not the project's");
+  // Telemetry kept outside the run's folder: the log beside it is the run's too.
+  assert.equal((await step(() => put(root, "records/t/orchestrator.log", "MMO: x\n"), { telemetry_path: "records/t/telemetry.jsonl" })).route, "done");
+  // A file of that name anywhere else is the project's.
+  assert.match((await step(() => put(root, "src/orchestrator.log", "x\n"))).reason, /src\/orchestrator\.log/);
+  assert.match((await step(() => put(root, "examples/s/passes/r1/orchestrator.log.bak", "x\n"))).reason, /orchestrator\.log\.bak/);
+  assert.match((await step(() => put(root, ".sdlc/local/notes.log", "x\n"))).reason, /\.sdlc\/local\/notes\.log/, "the debug log alone, never its folder");
+});
+
 test("a run folder written ./out is the same folder; an operating system's own files are not the project's", async () => {
   const root = await gitProject({ "src/a.ts": "export const a = 1;\n" });
   // The worker's own inventory reports what it saw as well; both views must agree that these are no change.
