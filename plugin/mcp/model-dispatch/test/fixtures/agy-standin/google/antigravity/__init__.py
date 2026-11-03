@@ -220,6 +220,7 @@ class Conversation:
                     yield step
                 if "usage" in ev:
                     self._usage = self._usage + types.UsageMetadata(**ev["usage"])
+                    log("usage", session=self._session, turn=self._turns)
                 if "os_sleep" in ev:
                     if _clock is None:
                         raise RuntimeError("the stand-in's sitecustomize.py is not loaded, so it cannot fake a sleep")
