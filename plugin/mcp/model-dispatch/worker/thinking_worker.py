@@ -1,11 +1,13 @@
 """thinking_worker.py — one thinking step (requirements, an architect, a reviewer, discovery) on Gemini, launched by the
 MCP server (src/thinking.ts) through the agent door's adapter.
 
-The agent worker (gemini_worker.py) with four differences:
+The agent worker (gemini_worker.py) with five differences:
   - the SDK's own tools are switched off but `finish`; every other tool is one of ours (scripts/thinking-tools.mjs,
     one Node process for the step): reading through the engine's read rule, and handing work in through the same
     checks the Claude helper's hand-over runs. Gemini has no tool that writes the project, runs a shell or reaches
     the network;
+  - how the step runs and the helper's instructions (--system-file) are the session's system instructions, which the
+    SDK keeps whatever it trims from a long conversation; the task (--task-file) is the first message;
   - the step is done when the tools say every piece it owes is accepted, not when Gemini stops talking: a turn that
     ends with pieces missing is answered with what is missing, in the same conversation. There is no fixed number of
     turns, as there is none for the Claude helper: the step goes on until its own work time (--timeout, the policy's
@@ -231,25 +233,35 @@ ROLE_TOOLS = {
 
 
 class ThinkingSession(gw.AgentSession):
-    def __init__(self, args, sup, location0, fn_tools, resume_id=None):
+    def __init__(self, args, sup, location0, fn_tools, resume_id=None, system=""):
         super().__init__(args, sup, location0)
         self.save_dir = args.save_dir
         self.fn_tools = fn_tools
         self.resume_from = resume_id
+        self.system = system
 
     def config(self, location, resume_id=None):
         # Built by the SDK config's constructor with the step's own fields, so the SDK validates them (review: a
         # model_copy(update=) of the agent worker's config skipped that; 0.1.22 accepts there capabilities its
-        # constructor refuses): the SDK's own tools off but finish, and the step's tools.
-        return super().config(location, resume_id or self.resume_from, extra={
+        # constructor refuses): the SDK's own tools off but finish, the step's tools, and the step's system text as the
+        # session's system instructions, which the SDK never trims from a long conversation (review: the helper's
+        # instructions were the first user message). A resumed conversation is given them again.
+        extra = {
             "capabilities": types.CapabilitiesConfig(enable_subagents=False, enabled_tools=[types.BuiltinTools.FINISH]),
             "tools": self.fn_tools,
-        })
+        }
+        if self.system:
+            extra["system_instructions"] = types.CustomSystemInstructions(text=self.system)
+        return super().config(location, resume_id or self.resume_from, extra=extra)
 
 
 async def run(args):
     with open(args.task_file, encoding="utf-8") as f:
         task = f.read()
+    system = ""
+    if args.system_file:
+        with open(args.system_file, encoding="utf-8") as f:
+            system = f.read()
     location = args.region or gw.LOCATION
     if not location or not gw.PROJECT:
         raise SystemExit("thinking_worker: no Vertex project or region (set GOOGLE_CLOUD_PROJECT; pass --region)")
@@ -304,7 +316,7 @@ async def run(args):
     sup.start()
     try:
         while True:
-            s = ThinkingSession(args, sup, locations[0], fn_tools, resume)
+            s = ThinkingSession(args, sup, locations[0], fn_tools, resume, system)
             await s.run(message)
             # The conversation the session itself ran, by the SDK's own id: never the newest file in the save folder.
             resume = s.conversation_id or resume
@@ -375,6 +387,8 @@ def main():
     p.add_argument("--timeout", type=int, default=14400)
     p.add_argument("--resume-id", default=None)
     p.add_argument("--summary-file", default=None)
+    # The session's system instructions (how the step runs, the helper's instructions); --task-file is then the task.
+    p.add_argument("--system-file", default=None)
     p.add_argument("--node", default="node")
     p.add_argument("--tools-script", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "scripts", "thinking-tools.mjs"))
     p.add_argument("--api-retries", type=int, default=None)

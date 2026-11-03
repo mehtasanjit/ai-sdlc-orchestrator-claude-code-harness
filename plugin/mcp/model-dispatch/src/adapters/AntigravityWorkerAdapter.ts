@@ -335,12 +335,17 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     const recordFile = join(outDir, `worker-delegation-${stem}.json`);
     // A thinking step's summary (accepted, owed, its conversation), which its worker keeps whatever its exit.
     const summaryFile = join(outDir, `worker-summary-${stem}.json`);
+    // A thinking step's system instructions (how it runs, the helper's instructions), kept beside its task.
+    const systemFile = join(outDir, `worker-system-${stem}.md`);
 
     try {
       mkdirSync(outDir, { recursive: true });
       keepEarlierDispatch(outDir, stem);
-      // A thinking step's brief is the step's own text: it has read and hand-in tools, not the agent's file tools.
-      writeFileSync(taskFile, runContext?.thinking ? packet.instruction : workerTaskMarkdown(packet, { workdir }), "utf8");
+      // A thinking step's brief is the step's own text: it has read and hand-in tools, not the agent's file tools. Its
+      // system text goes to the worker as the session's system instructions, and its task file holds the task alone;
+      // the packet's instruction, the two together, stays the record of what the model is told.
+      if (runContext?.thinking) writeFileSync(systemFile, runContext.thinking.system, "utf8");
+      writeFileSync(taskFile, runContext?.thinking ? runContext.thinking.task : workerTaskMarkdown(packet, { workdir }), "utf8");
     } catch (err: any) {
       return this.failure(started, `Could not stage the delegation brief: ${err?.message ?? err}`);
     }
@@ -377,7 +382,8 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       // A step waits out a model Google serves nothing of for the run's busy window, carrying on its own conversation,
       // as a batch does for a typing call (busyLedger.ts); each carry-on is a new call with its own busy budget.
       args.push("--role", thinking.role, "--tools-config", thinking.toolsConfig, "--save-dir", thinking.saveDir,
-        "--node", process.execPath, "--tools-script", THINKING_TOOLS, "--busy-window-sec", String(BUSY_WINDOW_SEC));
+        "--node", process.execPath, "--tools-script", THINKING_TOOLS, "--busy-window-sec", String(BUSY_WINDOW_SEC),
+        "--system-file", systemFile);
       if (thinking.resumeId) args.push("--resume-id", thinking.resumeId);
       args.push("--summary-file", summaryFile);
     }
@@ -512,6 +518,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       diff,
       briefFile: basename(taskFile),
       usageFile: basename(usageFile),
+      ...(thinking ? { systemFile: basename(systemFile) } : {}),
       gemini: bill?.gemini,
     });
 

@@ -155,6 +155,27 @@ test("a revise carries on the step's saved conversation with the changes asked f
   assert.doesNotMatch(calls.dispatch[1].packet.instruction, /The helper's instructions/, "a resumed conversation already holds them");
 });
 
+// E-thinking-system. Review: the helper's instructions went in as the first user message, which a long step's trimmed
+// history can drop; the design gives them to the session as its system instructions.
+test("a step's dispatch carries its system text (how it runs, the helper's instructions) apart from its task; the packet keeps the whole", async () => {
+  const root = project();
+  const { d, calls } = deps(AGENT, () => result());
+  await runThinkingStep(args(root), d);
+  const { packet, thinking } = calls.dispatch[0];
+  assert.match(thinking.system, /^## How this step runs\n/);
+  assert.match(thinking.system, /write_section/, "the step's own hand-in tools");
+  assert.match(thinking.system, /\n## The helper's instructions\n\n\S/);
+  assert.doesNotMatch(thinking.system, /## This invocation/);
+  assert.equal(thinking.task, "## This invocation\n\nplan it");
+  assert.equal(packet.instruction, `${thinking.system}\n\n${thinking.task}`, "the record of what the model is told: the whole text, as before");
+  // A revise carries the conversation on: its task is the changes asked for, and the system text is the first call's.
+  await runThinkingStep(args(root, { revise: "split U02 into two units" }), d);
+  const again = calls.dispatch[1];
+  assert.equal(again.thinking.system, thinking.system);
+  assert.match(again.thinking.task, /^Changes asked for this step:\n\nsplit U02 into two units/);
+  assert.equal(again.packet.instruction, again.thinking.task);
+});
+
 test("a greenfield architect's revise hands the whole spec in again, as its instructions say; other steps hand in what changed", async () => {
   const root = project();
   // A real run's architect checks coverage against the run's requirements, which the requirements step handed in.

@@ -608,9 +608,11 @@ export interface RunContext {
   signal?: AbortSignal;
   /**
    * A thinking step (thinking.ts): the agent door runs worker/thinking_worker.py instead of the agent worker, with the
-   * step's own tools, its saved conversation and its own work budget.
+   * step's own tools, its saved conversation and its own work budget. `system` is the session's system instructions
+   * (how the step runs, and the helper's instructions); `task` the step's first message (the invocation, or on a
+   * resumed conversation the changes asked for). The packet's instruction stays the whole text.
    */
-  thinking?: { role: string; toolsConfig: string; saveDir: string; resumeId?: string; timeoutSec: number };
+  thinking?: { role: string; toolsConfig: string; saveDir: string; resumeId?: string; timeoutSec: number; system: string; task: string };
 }
 
 export type RuleMatcher = {

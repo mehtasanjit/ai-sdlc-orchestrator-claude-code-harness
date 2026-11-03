@@ -3,8 +3,9 @@
  *
  * A step whose rule names a Claude model is the session's: the reply says so, nothing is spent, and the orchestrator
  * delegates its Claude helper as it always has. A step whose rule names an agent-door leaf runs on Gemini through
- * worker/thinking_worker.py: the helper's own instructions, read-only tools that apply the engine's read rule, and
- * hand-in tools that run the same checks the Claude helper's hand-over runs, piece by piece (scripts/thinking-tools.mjs).
+ * worker/thinking_worker.py: the helper's own instructions as the session's system instructions, read-only tools that
+ * apply the engine's read rule, and hand-in tools that run the same checks the Claude helper's hand-over runs, piece by
+ * piece (scripts/thinking-tools.mjs).
  * Gemini works in the project itself and has no tool that can change it; the agent door's before-and-after inventory
  * proves it, and a step that changed a project file is stopped. A step that cannot finish stops the run at that step:
  * no other model takes it over. A gate's revise carries on the same conversation.
@@ -461,9 +462,16 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   // A revise and an acceptance fix carry on the step's saved conversation: the model keeps what it read and decided.
   const resumeId = (args.revise || args.acceptance_fix) && prior ? prior : undefined;
   const fix = args.acceptance_fix ? `An install or audit command of the acceptance list failed.\n\n${args.acceptance_fix}\n\n${ACCEPTANCE_FIX_HAND_IN}` : "";
-  const instruction = resumeId
+  // How the step runs and the helper's instructions are the session's system instructions, which the SDK keeps
+  // whatever it trims from a long conversation (review: as the first user message, a long step's trimmed history could
+  // drop them); the task is the first message. A resumed conversation is given the same system text again.
+  const system = `${preface(args.role)}\n\n## The helper's instructions\n\n${instructions}`;
+  const task = resumeId
     ? (fix ? `Acceptance fix: ${fix}` : `Changes asked for this step:\n\n${args.revise}\n\n${reviseHandIn(args.role)}`)
-    : `${preface(args.role)}\n\n## The helper's instructions\n\n${instructions}\n\n## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}\n\n${reviseHandIn(args.role)}` : ""}${fix ? `\n\n## Acceptance fix\n\n${fix}` : ""}`;
+    : `## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}\n\n${reviseHandIn(args.role)}` : ""}${fix ? `\n\n## Acceptance fix\n\n${fix}` : ""}`;
+  // The packet's instruction is the whole text, as before: the step's record of what the model is told. Only how it
+  // reaches the SDK changed (thinking.system and thinking.task, below).
+  const instruction = resumeId ? task : `${system}\n\n${task}`;
   const packet: TaskPacket = {
     id: `${args.run_id ?? "run"}-${key}`,
     phase: role.phase,
@@ -480,7 +488,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
 
   deps.log("info", "thinking.start", { role: args.role, phase: role.phase, model: model.model_name, resumed: !!resumeId });
   const before = projectSnapshot(args.project_root);
-  const { result, events } = await deps.dispatch(packet, { role: args.role, toolsConfig, saveDir, resumeId, timeoutSec: deps.thinkingTimeoutSec });
+  const { result, events } = await deps.dispatch(packet, { role: args.role, toolsConfig, saveDir, resumeId, timeoutSec: deps.thinkingTimeoutSec, system, task });
   const after = before ? projectSnapshot(args.project_root) : null;
   deps.record(events.map((e) => ({ ...e, judgment_role: args.role })));
   const summary = (result.result ?? {}) as { done?: boolean; missing?: string[]; accepted?: string[]; conversation_id?: string; reason?: string | null };
