@@ -11,8 +11,9 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, posix as posixPath, relative, resolve, sep } from "node:path";
 
 import { holdsPrivateKey, modelReadOf } from "./apply.js";
 
@@ -66,6 +67,8 @@ export interface ThinkingArgs {
   inputs?: string[];
   /** A gate's revise, or a check's lines to fix: the step carries on its saved conversation with this. */
   revise?: string;
+  /** Where the run's telemetry goes (absolute; server.ts makes it so): the step's events, and beside it the dispatch's evidence. */
+  telemetry_path?: string;
   /**
    * The architect only: the acceptance stage's failure routed to the architect (an install or audit command) and its
    * log_path. The step carries on the architect's conversation and answers as the helper replies: the failures entries
@@ -76,7 +79,7 @@ export interface ThinkingArgs {
 
 export type ThinkingReply =
   | { route: "session"; role: string; phase: Phase; model: string; reason: string }
-  | { route: "done"; role: string; phase: Phase; model: string; accepted: string[]; cost_usd: number; tokens: ExecutionResult["tokens"]; resumed: boolean; acceptance_fix?: AcceptanceFixAnswer }
+  | { route: "done"; role: string; phase: Phase; model: string; accepted: string[]; cost_usd: number; tokens: ExecutionResult["tokens"]; resumed: boolean; change_check: string; acceptance_fix?: AcceptanceFixAnswer }
   | { route: "stopped"; role: string; phase: Phase; model: string; reason: string; missing?: string[]; accepted?: string[]; cost_usd: number }
   | { route: "halt"; role: string; phase: Phase; model: string; reason: string; cost_usd: number };
 
@@ -110,10 +113,20 @@ const inside = (root: string, p: string) => {
 };
 const posix = (p: string) => p.split(sep).join("/");
 
-/** The run folder a step writes into: relative, inside the project, and in a brownfield run under `.sdlc/`. */
-export function outputDirProblem(projectRoot: string, dir: string, brownfield: boolean): string | null {
+/** The run's folder as one spelling: `./out/` and `out` are the same folder (review: `./out` stopped a clean step). */
+export function runFolder(outputDir: string): string {
+  return posixPath.normalize(posix(outputDir)).replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+}
+
+/**
+ * The run folder a step writes into: relative, inside the project, and in a brownfield run exactly the run's own
+ * records folder, `.sdlc/runs/<run_id>` (review: any folder under .sdlc was accepted, and the change check then spared
+ * all of it, the write contract included).
+ */
+export function outputDirProblem(projectRoot: string, dir: string, brownfield: boolean, runId?: string): string | null {
   if (typeof dir !== "string" || dir === "" || isAbsolute(dir) || !inside(projectRoot, dir)) return `output_dir '${dir}' must be a folder inside project_root, given relative to it`;
   if (brownfield && posix(relative(resolve(projectRoot), resolve(projectRoot, dir))).split("/")[0] !== ".sdlc") return `output_dir '${dir}' is outside .sdlc/; a brownfield run's thinking steps write only the run's own records`;
+  if (brownfield && typeof runId === "string" && runFolder(dir) !== `.sdlc/runs/${runId}`) return `output_dir '${dir}' must be the run's own folder, .sdlc/runs/${runId}`;
   return null;
 }
 
@@ -165,11 +178,70 @@ const PLUGIN_STACKS = "${CLAUDE_PLUGIN_ROOT}/skills/pipeline/stacks/";
 export function stepInstructions(pluginRoot: string, role: ThinkingRole, projectRoot: string, outputDir: string): string {
   const text = roleInstructions(pluginRoot, role);
   if (!text.includes(PLUGIN_STACKS)) return text;
-  const rel = `${posix(outputDir).replace(/\/+$/, "")}/inputs/plugin-stacks`;
+  const rel = `${runFolder(outputDir)}/inputs/plugin-stacks`;
   const from = join(pluginRoot, "skills", "pipeline", "stacks");
   mkdirSync(join(projectRoot, rel), { recursive: true });
   for (const f of readdirSync(from)) if (f.endsWith(".md")) copyFileSync(join(from, f), join(projectRoot, rel, f));
   return text.split(PLUGIN_STACKS).join(`${rel}/`);
+}
+
+/**
+ * What git shows of the project: its HEAD, and every file git does not ignore that differs from HEAD or is new, each
+ * with its contents' hash; null outside a git work tree. Taken before and after a thinking step, it sees a change
+ * wherever git does: in a build or cache folder git does not ignore, in a file of any size, among any number of files
+ * (review: the walked inventory passed changes under build/, past 20,000 files, and same-size ones over 2 MB).
+ */
+export interface ProjectSnapshot { head: string | null; files: Map<string, string> }
+export function projectSnapshot(projectRoot: string): ProjectSnapshot | null {
+  const git = (args: string[]) => spawnSync("git", ["-C", projectRoot, ...args], { encoding: "buffer", timeout: 120_000, maxBuffer: 512_000_000 });
+  const tree = git(["rev-parse", "--is-inside-work-tree", "--show-prefix"]);
+  const [isTree, prefix = ""] = tree.status === 0 ? tree.stdout.toString("utf8").split("\n") : [];
+  if (isTree !== "true") return null;
+  const head = git(["rev-parse", "-q", "--verify", "HEAD"]);
+  // Porcelain paths are the repository's; `-- .` keeps them to the project, and the project's own prefix is dropped.
+  const status = git(["--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--", "."]);
+  if (status.status !== 0) return null;
+  const files = new Map<string, string>();
+  for (const entry of status.stdout.toString("utf8").split("\0").filter(Boolean)) {
+    const repoPath = entry.slice(3);
+    const rel = prefix && repoPath.startsWith(prefix) ? repoPath.slice(prefix.length) : repoPath;
+    let hash = "absent";
+    try { hash = createHash("sha256").update(readFileSync(join(projectRoot, rel))).digest("hex"); } catch { /* deleted, or not a file */ }
+    files.set(rel, `${entry.slice(0, 2)}:${hash}`);
+  }
+  return { head: head.status === 0 ? head.stdout.toString("utf8").trim() : null, files };
+}
+
+/** The project files that differ between two snapshots, and a moved HEAD (a commit made, or another one checked out). */
+export function snapshotChanges(before: ProjectSnapshot, after: ProjectSnapshot): string[] {
+  const out = new Set<string>();
+  for (const [p, v] of after.files) if (before.files.get(p) !== v) out.add(p);
+  for (const p of before.files.keys()) if (!after.files.has(p)) out.add(p);
+  const changed = [...out].sort();
+  if (before.head !== after.head) changed.unshift(`the checked-out commit (${before.head ?? "none"} to ${after.head ?? "none"})`);
+  return changed;
+}
+
+/** Files an operating system writes on its own beside a project's (a file browser's folder records): never its content. */
+const OS_FILES = /(^|\/)(\.DS_Store|\._[^/]+|Thumbs\.db|desktop\.ini|Icon\r)$/i;
+
+/**
+ * What a step itself writes, which its change check spares: in brownfield the run's own records folder; in greenfield
+ * only the step's records, its inputs, each piece it hands in, the spec store's records, and the dispatch's evidence and
+ * telemetry. Not the rest of the run's folder: under /mmo:pass the code under review lies inside it (review: a change
+ * to it during a review went unseen, as did one to .sdlc/project.json).
+ */
+export function stepOwnPaths(args: ThinkingArgs, outputs: Record<string, string>, brownfield: boolean): string[] {
+  const d = runFolder(args.output_dir);
+  if (brownfield) return [`${d}/`];
+  const own = [`${d}/thinking/`, `${d}/inputs/`, `${d}/delegation/`, `${d}/telemetry.jsonl`, ".sdlc/delegation/"];
+  for (const [key, p] of Object.entries(outputs)) own.push(key === "sections_dir" ? `${runFolder(p)}/` : runFolder(p));
+  if (args.role === "architect") own.push(`${d}/spec.parts/`, `${d}/spec.json`, `${d}/design.md`, `${d}/previous/`);
+  if (typeof args.telemetry_path === "string" && args.telemetry_path) {
+    const t = posix(relative(resolve(args.project_root), resolve(args.project_root, args.telemetry_path)));
+    if (!t.startsWith("..")) own.push(t, `${posixPath.dirname(t)}/delegation/`);
+  }
+  return own;
 }
 
 /** A step's own name in its run: its role, and for a senior review with its own review_path, that path too. */
@@ -224,7 +296,7 @@ export function stepInputsCopied(projectRoot: string, outputDir: string, inputs:
 
 /** The fixed paths each role's hand-in tools write, all relative to project_root. */
 export function roleOutputs(role: string, args: ThinkingArgs): Record<string, string> {
-  const d = posix(args.output_dir).replace(/\/+$/, "");
+  const d = runFolder(args.output_dir);
   switch (role) {
     case "requirements": return { requirements: `${d}/requirements.md` };
     case "architect": return args.acceptance_fix ? { acceptance_fix: `${d}/acceptance-fix.json` } : { sections_dir: `${d}/spec.sections` };
@@ -308,7 +380,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   if (!role) throw new Error(`run_thinking_step: unknown role '${args.role}' (known: ${Object.keys(THINKING_ROLES).join(", ")})`);
   if (!args.project_root) throw new Error("run_thinking_step: project_root is required");
   const brownfield = args.role.startsWith("brownfield-") || args.role === "discovery" || deps.contractActive(args.project_root);
-  const dirProblem = outputDirProblem(args.project_root, args.output_dir, brownfield) ?? reviewPathProblem(args.project_root, args.output_dir, args.review_path);
+  const dirProblem = outputDirProblem(args.project_root, args.output_dir, brownfield, args.run_id) ?? reviewPathProblem(args.project_root, args.output_dir, args.review_path);
   if (dirProblem) throw new Error(`run_thinking_step: ${dirProblem}`);
   const pathProblem = projectPathProblem(args.project_root, args.code_dir, "code_dir") ?? projectPathProblem(args.project_root, args.requirements_path, "requirements_path");
   if (pathProblem) throw new Error(`run_thinking_step: ${pathProblem}`);
@@ -317,7 +389,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   // hands in there, and a design step with no such file is refused before anything is sent.
   let requirementsPath = args.requirements_path;
   if (args.role === "architect" && args.acceptance_fix === undefined) {
-    requirementsPath ??= `${posix(args.output_dir).replace(/\/+$/, "")}/requirements.md`;
+    requirementsPath ??= `${runFolder(args.output_dir)}/requirements.md`;
     if (!existsSync(join(args.project_root, requirementsPath))) throw new Error(`run_thinking_step: the architect checks every requirement is covered against requirements_path '${requirementsPath}', which names no file`);
   }
   if (args.acceptance_fix !== undefined) {
@@ -352,7 +424,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const saveDir = join(stepDir, `${key}.save`);
   writeFileSync(toolsConfig, JSON.stringify({
     role: args.role, project_root: resolve(args.project_root), run_id: args.run_id, intent: args.intent,
-    output_dir: posix(args.output_dir), outputs, spec_dir: posix(args.output_dir), requirements_path: requirementsPath, code_dir: args.code_dir,
+    output_dir: runFolder(args.output_dir), outputs, spec_dir: runFolder(args.output_dir), requirements_path: requirementsPath, code_dir: args.code_dir,
     run_token: deps.runToken, revise: !!args.revise, acceptance_fix: !!args.acceptance_fix,
   }, null, 2));
 
@@ -378,7 +450,9 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   };
 
   deps.log("info", "thinking.start", { role: args.role, phase: role.phase, model: model.model_name, resumed: !!resumeId });
+  const before = projectSnapshot(args.project_root);
   const { result, events } = await deps.dispatch(packet, { role: args.role, toolsConfig, saveDir, resumeId, timeoutSec: deps.thinkingTimeoutSec });
+  const after = before ? projectSnapshot(args.project_root) : null;
   deps.record(events.map((e) => ({ ...e, judgment_role: args.role })));
   const summary = (result.result ?? {}) as { done?: boolean; missing?: string[]; accepted?: string[]; conversation_id?: string };
   if (summary.conversation_id) writeFileSync(recordPath, JSON.stringify({ conversation_id: summary.conversation_id }) + "\n");
@@ -387,18 +461,23 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
     deps.log("warn", "thinking.stopped", { role: args.role, phase: role.phase, model: model.model_name, reason: why });
     return { ...base, route: "stopped", reason: why, ...(missing?.length ? { missing } : {}), ...(summary.accepted?.length ? { accepted: summary.accepted } : {}), cost_usd: result.cost_usd };
   };
+  // Gemini has no tool that writes the project; any change outside what the step itself writes means something else
+  // did, or a tool misbehaved: nothing from the step is used. In a git work tree the check is git's own view of the
+  // project, before and after; what git ignores is not the project's (a test runner's cache: review, pytest's cache
+  // stopped a finished step). Outside git it is the worker's walked inventory, which the reply calls partial.
+  const own = stepOwnPaths(args, outputs, brownfield);
+  const mine = (p: string) => own.some((o) => (o.endsWith("/") ? p.startsWith(o) : p === o)) || OS_FILES.test(p);
+  const seen = before && after ? snapshotChanges(before, after) : notIgnoredByGit(args.project_root, (result.workspace_changes ?? []).map((p) => runFolder(p)));
+  const changed = seen.filter((p) => !mine(p));
+  const changeCheck = before && after ? "git" : "partial: not a git work tree, so the worker's walk of the project is the check; it skips dependency, build and cache folders, compares files over 2 MB by size, and stops at 20,000 files";
+  const changedText = changed.length ? `project files changed while the step ran: ${changed.slice(0, 10).join(", ")}${changed.length > 10 ? ` and ${changed.length - 10} more` : ""}` : "";
   if (result.halt) {
-    deps.log("warn", "thinking.halt", { role: args.role, phase: role.phase, model: model.model_name, reason: result.halt });
-    return { ...base, route: "halt", reason: result.halt, cost_usd: result.cost_usd };
+    // A halt still names what changed (review: it returned before the check, and the files were never named).
+    const reason = changedText ? `${result.halt}; ${changedText}` : result.halt;
+    deps.log("warn", "thinking.halt", { role: args.role, phase: role.phase, model: model.model_name, reason });
+    return { ...base, route: "halt", reason, cost_usd: result.cost_usd };
   }
-  // Gemini has no tool that writes the project; any change outside the step's own folders means something else
-  // did, or a tool misbehaved: nothing from the step is used.
-  const own = [posix(args.output_dir).replace(/\/+$/, "") + "/", ".sdlc/"];
-  // What git ignores is not the project's own: a check the step ran writes it (a test runner's cache, an OS's folder
-  // file), and git never sees it (review: pytest's cache stopped a finished step). A file git tracks, or would add,
-  // still stops the step.
-  const changed = notIgnoredByGit(args.project_root, (result.workspace_changes ?? []).map(posix).filter((p) => !own.some((o) => p.startsWith(o))));
-  if (changed.length) return stop(`project files changed while the step ran: ${changed.slice(0, 10).join(", ")}${changed.length > 10 ? ` and ${changed.length - 10} more` : ""}`);
+  if (changed.length) return stop(changedText);
   if (!result.success && !summary.done) return stop(`the ${model.model_name} step could not finish: ${result.error ?? "no reason given"}`, summary.missing);
   if (!summary.done) return stop(`the ${model.model_name} step ended with pieces still owed`, summary.missing);
   // Every piece is handed in and accepted by the checks a Claude helper's hand-over runs: the step is done, even when
@@ -411,6 +490,6 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
       return stop(`the acceptance fix was accepted, but ${outputs.acceptance_fix} cannot be read: ${e?.message ?? e}`);
     }
   }
-  deps.log("info", "thinking.end", { role: args.role, phase: role.phase, model: model.model_name, accepted: (summary.accepted ?? []).length, cost_usd: result.cost_usd });
-  return { ...base, route: "done", accepted: summary.accepted ?? [], cost_usd: result.cost_usd, tokens: result.tokens, resumed: !!resumeId, ...(answer ? { acceptance_fix: answer } : {}) };
+  deps.log("info", "thinking.end", { role: args.role, phase: role.phase, model: model.model_name, accepted: (summary.accepted ?? []).length, cost_usd: result.cost_usd, change_check: changeCheck === "git" ? "git" : "partial" });
+  return { ...base, route: "done", accepted: summary.accepted ?? [], cost_usd: result.cost_usd, tokens: result.tokens, resumed: !!resumeId, change_check: changeCheck, ...(answer ? { acceptance_fix: answer } : {}) };
 }
