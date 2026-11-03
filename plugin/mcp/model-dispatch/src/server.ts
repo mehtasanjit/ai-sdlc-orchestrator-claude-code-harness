@@ -1068,7 +1068,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "run_thinking_step",
       description:
-        "Run one thinking step (requirements, the architect, the senior or security reviewer, discovery) where the " +
+        "Run one thinking step (requirements, the architect, the senior or security reviewer) where the " +
         "run's policy routes its phase. A Claude model: the reply is route 'session' and nothing is spent; delegate the " +
         "helper (or write requirements yourself) as before. An antigravity-worker leaf: Gemini runs the helper's own " +
         "instructions with read-only tools (the engine's read rule) and hands each piece in through the same check the " +

@@ -54,7 +54,6 @@ export const ROLE_TOOLS = {
   "brownfield-senior-reviewer": ["git_diff", "read_provenance", "run_file_check", "env_keys", "write_review"],
   "security-reviewer": ["run_dependency_audit", "env_keys", "write_review"],
   "brownfield-security-reviewer": ["git_diff", "read_provenance", "run_file_check", "run_dependency_audit", "env_keys", "write_review"],
-  discovery: ["baseline_status", "write_discovery"],
 };
 export const READ_TOOLS = ["read_file", "list_files", "search_files"];
 
@@ -70,7 +69,7 @@ const canonical = (value) => JSON.stringify(value, (_, v) => (v && typeof v === 
 export class ThinkingTools {
   /**
    * cfg: {role, project_root, run_id, intent, output_dir (relative to project_root), outputs: {requirements,
-   * sections_dir, review, security_review, discovery}, spec_dir, requirements_path, code_dir, run_token (the token the
+   * sections_dir, review, security_review}, spec_dir, requirements_path, code_dir, run_token (the token the
    * spec store knows the run's pre-flight by), revise (the step answers a gate's changes), acceptance_fix (the
    * architect answers the acceptance stage), state_file (where the step's state is kept), carry_on (the step goes on
    * after its worker was killed)}
@@ -625,27 +624,10 @@ export class ThinkingTools {
     return { result: `wrote ${rel}` };
   }
 
-  baseline_status() {
-    return this.fixed(process.execPath, [join(HERE, "discovery-refresh.mjs"), "--baseline", ".sdlc/baseline/current.json"], this.root);
-  }
-
-  /** Discovery's four files: the run's discovery.md and baseline.json, and the project baseline beside them. */
-  write_discovery({ name, content }) {
-    const where = { "discovery.md": join(this.cfg.output_dir, "discovery.md"), "baseline.json": join(this.cfg.output_dir, "baseline.json"), "baseline/current.json": join(".sdlc", "baseline", "current.json"), "baseline/discovery.md": join(".sdlc", "baseline", "discovery.md") };
-    const rel = where[name];
-    if (!rel) return { error: `name is one of ${Object.keys(where).join(", ")}` };
-    if (typeof content !== "string" || !content.trim()) return { error: "content is empty" };
-    if (name.endsWith(".json")) { try { JSON.parse(content); } catch (e) { return { error: `${name} is not valid JSON: ${e.message}` }; } }
-    this.own(rel, content);
-    this.accepted.set(`discovery:${name}`, true);
-    return { result: `wrote ${rel}` };
-  }
-
   /** What the step still owes. The step is done only when this is empty. */
   async missing() {
     const role = this.cfg.role;
     if (role === "requirements") return this.accepted.has("requirements") ? [] : ["requirements.md (write_requirements)"];
-    if (role === "discovery") return ["discovery.md", "baseline.json"].filter((n) => !this.accepted.has(`discovery:${n}`)).map((n) => `the run's ${n} (write_discovery)`);
     if (role.endsWith("reviewer")) return this.accepted.has("review") ? [] : ["the review (write_review)"];
     if (role === "architect" && this.cfg.acceptance_fix) return this.accepted.has("acceptance_fix") ? [] : ["the acceptance fix: its failures entries, or the one line why it cannot pass (write_acceptance_fix)"];
     const out = [];

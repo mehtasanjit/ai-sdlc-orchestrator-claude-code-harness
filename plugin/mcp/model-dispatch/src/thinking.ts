@@ -1,5 +1,5 @@
 /**
- * A run's thinking steps (requirements, the architect, the two reviewers, discovery), on the model the policy names.
+ * A run's thinking steps (requirements, the architect, the two reviewers), on the model the policy names.
  *
  * A step whose rule names a Claude model is the session's: the reply says so, nothing is spent, and the orchestrator
  * delegates its Claude helper as it always has. A step whose rule names an agent-door leaf runs on Gemini through
@@ -38,7 +38,6 @@ export const THINKING_ROLES: Readonly<Record<string, ThinkingRole>> = Object.fre
   "brownfield-senior-reviewer": { phase: "senior_code_review", instructions: { agent: "brownfield-senior-reviewer" } },
   "security-reviewer": { phase: "security_review", instructions: { agent: "security-reviewer" } },
   "brownfield-security-reviewer": { phase: "security_review", instructions: { agent: "brownfield-security-reviewer" } },
-  discovery: { phase: "discovery", instructions: { agent: "discovery" } },
 });
 
 /**
@@ -317,7 +316,7 @@ export function roleOutputs(role: string, args: ThinkingArgs): Record<string, st
     case "brownfield-senior-reviewer": return { review: args.review_path ? posix(args.review_path) : `${d}/review.json` };
     case "security-reviewer":
     case "brownfield-security-reviewer": return { security_review: `${d}/security_review.md` };
-    default: return { discovery: `${d}/discovery.md` };
+    default: throw new Error(`run_thinking_step: no hand-in paths for role '${role}'`);
   }
 }
 
@@ -367,7 +366,6 @@ export function preface(role: string): string {
     "brownfield-senior-reviewer": "Read the change with git_diff and read_provenance; run a file check only with run_file_check; hand in review.json with write_review.",
     "security-reviewer": "Run the dependency check with run_dependency_audit; hand in security_review.md with write_review.",
     "brownfield-security-reviewer": "Read the change with git_diff and read_provenance; run the dependency check with run_dependency_audit; hand in security_review.md with write_review.",
-    discovery: "Check the baseline with baseline_status; hand in each of your files with write_discovery.",
   };
   return [
     "## How this step runs",
@@ -531,7 +529,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const role = THINKING_ROLES[args.role];
   if (!role) throw new Error(`run_thinking_step: unknown role '${args.role}' (known: ${Object.keys(THINKING_ROLES).join(", ")})`);
   if (!args.project_root) throw new Error("run_thinking_step: project_root is required");
-  const brownfield = args.role.startsWith("brownfield-") || args.role === "discovery" || deps.contractActive(args.project_root);
+  const brownfield = args.role.startsWith("brownfield-") || deps.contractActive(args.project_root);
   const dirProblem = outputDirProblem(args.project_root, args.output_dir, brownfield, args.run_id) ?? reviewPathProblem(args.project_root, args.output_dir, args.review_path);
   if (dirProblem) throw new Error(`run_thinking_step: ${dirProblem}`);
   const pathProblem = projectPathProblem(args.project_root, args.code_dir, "code_dir") ?? projectPathProblem(args.project_root, args.requirements_path, "requirements_path");

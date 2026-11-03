@@ -200,3 +200,45 @@ test("a thinking step's spend is always recorded: a call without telemetry_path 
     cleanup(bin, root);
   }
 });
+
+// E-thinking-discovery. Discovery is the session's Claude helper in every run: it runs before Gate 0, and so before the
+// pre-flight every thinking step needs. Review: the step still offered a discovery role, routed by the policy (Gemini
+// under argon4-agsdk-only) while the route table said "session", with two tools nothing called.
+test("discovery is not a thinking step: the tool refuses the role, and the step's roles and tools hold no discovery", { timeout: 60_000 }, async () => {
+  const { THINKING_ROLES } = await import("../dist/thinking.js");
+  const { ROLE_TOOLS, ThinkingTools } = await import(new URL("../../../scripts/thinking-tools.mjs", import.meta.url).href);
+  const worker = readFileSync(new URL("../worker/thinking_worker.py", import.meta.url), "utf8");
+  assert.equal("discovery" in THINKING_ROLES, false, "no discovery role");
+  assert.deepEqual(Object.keys(ROLE_TOOLS).sort(), Object.keys(THINKING_ROLES).sort(), "the tools serve exactly the step's roles");
+  for (const tool of ["baseline_status", "write_discovery"]) {
+    assert.equal(typeof ThinkingTools.prototype[tool], "undefined", `the tool process has no ${tool}`);
+    assert.doesNotMatch(worker, new RegExp(`\\b${tool}\\b`), `the worker offers no ${tool}`);
+  }
+  assert.doesNotMatch(worker.match(/^ROLE_TOOLS = \{[\s\S]*?^\}/m)?.[0] ?? "", /discovery/, "the worker's role table has no discovery");
+
+  // A policy that names an agent leaf for discovery, as the Gemini policies do: the call is refused before anything
+  // is sent, and the route table still gives discovery to the session.
+  const fake = fakeWorkerPython({ runs: [{}] });
+  const bin = standInClaude([receipt({})]);
+  const root = project({ contract: false });
+  writeFileSync(join(root, "policy.yaml"), [
+    "version: 1", "name: discovery-flash", "session_model: claude-opus-5-5", "models:",
+    "  - id: flash", "    adapter: antigravity-worker", "    model_name: gemini-3.8-flash",
+    "rules:", "  - when: { phase: discovery }", "    use: flash", "  - default: flash", "",
+  ].join("\n"));
+  const policy_path = join(root, "policy.yaml");
+  try {
+    await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
+      const pf = await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r7", intent: "bugfix" });
+      assert.equal(pf.json?.ok, true, pf.text);
+      assert.equal(pf.json.route_table.find((r) => r.phase === "discovery")?.who, "session");
+      const r = await call("run_thinking_step", { role: "discovery", prompt: "Read the repository.", project_root: root, output_dir: ".sdlc/runs/r7", run_id: "r7", intent: "bugfix", policy_path, telemetry_path: ".sdlc/runs/r7/telemetry.jsonl" });
+      assert.equal(r.isError, true, r.text);
+      assert.match(r.text, /unknown role 'discovery'/);
+      assert.equal(fake.runs().length, 0, "nothing was sent");
+    });
+  } finally {
+    fake.cleanup();
+    cleanup(bin, root);
+  }
+});

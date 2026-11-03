@@ -1,4 +1,4 @@
-"""thinking_worker.py — one thinking step (requirements, an architect, a reviewer, discovery) on Gemini, launched by the
+"""thinking_worker.py — one thinking step (requirements, an architect, a reviewer) on Gemini, launched by the
 MCP server (src/thinking.ts) through the agent door's adapter.
 
 The agent worker (gemini_worker.py) with five differences:
@@ -235,18 +235,9 @@ def tools_for(host: ToolHost, role: str) -> list:
         JSON object with its findings array (each finding with file, issue and fix)."""
         return host.text("write_review", content=content)
 
-    def baseline_status() -> str:
-        """Whether the project's discovery baseline is current, cached or stale."""
-        return host.text("baseline_status")
-
-    def write_discovery(name: str, content: str) -> str:
-        """Hand in one of discovery's files: 'discovery.md', 'baseline.json', 'baseline/current.json', 'baseline/discovery.md'."""
-        return host.text("write_discovery", name=name, content=content)
-
     every = {f.__name__: f for f in [read_file, list_files, search_files, write_requirements, write_section, submit_section,
                                      finalize, write_acceptance_fix, registry_versions, git_diff, read_provenance,
-                                     run_file_check, run_dependency_audit, env_keys, write_review, baseline_status,
-                                     write_discovery]}
+                                     run_file_check, run_dependency_audit, env_keys, write_review]}
     names = ["read_file", "list_files", "search_files"] + ROLE_TOOLS[role]
     return [every[n] for n in names]
 
@@ -259,7 +250,6 @@ ROLE_TOOLS = {
     "brownfield-senior-reviewer": ["git_diff", "read_provenance", "run_file_check", "env_keys", "write_review"],
     "security-reviewer": ["run_dependency_audit", "env_keys", "write_review"],
     "brownfield-security-reviewer": ["git_diff", "read_provenance", "run_file_check", "run_dependency_audit", "env_keys", "write_review"],
-    "discovery": ["baseline_status", "write_discovery"],
 }
 
 
