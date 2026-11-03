@@ -333,6 +333,49 @@ rl.on("line", (l) => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// E-thinking-slow-tool. Review: the step's tools are blocking functions, and a tool call on the SDK's event loop would
+// stop the heartbeat, so a long one (a dependency audit may take 300 s) would end the worker by the kill rule (60 s
+// with no heartbeat, then 20 s). google-antigravity 0.1.22 runs a synchronous tool in a worker thread
+// (ToolRunner._execute_fn: asyncio.to_thread), and so does the stand-in: the loop, and the heartbeat, go on.
+test("a tool call longer than the heartbeat interval leaves no gap in the heartbeat", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  // Tools whose dependency audit answers after 4 s; every other call answers at once, and the step is done once its
+  // review is in.
+  const dir = mkdtempSync(join(tmpdir(), "slow-tools-"));
+  const slow = join(dir, "slow-tools.mjs");
+  writeFileSync(slow, `import { createInterface } from "node:readline";
+const rl = createInterface({ input: process.stdin });
+let reviewed = false;
+const answer = (id, result) => process.stdout.write(JSON.stringify({ id, ok: true, result }) + "\\n");
+rl.on("line", (l) => {
+  const m = JSON.parse(l);
+  if (m.op === "run_dependency_audit") setTimeout(() => answer(m.id, "exit 0\\n{}"), 4000);
+  else if (m.op === "write_review") { reviewed = true; answer(m.id, "wrote out/security_review.md"); }
+  else answer(m.id, JSON.stringify({ done: reviewed, missing: reviewed ? [] : ["the review (write_review)"], accepted: reviewed ? ["review"] : [] }));
+});
+`);
+  const script = { sessions: [{ turns: [[
+    { at: 0, step: step.tool("run_dependency_audit", "ACTIVE", { kind: "npm-audit" }, "a1") },
+    { at: 0, step: step.tool("write_review", "ACTIVE", { content: "# Security review\n\nNo finding.\n" }, "w1") },
+    ...textAnswer(0, "Reviewed.", { prompt_token_count: 10 }),
+  ]] }] };
+  const r = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, toolsScript: slow, role: "security-reviewer", outputs: { security_review: "out/security_review.md" }, args: ["--heartbeat-sec", "1"] });
+  assert.equal(r.code, 0, tail(r));
+  assert.equal(r.summary.done, true, JSON.stringify(r.summary));
+  // The audit's call, on the worker's own clock (the stand-in's log), and every heartbeat as the worker wrote it.
+  const start = r.log.find((e) => e.ev === "tool_start" && e.name === "run_dependency_audit");
+  const end = r.log.find((e) => e.ev === "tool_run" && e.name === "run_dependency_audit");
+  assert.ok(start && end, `the audit ran: ${JSON.stringify(r.log.filter((e) => e.ev.startsWith("tool_")))}`);
+  assert.ok(end.mono - start.mono >= 3.5, `the audit took its 4 s: ${(end.mono - start.mono).toFixed(2)} s`);
+  const beats = r.sent.map((b) => b.mono);
+  // No gap between two heartbeats around the audit is much longer than the interval (1 s, on the worker's own clock);
+  // a call on the event loop leaves one as long as the call.
+  const gaps = beats.slice(1).map((t, i) => ({ from: beats[i], gap: t - beats[i] })).filter((g) => g.from < end.mono && g.from + g.gap > start.mono);
+  const longest = Math.max(...gaps.map((g) => g.gap));
+  assert.ok(longest < 2.5, `the longest gap in the heartbeat while the audit ran: ${longest.toFixed(2)} s`);
+  const during = beats.filter((t) => t > start.mono && t < end.mono);
+  assert.ok(during.length >= 2, `heartbeats while the audit ran: ${during.length}`);
+});
+
 test("tools that cannot start stop the step before any model call", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
   const script = { sessions: [{ turns: [[...textAnswer(0, "Hello.", { prompt_token_count: 10 })]] }] };
   // The tools' project folder does not exist: the tool process fails as it starts.

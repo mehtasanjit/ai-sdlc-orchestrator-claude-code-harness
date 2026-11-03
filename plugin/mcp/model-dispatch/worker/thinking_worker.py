@@ -80,7 +80,9 @@ def progressed(before: dict, after: dict) -> bool:
 
 
 class ToolHost:
-    """The Node tool process, called one line at a time (the SDK may call tools from a worker thread).
+    """The Node tool process, called one line at a time. The SDK runs a synchronous tool in a worker thread
+    (google-antigravity 0.1.22's ToolRunner: asyncio.to_thread), so a long call (a dependency audit, a file check)
+    never holds the event loop, nor the heartbeat it writes; the lock keeps the calls one at a time.
 
     Every call has a time limit (--tool-call-timeout-sec): a tool that gives no answer in it ends the tool process, and
     `dead` says why; every later call answers that reason at once (review: no tool call had a limit, so one stuck call

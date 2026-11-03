@@ -5,9 +5,13 @@ it from its harness: each step update is a new Step appended to `agent.conversat
 pulled (resolve(), text(), tool_calls), an error step carries Google's HTTP status in `http_code`, a held request
 sends nothing until cancel(), cancel() makes the turn raise AntigravityCancelledError and keeps the session's usage
 and its connection, a turn that ends with an SDK error closes the session's connection (as 0.1.22's harness does: a
-chat() after it raises ConnectionClosedOK), and the history is trimmed from the front past its size cap. It records
-what the worker asked of it in a log: each session (Agent) with its location, project, retry settings and the proxy
-settings it saw, each chat() with its message, each cancel(), and when start-up and teardown began and ended.
+chat() after it raises ConnectionClosedOK), and the history is trimmed from the front past its size cap. A step that
+calls one of the worker's own tools (its configuration's `tools`, plain functions) runs it once per call id, as
+0.1.22's ToolRunner runs one: a synchronous function in a worker thread (asyncio.to_thread), so the worker's event
+loop and its heartbeat go on while a long tool runs, and an asynchronous one on the loop. It records what the worker
+asked of it in a log: each session (Agent) with its location, project, retry settings and the proxy settings it saw,
+each chat() with its message, each tool call as it starts and ends, each cancel(), and when start-up and teardown
+began and ended.
 
 Environment:
   AGY_STANDIN_SCRIPT  the JSON script below (a session that is not scripted answers nothing and ends at once)
@@ -40,6 +44,7 @@ tools it leaves on), `tools` (the worker's own tools, by name), `system_instruct
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import signal
@@ -227,13 +232,19 @@ class Conversation:
                     self._steps.append(step)
                     if self._max and len(self._steps) > self._max:
                         self._steps = self._steps[len(self._steps) - self._max:]
-                    # A call of one of the worker's own tools runs it, once per call id, as the SDK's harness does.
+                    # A call of one of the worker's own tools runs it, once per call id, as the SDK's harness does:
+                    # a synchronous tool in a worker thread, so the event loop goes on while it runs (0.1.22's
+                    # ToolRunner._execute_fn: asyncio.to_thread); an asynchronous one on the loop.
                     for call in step.tool_calls:
                         fn = self._tools.get(call.name)
                         key = call.id or f"{call.name}#{len(self._steps)}"
                         if fn is not None and key not in self._ran:
                             self._ran.add(key)
-                            out = fn(**call.args)
+                            log("tool_start", session=self._session, turn=self._turns, name=call.name)
+                            if inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(getattr(fn, "__call__", None)):
+                                out = fn(**call.args)
+                            else:
+                                out = await asyncio.to_thread(fn, **call.args)
                             if asyncio.iscoroutine(out):
                                 out = await out
                             log("tool_run", session=self._session, turn=self._turns, name=call.name, result=str(out)[:2000])
