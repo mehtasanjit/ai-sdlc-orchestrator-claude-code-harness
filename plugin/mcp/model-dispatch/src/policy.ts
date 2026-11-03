@@ -103,6 +103,8 @@ function validatePolicy(raw: any): Policy {
   // Every rule references a known model id or a declared slot; check at load
   // so a routing failure never reaches a paid dispatch.
   raw.rules.forEach((r: any, i: number) => {
+    refusePolicyLevelSettings(`Policy rule ${i}`, r);
+    refusePolicyLevelSettings(`Policy rule ${i}`, r?.when);
     const used = r.use ?? r.default;
     if (!used) throw new Error(`Policy rule ${i}: needs 'use' or 'default'`);
     if (!modelIds.has(used) && !slotNames.has(used)) {
@@ -118,7 +120,8 @@ function validatePolicy(raw: any): Policy {
 /**
  * Two optional policy-level settings. `session_model` names the Claude model the session runs on when no thinking
  * phase names one; it sits outside `models:` so no rule and no typist ladder ever reaches it. `thinking_timeout_sec`
- * is a Gemini thinking step's own work budget.
+ * is a Gemini thinking step's own work budget. Both are read at the policy's top level only, so written on a model or
+ * a rule they are refused (refusePolicyLevelSettings), never loaded and ignored.
  */
 function validateSessionSettings(raw: any): void {
   if (raw.driver !== undefined) throw new Error("Policy: 'driver' is now 'session_model: <a Claude model id>'");
@@ -127,6 +130,23 @@ function validateSessionSettings(raw: any): void {
   }
   if (raw.thinking_timeout_sec !== undefined && (!Number.isInteger(raw.thinking_timeout_sec) || raw.thinking_timeout_sec <= 0)) {
     throw new Error("Policy: 'thinking_timeout_sec' must be a whole number of seconds above 0");
+  }
+}
+
+/**
+ * The two policy-level settings written below the top level, on a model entry or a rule (its matcher included): nothing
+ * reads them there, so a policy that sets one is refused, naming where it belongs (review: a leaf's
+ * `thinking_timeout_sec: 600`, beside its `worker_timeout_sec`, loaded and the step ran with the four-hour default).
+ */
+function refusePolicyLevelSettings(where: string, obj: unknown): void {
+  if (!obj || typeof obj !== "object") return;
+  for (const key of ["session_model", "thinking_timeout_sec"]) {
+    if (key in obj) {
+      throw new Error(
+        `${where}: ${key} is a setting of the whole policy, read only at its top level (beside 'name' and 'models'); ` +
+          `here nothing reads it, so it is refused rather than ignored. Move it to the top level.`
+      );
+    }
   }
 }
 
@@ -184,6 +204,7 @@ function validateModel(m: any) {
   for (const key of ["id", "adapter", "model_name"]) {
     if (!(key in m)) throw new Error(`Policy model: missing '${key}'`);
   }
+  refusePolicyLevelSettings(`Policy model '${m.id}'`, m);
   // The adapter id must be one the registry can actually construct. Without
   // this check a typo'd `adapter:` passed validation and only failed when
   // createAdapter ran mid-run — after the premium phases were already billed.
