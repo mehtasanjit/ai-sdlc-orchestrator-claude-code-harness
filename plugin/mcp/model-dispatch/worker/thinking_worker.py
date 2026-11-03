@@ -1,7 +1,7 @@
 """thinking_worker.py — one thinking step (requirements, an architect, a reviewer, discovery) on Gemini, launched by the
 MCP server (src/thinking.ts) through the agent door's adapter.
 
-The agent worker (gemini_worker.py) with three differences:
+The agent worker (gemini_worker.py) with four differences:
   - the SDK's own tools are switched off but `finish`; every other tool is one of ours (scripts/thinking-tools.mjs,
     one Node process for the step): reading through the engine's read rule, and handing work in through the same
     checks the Claude helper's hand-over runs. Gemini has no tool that writes the project, runs a shell or reaches
@@ -10,7 +10,9 @@ The agent worker (gemini_worker.py) with three differences:
     ends with pieces missing is answered with what is missing, in the same conversation, until the step's own work
     time (--timeout, the policy's thinking_timeout_sec) runs out;
   - the conversation is saved under --save-dir and carried on with --resume-id, so a gate's revise continues the
-    session that wrote the pieces instead of starting over.
+    session that wrote the pieces instead of starting over;
+  - a call Google could not serve is waited out, and the same conversation carried on, while the run's busy window
+    (--busy-window-sec) is open, as a batch waits out a busy model for a typing call.
 
 Everything else is the agent worker's: the call supervisor (stall cuts, failover, busy budget, heartbeat, the time
 limit counting own work only) and its usage sidecar. stdout carries one JSON line: {done, missing, accepted,
@@ -219,9 +221,11 @@ async def run(args):
         os.replace(tmp, args.summary_file)
 
     s = None
+    nudges = 0
+    busy_waits = 0
     sup.start()
     try:
-        for nudge in range(MAX_NUDGES + 1):
+        while True:
             s = ThinkingSession(args, sup, locations[0], fn_tools, resume)
             await s.run(message)
             # The conversation the session itself ran, by the SDK's own id: never the newest file in the save folder.
@@ -231,7 +235,26 @@ async def run(args):
             status = json.loads(host.text("status"))
             summary.update({k: status.get(k) for k in ("done", "missing", "accepted")})
             keep()
-            if not s.ok or status.get("done") or sup.stopped or sup.work_s() >= args.timeout:
+            if status.get("done") or sup.stopped or sup.work_s() >= args.timeout:
+                break
+            if not s.ok:
+                # Google could not serve the step's call within the call's own budget. As a batch does for a typing
+                # call (busyLedger.ts), the step waits and carries on its own conversation, in this process and with
+                # its tools' state, while the run's busy window is open; past it the step ends unavailable, and the
+                # engine stops the run with Google's reason.
+                left = args.busy_window_sec - sup.unserved_for()
+                if not sup.unavailable or left <= 0:
+                    break
+                sup.carry_on()
+                sup.recovering()
+                await sup.wait(min(left, sup.backoff(busy_waits)))
+                busy_waits += 1
+                if sup.stopped:
+                    break
+                message = sv.CONTINUE_MESSAGE if resume else task
+                continue
+            nudges += 1
+            if nudges > MAX_NUDGES:
                 break
             message = ("Not done yet. Still owed: " + "; ".join(status.get("missing") or []) +
                        ". Hand each piece in with your tools; a refused piece answers with every problem to fix.")
@@ -261,6 +284,9 @@ def main():
     p.add_argument("--stall-sec", type=int, default=300)
     p.add_argument("--stall-tries", type=int, default=2)
     p.add_argument("--busy-budget-sec", type=int, default=120)
+    # The run's busy window (the engine's BUSY_WINDOW_SEC): how long the step waits out a model Google serves nothing of.
+    # 0: it does not wait, and its first unavailable call ends it.
+    p.add_argument("--busy-window-sec", type=int, default=0)
     p.add_argument("--heartbeat-sec", type=int, default=10)
     args = p.parse_args()
     if args.role not in ROLE_TOOLS:

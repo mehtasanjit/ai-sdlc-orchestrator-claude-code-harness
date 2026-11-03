@@ -458,6 +458,12 @@ export interface AttemptRecord {
    * wait; it is never a ladder attempt.
    */
   unavailable?: string;
+  /**
+   * With `unavailable`, from the worker's receipt: when its stretch of unserved calls began (UTC, ISO), its first
+   * refused or held call since the last answered one. A thinking step or an agent packet answers many calls first, so
+   * the run's ledger counts from this, not from when the dispatch was sent (busyLedger.ts unservedSince).
+   */
+  unserved_since?: string;
   /** A Gemini call's record (the Antigravity doors: GeminiCallRecord; the direct route: its endpoint). */
   gemini?: GeminiCallRecord | GeminiEndpointRecord;
 }

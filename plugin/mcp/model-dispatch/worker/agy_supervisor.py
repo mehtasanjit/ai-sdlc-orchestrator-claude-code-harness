@@ -244,6 +244,11 @@ class Clock:
         return time.clock_gettime(mono) - time.clock_gettime(up)
 
 
+def iso_wall(wall: float) -> str:
+    """A wall-clock time as the receipts write it: UTC, to the millisecond."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(wall)) + f".{int((wall % 1) * 1000):03d}Z"
+
+
 class Try:
     """One session (typist door), or one segment of a session (agent door)."""
 
@@ -251,7 +256,7 @@ class Try:
         self.location = location
         self.start = start
         self.end = None
-        self.started_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(wall)) + f".{int((wall % 1) * 1000):03d}Z"
+        self.started_at = iso_wall(wall)
         self.origin = origin
         self.ended_by = None
         self.reason = None
@@ -288,6 +293,9 @@ class TurnEnd:
         self.interrupted = False
         self.cut_while_text = False
         self.tool_ran = False
+        # When the turn's last model call was first sent (the supervisor's clock), or None when none was: the call a
+        # refusal or a stall belongs to began then, not when the session did.
+        self.call_start = None
 
 
 class Plan:
@@ -306,6 +314,9 @@ class _Trajectory:
         self.state = "wait"
         self.quiet_since = now
         self.request_start = now
+        # When the model call in hand was first sent: kept across the harness's own retries of it (request_start is
+        # each retry's), so a refusal's budget and an unserved stretch start with the call.
+        self.call_sent = now
         self.prev = None
         self.text_in_request = False
         self.retry_wait_s = 0.0
@@ -346,6 +357,10 @@ class Supervisor:
         self.call_stalls = 0
         self.first_refusal = None
         self.refusal_rounds = 0
+        # When the current stretch of unserved calls began (the first refused or held call since the last answered
+        # one), on the supervisor's clock and the wall's; across a thinking step's carry-ons too (carry_on).
+        self.unserved_since = None
+        self.unserved_since_wall = None
         self.dropped = set()
         self.unavailable = None
         self.stopped = False
@@ -384,6 +399,32 @@ class Supervisor:
 
     def call_answered(self) -> None:
         """The model call in hand has its whole answer: the next call starts with fresh stall tries and busy budget."""
+        self.call_stalls = 0
+        self.first_refusal = None
+        self.refusal_rounds = 0
+        self.call_excluded = 0.0
+        self.unserved_since = None
+        self.unserved_since_wall = None
+
+    def _unserved_from(self, end: "TurnEnd", now: float) -> float:
+        """When the call `end` ended belongs to began: its request's send time, else the try's start."""
+        if end.call_start is not None:
+            return end.call_start
+        return self.current.start if self.current is not None else now
+
+    def _stretch_from(self, start: float, now: float) -> None:
+        if self.unserved_since is None:
+            self.unserved_since = start
+            self.unserved_since_wall = self.clock.wall() - (now - start)
+
+    def unserved_for(self) -> float:
+        """How long the current stretch of unserved calls has lasted; 0 when the last call was answered."""
+        return 0.0 if self.unserved_since is None else self.now() - self.unserved_since
+
+    def carry_on(self) -> None:
+        """After an unavailable call, before a thinking step sends it again (thinking_worker.py): a new call, with its
+        own stall tries and busy budget. The stretch of unserved calls since the last answered one goes on."""
+        self.unavailable = None
         self.call_stalls = 0
         self.first_refusal = None
         self.refusal_rounds = 0
@@ -601,6 +642,8 @@ class Supervisor:
         if end.kind == "stalled":
             self.stall_cuts += 1
             if not end.slept:
+                # A held call is unserved from when it was sent (busyLedger.ts); a sleep of the computer is not Google's.
+                self._stretch_from(self._unserved_from(end, now), now)
                 self.call_stalls += 1
                 if self.call_stalls >= self.stall_tries:
                     self.unavailable = self.stalled_reason()
@@ -615,7 +658,11 @@ class Supervisor:
             return Plan(i, "fresh", "task", 0.0, self.limit())
         if end.kind in ("refused", "network"):
             if self.first_refusal is None:
-                self.first_refusal = self.current.start if self.current is not None else now
+                # The budget is the call's: counted from when the refused request was sent, not from the session's
+                # start, which a thinking step or an agent packet reaches many answered calls earlier (review: a call
+                # refused late in a long session was given none of its budget and tried at no other location).
+                self.first_refusal = self._unserved_from(end, now)
+            self._stretch_from(self.first_refusal, now)
             left = self.busy_budget_s - (now - self.first_refusal)
             if not failover:
                 # The harness waited out every busy answer itself, except a 500, which it never retries.
@@ -690,6 +737,8 @@ class Supervisor:
         }
         if self.unavailable:
             out["unavailable"] = self.unavailable
+            if self.unserved_since_wall is not None:
+                out["unserved_since"] = iso_wall(self.unserved_since_wall)
         slept = self.slept_s()
         if slept is not None:
             out["slept_s"] = round(slept, 1)
@@ -812,7 +861,7 @@ class _Watch:
                     if tr is self.main:
                         # The main trajectory's tool ended: the sub-agents it was running are done.
                         self.subs = {}
-                    tr.state, tr.request_start, tr.text_in_request = "wait", now, False
+                    tr.state, tr.request_start, tr.call_sent, tr.text_in_request = "wait", now, now, False
             elif typ == "TEXT_RESPONSE" and st == "DONE" and text and (to_user or tr is not self.main):
                 # The main trajectory's final text goes to the user; a sub-agent's goes to the agent that ran it, whatever
                 # its target. Either settles its trajectory, so a sub-agent that has answered never holds the stall check
@@ -877,6 +926,7 @@ class _Watch:
 
     def finish(self, end: TurnEnd, t: Try) -> None:
         t.http_codes.extend(self.codes)
+        end.call_start = self.main.call_sent if self.main is not None else None
         end.last_code = self.last_code
         end.last_error_text = self.last_error_text
         end.interrupted = self.interrupted

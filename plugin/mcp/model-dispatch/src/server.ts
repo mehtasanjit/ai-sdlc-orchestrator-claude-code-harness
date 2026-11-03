@@ -67,7 +67,7 @@ import { runCard } from "./runCard.js";
 import { PLUGIN_ROOT } from "./paths.js";
 import { routeTable } from "./routeTable.js";
 import { DEFAULT_THINKING_TIMEOUT_SEC, THINKING_MODULE, THINKING_ROLES, THINKING_TASK_TYPE, runThinkingStep, type ThinkingDeps } from "./thinking.js";
-import { BusyLedger } from "./busyLedger.js";
+import { BusyLedger, unservedSince } from "./busyLedger.js";
 import { bindingConflict, checkAgsdk, leafLocations, writeBinding, type BoundLeaf } from "./agsdkPreflight.js";
 
 /**
@@ -788,7 +788,8 @@ async function runPacket(raw: unknown, a: any, signal?: AbortSignal): Promise<un
       // served for the ledger's whole window, the run stops here (the orchestrator stops and tells the person).
       const last = one.result.attempts?.[one.result.attempts.length - 1];
       if (last?.unavailable) {
-        const stop = ledger.unavailable(leaf.model_name, last.unavailable, sentAt);
+        // An agent packet answers many calls before one goes unserved: its stretch began when the worker says.
+        const stop = ledger.unavailable(leaf.model_name, last.unavailable, unservedSince(last, sentAt));
         if (stop) {
           const halt = `${stop}; the run stopped here. Run it again when Google serves again`;
           log("warn", "dispatch.unavailable_halt", { packet_id: packet.id, model_id: routed.modelId });
@@ -1207,7 +1208,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             const leafName = getModel(policy, one.decision.modelId).model_name;
             const lastAttempt = one.result.attempts?.[one.result.attempts.length - 1];
             if (lastAttempt?.unavailable) {
-              const stop = ledger.unavailable(leafName, lastAttempt.unavailable, sentAt);
+              // The worker waited out the busy model for the run's window, carrying on the step; the run's ledger
+              // counts the stretch from its first unserved call, never from the step's start.
+              const stop = ledger.unavailable(leafName, lastAttempt.unavailable, unservedSince(lastAttempt, sentAt));
               if (stop) one.result.halt = `${stop}; the run stopped here. Run it again when Google serves again`;
             } else if (one.result.success || one.result.tokens.output > 0) ledger.served(leafName);
             return { result: one.result, events: one.events };

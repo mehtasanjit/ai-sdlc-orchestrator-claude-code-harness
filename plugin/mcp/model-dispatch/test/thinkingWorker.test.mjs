@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { NO_PYTHON, runWorker, step, tail, textAnswer } from "./agyStandin.mjs";
+import { NO_PYTHON, RAISE_429_UNREACHABLE, TEXT_429_RETRY, TEXT_429_UNREACHABLE, runWorker, step, tail, textAnswer } from "./agyStandin.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -98,4 +98,46 @@ test("an acceptance fix through the worker: the failures entries go in as one ha
   assert.match(ran[0].result, /accepted: 1 failures entr/);
   assert.equal(r.summary.done, true, JSON.stringify(r.summary));
   assert.deepEqual(r.summary.accepted, ["acceptance_fix"]);
+});
+
+// E-thinking-busy. As a batch waits out a busy model for a typing call (busyLedger.ts), a thinking step waits and carries
+// on its own conversation, in the same worker and with its tools' state, while the run's busy window is open.
+const READ_THEN_REFUSED = [
+  { at: 0, step: step.tool("read_file", "ACTIVE", { path: "brief.md" }, "r1") },
+  { at: 0.02, usage: { prompt_token_count: 10, candidates_token_count: 2 } },
+  { at: 0.05, step: step.tool("read_file", "DONE", { path: "brief.md" }, "r1") },
+  { at: 0.1, step: step.error(429, TEXT_429_RETRY) },
+  { at: 0.15, step: step.error(429, TEXT_429_UNREACHABLE) },
+  { at: 0.16, raise: RAISE_429_UNREACHABLE.raise, message: RAISE_429_UNREACHABLE.message },
+];
+const BUSY = ["--busy-budget-sec", "1", "--api-retries", "1", "--api-retry-initial-ms", "1000"];
+
+test("a call Google could not serve is waited out: the step carries on its own conversation while the run's busy window is open", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const script = { sessions: [
+    { turns: [READ_THEN_REFUSED] },
+    { turns: [[{ at: 0, step: step.tool("write_requirements", "ACTIVE", REQUIREMENTS, "w1") }, ...textAnswer(0, "Handed in.", { prompt_token_count: 10 })]] },
+  ] };
+  const r = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, args: [...BUSY, "--busy-window-sec", "30"] });
+  assert.equal(r.code, 0, tail(r));
+  assert.equal(r.summary.done, true, JSON.stringify(r.summary));
+  assert.equal(r.sessions.length, 2);
+  assert.equal(r.sessions[1].conversation_id, "standin-1", "the step's own conversation, carried on");
+  assert.equal(r.chats[1].message, "Please continue the task you were working on.");
+  assert.deepEqual(r.sidecar.tries.map((t) => t.ended_by), ["refused", "answer"]);
+  assert.equal(r.sidecar.unavailable, undefined, "served again: the step answered");
+});
+
+test("past the run's busy window the step ends unavailable, naming when its unserved stretch began; without a window it ends at once", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const refusedAgain = { sessions: [{ turns: [READ_THEN_REFUSED] }, { turns: [READ_THEN_REFUSED.slice(3)] }, { turns: [READ_THEN_REFUSED.slice(3)] }] };
+  const r = await runWorker("thinking", { script: refusedAgain, timeout: 30, limitMs: 45_000, args: [...BUSY, "--busy-window-sec", "1"] });
+  assert.notEqual(r.code, 0, tail(r));
+  assert.equal(r.sessions.length, 2, "one wait, one carry-on, then the window had passed");
+  const sc = r.sidecar;
+  assert.match(String(sc.unavailable), /refused/);
+  const since = Date.parse(sc.unserved_since);
+  assert.ok(since >= Date.parse(sc.tries[0].started_at) && since < Date.parse(sc.tries[1].started_at), `the stretch began with the first refused call: ${sc.unserved_since} ${JSON.stringify(sc.tries.map((t) => t.started_at))}`);
+  assert.equal(r.summary.done, false);
+  const once = await runWorker("thinking", { script: refusedAgain, timeout: 30, limitMs: 45_000, args: BUSY });
+  assert.notEqual(once.code, 0);
+  assert.equal(once.sessions.length, 1, "no busy window given: the worker does not wait");
 });

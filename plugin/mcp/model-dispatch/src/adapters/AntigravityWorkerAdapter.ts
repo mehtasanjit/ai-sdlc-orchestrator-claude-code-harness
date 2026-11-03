@@ -51,6 +51,7 @@ import {
 import {
   AGENT_API_RETRY,
   BUSY_BUDGET_SEC,
+  BUSY_WINDOW_SEC,
   FAILOVER_API_RETRY,
   HEARTBEAT_SEC,
   STALL_TRIES,
@@ -367,8 +368,10 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       apiRetryInitialMs: retry.initialMs,
     });
     if (thinking) {
+      // A step waits out a model Google serves nothing of for the run's busy window, carrying on its own conversation,
+      // as a batch does for a typing call (busyLedger.ts); each carry-on is a new call with its own busy budget.
       args.push("--role", thinking.role, "--tools-config", thinking.toolsConfig, "--save-dir", thinking.saveDir,
-        "--node", process.execPath, "--tools-script", THINKING_TOOLS);
+        "--node", process.execPath, "--tools-script", THINKING_TOOLS, "--busy-window-sec", String(BUSY_WINDOW_SEC));
       if (thinking.resumeId) args.push("--resume-id", thinking.resumeId);
       args.push("--summary-file", summaryFile);
     }
@@ -519,6 +522,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         ...(status !== undefined ? { error_status: status } : {}),
         price_basis: price.basis,
         ...(unavailable ? { unavailable } : {}),
+        ...(unavailable && typeof sidecar?.unserved_since === "string" ? { unserved_since: sidecar.unserved_since } : {}),
         ...record,
       };
       return {

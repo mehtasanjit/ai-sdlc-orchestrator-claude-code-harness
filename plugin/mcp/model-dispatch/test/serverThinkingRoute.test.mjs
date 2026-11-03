@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanup, project, receipt, standInClaude, withServer } from "./serverHarness.mjs";
-import { fakeWorkerPython } from "./agyFakes.mjs";
+import { fakeWorkerPython, flagValue } from "./agyFakes.mjs";
 
 // E-thinking-route.
 test("a thinking step is routed by its run's pre-flight: no recorded run, or another job, is refused", { timeout: 60_000 }, async () => {
@@ -36,6 +36,8 @@ test("a thinking step is routed by its run's pre-flight: no recorded run, or ano
       const routed = await call("run_thinking_step", step({ run_id: "r2" }));
       assert.equal(routed.json?.route, "done", `routed with the run's job (bugfix), on Gemini: ${routed.text}`);
       assert.equal(routed.json?.model, "gemini-3.8-flash");
+      // The step waits out a busy model for the run's whole busy window, as a batch does (busyLedger.ts).
+      assert.equal(flagValue(fake.runs()[0].args, "--busy-window-sec"), "300");
       const otherJob = await call("run_thinking_step", step({ run_id: "r2", intent: "docs" }));
       assert.equal(otherJob.isError, true, `another job than the run's is refused: ${otherJob.text}`);
       assert.match(otherJob.text, /job/);
