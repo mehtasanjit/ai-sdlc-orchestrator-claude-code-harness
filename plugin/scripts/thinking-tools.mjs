@@ -316,23 +316,32 @@ export class ThinkingTools {
   /**
    * Greenfield: the build spec's section, handed to the spec store as submit_spec_section does. The name alone hands in
    * the section file as it stands, as submitting the same file again does there: a revise sends every units file again,
-   * and an unchanged one need not be typed out again.
+   * and an unchanged one need not be typed out again. A refused hand-in changes nothing, as the store changes nothing
+   * for it: a section the spec already holds keeps the version it accepted, its file put back, and is not owed again
+   * (the store never replaces accepted units, so a changed one could otherwise never be cleared); one it does not hold
+   * is owed until accepted.
    */
   async submit_section({ name, json }) {
     if (this.cfg.acceptance_fix) return { error: ACCEPTANCE_FIX_ONLY };
     const n = this.sectionName(name);
     if (n.error) return { error: n.error };
+    const kept = this.accepted.has(name) && existsSync(join(this.root, n.rel)) ? readFileSync(join(this.root, n.rel), "utf8") : undefined;
+    const refused = (lines, text = `refused:\n${lines.join("\n")}`) => {
+      if (kept === undefined) return this.refuse(name, lines, text);
+      this.own(n.rel, kept);
+      return { error: `${text}\nThe spec keeps ${name} as it was accepted.` };
+    };
     if (json === undefined || json === "") {
       if (!existsSync(join(this.root, n.rel))) return { error: `no ${name} was handed in for this spec: hand it in with its JSON` };
     } else {
-      try { JSON.parse(json); } catch (e) { const why = `${name} is not valid JSON: ${e.message}`; return this.refuse(name, [why], why); }
+      try { JSON.parse(json); } catch (e) { const why = `${name} is not valid JSON: ${e.message}`; return refused([why], why); }
       this.own(n.rel, json);
     }
     const { specStore } = await loadServerLib();
     const specDir = join(this.root, this.cfg.spec_dir);
     const kind = name === "header.json" ? "header" : "units";
     const loaded = specStore.readSectionFile(specDir, relative(specDir, join(this.root, n.rel)), kind);
-    if (loaded.error) return this.refuse(name, [loaded.error], loaded.error);
+    if (loaded.error) return refused([loaded.error], loaded.error);
     // A units file handed in again as this run's spec already holds it (the step called again in the same run, its
     // earlier hand-ins on disk) is accepted as unchanged; one with a changed or new unit goes to the store, which
     // refuses an id it already holds (review: the same units sent again were refused as duplicates, so a step called
@@ -344,7 +353,7 @@ export class ThinkingTools {
     // With the run's token, as submit_spec_section sends it: a new run's header opens a new spec, and units go only
     // into the spec this run opened.
     const r = specStore.submitSpecSection(specDir, kind === "header" ? { section: "header", header: loaded.value } : { section: "units", units: loaded.value }, this.cfg.run_token ? { run: this.cfg.run_token } : {});
-    if (!r.ok) return this.refuse(name, r.errors.map((e) => `${e.path} ${e.message}`));
+    if (!r.ok) return refused(r.errors.map((e) => `${e.path} ${e.message}`));
     // A header that opened a new spec moved the earlier one aside, its units with it: none of them is in this spec.
     if (r.previous) for (const k of [...this.accepted.keys()]) if (/^units-\d{3}\.json$/.test(k)) this.accepted.delete(k);
     this.verdict(name, true);

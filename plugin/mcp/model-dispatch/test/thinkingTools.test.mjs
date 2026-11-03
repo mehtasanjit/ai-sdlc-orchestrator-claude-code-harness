@@ -215,14 +215,16 @@ test("an architect called again in the same run resumes from the spec the store 
   assert.equal((await status(second)).done, true);
 
   // A file handed in again as the spec holds it is accepted as unchanged, with its JSON (its keys in any order) or by
-  // its name alone; a changed one is refused with the store's reason, and owed until it is handed in as it stands.
+  // its name alone. A changed one is refused with the store's reason, and the spec keeps the version it accepted: the
+  // store changes nothing on a refusal, so the step does not either (its file is put back), and nothing is owed for it.
   const third = architect();
   assert.deepEqual((await status(third)).missing, ["finalize, after every section is accepted"], "finalize is never carried over: each call checks the spec again");
   assert.match((await hand(third, "units-001.json", [Object.fromEntries(Object.entries(U01).reverse())])).result, /^accepted units-001\.json: unchanged/);
   assert.match((await hand(third, "units-002.json")).result, /^accepted units-002\.json: unchanged/);
-  assert.match((await hand(third, "units-002.json", [{ ...U02, behaviour: "the routes; 409 on a duplicate title" }])).error, /^refused:\n\/units\/0\/id duplicate unit id U02/);
-  assert.ok((await status(third)).missing.some((m) => /^units-002\.json was refused: \/units\/0\/id duplicate unit id U02/.test(m)));
-  assert.match((await hand(third, "units-002.json", [U02])).result, /unchanged/);
+  assert.match((await hand(third, "units-002.json", [{ ...U02, behaviour: "the routes; 409 on a duplicate title" }])).error, /^refused:\n\/units\/0\/id duplicate unit id U02[\s\S]*\nThe spec keeps units-002\.json as it was accepted/);
+  assert.deepEqual((await status(third)).missing, ["finalize, after every section is accepted"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "out", "spec.sections", "units-002.json"), "utf8")), [U02], "its file is the accepted version again");
+  assert.match((await hand(third, "units-002.json")).result, /unchanged/);
   assert.match((await third.call("finalize", {})).result, /finalized: 2 unit/);
   s = await status(third);
   assert.equal(s.done, true, JSON.stringify(s));
