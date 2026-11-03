@@ -262,6 +262,19 @@ test("the helper's instructions are the session's system instructions, and its f
   assert.deepEqual(r.sessions.map((s) => s.system_instructions), [system, system], "every session has them, the reminder's included");
 });
 
+// E-thinking-high. The engine starts every thinking step with --thinking HIGH (agyThinkingDispatch.test): the level
+// reaches the SDK's model options in every session, and the usage sidecar records it.
+test("a step started at HIGH thinks at high in every session, and its sidecar says HIGH", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const script = { sessions: [
+    { turns: [textAnswer(0, "I have read the brief.", { prompt_token_count: 10 })] },
+    { turns: [[{ at: 0, step: step.tool("write_requirements", "ACTIVE", REQUIREMENTS, "w6") }, ...textAnswer(0, "Handed in.", { prompt_token_count: 10 })]] },
+  ] };
+  const r = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, args: ["--thinking", "HIGH"] });
+  assert.equal(r.code, 0, tail(r));
+  assert.deepEqual(r.sessions.map((s) => s.thinking_level), ["high", "high"]);
+  assert.equal(r.sidecar.thinking, "HIGH");
+});
+
 // E-thinking-tool-limits. Review: no tool call had a time limit, and a tool process that died at start was found only
 // after Gemini had been paid.
 test("a tool call that never answers ends the step with its reason, at the call's limit", { skip: NO_PYTHON, timeout: 60_000 }, async () => {

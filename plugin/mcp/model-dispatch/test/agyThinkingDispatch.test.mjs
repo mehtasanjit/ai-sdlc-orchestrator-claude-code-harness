@@ -58,3 +58,14 @@ test("a thinking dispatch gives the worker its system text in a file of its own 
   assert.equal(flagValue(typing.args, "--system-file"), undefined);
   assert.deepEqual(typing.record.artifacts, { brief: `worker-task-${PACKET.id}.md`, usage: `worker-usage-${PACKET.id}.json` });
 });
+
+// E-thinking-high. Review: a thinking step ran at the leaf's typing level, so with no `reasoning:` (every shipped Gemini
+// leaf) at the SDK's default, while every Claude helper it stands in for is pinned to high effort.
+test("a thinking dispatch runs at HIGH whatever the leaf's reasoning tier; a typing one at the leaf's own", { timeout: 60_000 }, async () => {
+  const texts = { system: "## How this step runs", task: "## This invocation" };
+  const low = { ...FLASH, reasoning: { tier: "low" } };
+  assert.equal(flagValue((await dispatch(low, texts)).args, "--thinking"), "HIGH");
+  assert.equal(flagValue((await dispatch(FLASH, texts)).args, "--thinking"), "HIGH", "a leaf with no tier, as every shipped Gemini leaf");
+  assert.equal(flagValue((await dispatch(low, undefined)).args, "--thinking"), "LOW", "typing keeps the leaf's own level");
+  assert.equal(flagValue((await dispatch(FLASH, undefined)).args, "--thinking"), "NONE");
+});

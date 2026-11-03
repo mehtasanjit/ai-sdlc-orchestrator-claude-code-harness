@@ -46,7 +46,8 @@ models:
     worker_timeout_sec: 540
     failover_locations: [us, eu]  # a refused or held call carries on at us, then eu, billed +10% there
     # No `reasoning:`: every typist runs at low effort (executor/tools.ts
-    # TYPIST_EFFORT), so a tier here would read as a setting and change nothing.
+    # TYPIST_EFFORT) and every thinking step at high (AntigravityWorkerAdapter.ts
+    # THINKING_STEP_LEVEL), so a tier here would read as a setting and change nothing.
     # No max_output_tokens_absolute — agent sessions manage their own per-turn
     # limits.
 

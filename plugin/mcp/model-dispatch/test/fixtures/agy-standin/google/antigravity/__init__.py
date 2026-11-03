@@ -34,7 +34,8 @@ Script:
 
 A session's "agent" log line also says how its configuration was built: `validated` (true when built by its
 constructor, as the SDK's pydantic models are validated there; false for a model_copy), `capabilities` (the SDK's own
-tools it leaves on), `tools` (the worker's own tools, by name) and `system_instructions` (their text, or null).
+tools it leaves on), `tools` (the worker's own tools, by name), `system_instructions` (their text, or null) and
+`thinking_level` (the model's, from its endpoint options, or null).
 """
 from __future__ import annotations
 
@@ -297,6 +298,7 @@ class Agent:
                                                     "enabled_tools": [getattr(t, "value", t) for t in _attr(caps, "enabled_tools") or []]},
             tools=[getattr(f, "__name__", str(f)) for f in _attr(cfg, "tools") or []],
             system_instructions=system if system is None or isinstance(system, str) else _attr(system, "text"),
+            thinking_level=getattr(_attr(_attr(endpoint, "options"), "thinking_level"), "value", None),
             retry=None if retry is None else {k: _attr(retry, k) for k in ("max_retries", "initial_sleep_duration_ms", "exponential_multiplier", "jitter_range")},
             http_headers=_attr(endpoint, "http_headers"),
             continuation=str(_attr(cfg, "session_continuation_mode")) if _attr(cfg, "session_continuation_mode") is not None else None,

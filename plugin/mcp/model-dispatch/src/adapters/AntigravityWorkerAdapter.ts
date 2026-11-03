@@ -74,6 +74,13 @@ import { PLUGIN_ROOT, WORKER_DIR } from "../paths.js";
 const WORKER_SCRIPT = join(WORKER_DIR, "gemini_worker.py");
 const THINKING_SCRIPT = join(WORKER_DIR, "thinking_worker.py");
 const THINKING_TOOLS = join(PLUGIN_ROOT, "scripts", "thinking-tools.mjs");
+/**
+ * The reasoning level of every thinking step, whatever the leaf's `reasoning:` (which sets its typing): every Claude
+ * helper a step stands in for is pinned to high effort, and the design compares the two, so Gemini plans and reviews at
+ * its high level too (review: a step ran at the leaf's typing level, for the shipped leaves the SDK's default). Thinking
+ * tokens bill as output, so a step costs more than it would at the leaf's default level.
+ */
+const THINKING_STEP_LEVEL = "HIGH";
 
 // Tail (exception is at the bottom of the traceback) kept when the worker fails.
 const STDERR_TAIL_CHARS = 4000;
@@ -368,7 +375,8 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       workdir: sdkWorkdir,
       outDir,
       usageFile,
-      thinking: workerThinkingLevel(this.modelConfig.reasoning),
+      // A thinking step at HIGH (THINKING_STEP_LEVEL); a typing dispatch at the leaf's own level.
+      thinking: thinking ? THINKING_STEP_LEVEL : workerThinkingLevel(this.modelConfig.reasoning),
       timeoutSec,
       locations: this.locations,
       stallSec,
