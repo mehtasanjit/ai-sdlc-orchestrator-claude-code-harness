@@ -160,6 +160,9 @@ class AgentSession:
         self.location = location0
         self.ok = False
         self.written = False
+        # The SDK's own id of the conversation the session last ran: a caller that carries it on later (a thinking
+        # step's revise) resumes this one, never another found by guessing.
+        self.conversation_id = None
         self.save_dir = os.path.join(args.out_dir, "_gemini_worker_save")
         self.thinking = _thinking_level(args.thinking)
 
@@ -250,6 +253,7 @@ class AgentSession:
                 agent = session.agent
                 end = await sup.run_turn(agent, message, t, limit_s=limit, collect=self.tools.collect)
                 conv = getattr(agent, "conversation", None)
+                self.conversation_id = getattr(conv, "conversation_id", None) or getattr(agent, "conversation_id", None) or self.conversation_id
                 sup.end_try(t, end, conv)
                 tool_ran = tool_ran or end.tool_ran
                 plan = None

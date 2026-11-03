@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import glob
 import json
 import os
 import subprocess
@@ -175,11 +174,6 @@ class ThinkingSession(gw.AgentSession):
         })
 
 
-def latest_conversation(save_dir: str):
-    dbs = sorted(glob.glob(os.path.join(save_dir, "*.db")), key=os.path.getmtime)
-    return os.path.splitext(os.path.basename(dbs[-1]))[0] if dbs else None
-
-
 async def run(args):
     with open(args.task_file, encoding="utf-8") as f:
         task = f.read()
@@ -210,7 +204,8 @@ async def run(args):
         for nudge in range(MAX_NUDGES + 1):
             s = ThinkingSession(args, sup, locations[0], fn_tools, resume)
             await s.run(message)
-            resume = latest_conversation(args.save_dir) or resume
+            # The conversation the session itself ran, by the SDK's own id: never the newest file in the save folder.
+            resume = s.conversation_id or resume
             summary["conversation_id"] = resume
             summary["text"] = s.text
             status = json.loads(host.text("status"))

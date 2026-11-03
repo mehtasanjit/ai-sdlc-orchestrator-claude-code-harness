@@ -168,6 +168,24 @@ test("a step's input files are copied into its run folder through the read rule,
   }
 });
 
+test("per-module reviews are separate steps: each keeps its own files, conversation and packet", async () => {
+  const root = project();
+  const review = (m, conv) => deps(AGENT, () => result({ result: { done: true, missing: [], accepted: ["review"], conversation_id: conv } }));
+  const one = review("m1", "conv-m1");
+  await runThinkingStep(args(root, { role: "senior-reviewer", output_dir: "out", review_path: "out/m1/review.json", prompt: "Review module m1" }), one.d);
+  const two = review("m2", "conv-m2");
+  await runThinkingStep(args(root, { role: "senior-reviewer", output_dir: "out", review_path: "out/m2/review.json", prompt: "Review module m2" }), two.d);
+  const [a, b] = [one.calls.dispatch[0], two.calls.dispatch[0]];
+  assert.notEqual(a.thinking.toolsConfig, b.thinking.toolsConfig);
+  assert.notEqual(a.thinking.saveDir, b.thinking.saveDir);
+  assert.notEqual(a.packet.id, b.packet.id);
+  assert.equal(JSON.parse(readFileSync(a.thinking.toolsConfig, "utf8")).outputs.review, "out/m1/review.json");
+  // Module 1's revise carries on module 1's conversation, not the last one saved.
+  const again = review("m1", "conv-m1");
+  await runThinkingStep(args(root, { role: "senior-reviewer", output_dir: "out", review_path: "out/m1/review.json", prompt: "Review module m1", revise: "fix it" }), again.d);
+  assert.equal(again.calls.dispatch[0].thinking.resumeId, "conv-m1");
+});
+
 test("each role's hand-in paths are fixed under the run's folder", () => {
   const a = { output_dir: "out/" };
   assert.deepEqual(roleOutputs("requirements", a), { requirements: "out/requirements.md" });

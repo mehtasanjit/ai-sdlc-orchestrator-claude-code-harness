@@ -115,6 +115,11 @@ export function reviewPathProblem(projectRoot: string, dir: string, reviewPath: 
   return null;
 }
 
+/** A step's own name in its run: its role, and for a senior review with its own review_path, that path too. */
+export function stepKey(args: Pick<ThinkingArgs, "role" | "review_path">): string {
+  return typeof args.review_path === "string" && args.review_path !== "" ? `${args.role}--${posix(args.review_path).replace(/[^A-Za-z0-9._-]+/g, "_")}` : args.role;
+}
+
 /** The largest input file a step is given, as the step's own read_file reads (thinking-tools.mjs MAX_FILE_BYTES). */
 const MAX_INPUT_BYTES = 2_000_000;
 
@@ -239,9 +244,13 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const outputs = roleOutputs(args.role, args);
   const stepDir = join(args.project_root, args.output_dir, "thinking");
   mkdirSync(stepDir, { recursive: true });
-  const toolsConfig = join(stepDir, `${args.role}.tools.json`);
-  const recordPath = join(stepDir, `${args.role}.json`);
-  const saveDir = join(stepDir, `${args.role}.save`);
+  // Each step keeps its own files, conversation and packet: a run has one step per role, except the senior review,
+  // which greenfield runs once per module, each with its own review_path (review: one module's revise resumed another
+  // module's conversation, and both read one brief).
+  const key = stepKey(args);
+  const toolsConfig = join(stepDir, `${key}.tools.json`);
+  const recordPath = join(stepDir, `${key}.json`);
+  const saveDir = join(stepDir, `${key}.save`);
   writeFileSync(toolsConfig, JSON.stringify({
     role: args.role, project_root: resolve(args.project_root), run_id: args.run_id, intent: args.intent,
     output_dir: posix(args.output_dir), outputs, spec_dir: posix(args.output_dir), requirements_path: args.requirements_path, code_dir: args.code_dir,
@@ -253,7 +262,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
     ? `Changes asked for this step:\n\n${args.revise}\n\nEdit the pieces you handed in and hand each changed one in again.`
     : `${preface(args.role)}\n\n## The helper's instructions\n\n${roleInstructions(deps.pluginRoot, role)}\n\n## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}` : ""}`;
   const packet: TaskPacket = {
-    id: `${args.run_id ?? "run"}-${args.role}`,
+    id: `${args.run_id ?? "run"}-${key}`,
     phase: role.phase,
     task_type: THINKING_TASK_TYPE,
     module: THINKING_MODULE,
