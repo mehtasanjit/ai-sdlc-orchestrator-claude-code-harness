@@ -17,6 +17,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { THINKING_ROLES, outputDirProblem, roleInstructions, roleOutputs, runThinkingStep, stepKey } from "../dist/thinking.js";
+import { AntigravityWorkerAdapter } from "../dist/adapters/AntigravityWorkerAdapter.js";
+import { alive, beat, fakeWorkerPython, flagValue, withEnv } from "./agyFakes.mjs";
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const CLAUDE = { id: "opus", adapter: "builtin-anthropic", model_name: "claude-opus-5-5" };
@@ -575,4 +577,117 @@ test("every role's instructions resolve from the shipped plugin", () => {
     assert.ok(text.length > 200, name);
     assert.doesNotMatch(text, /^---\n/, name);
   }
+});
+
+// E-thinking-carry-on. Design §12: "a frozen worker is killed, and the step continues from its saved conversation".
+// Review: a worker the agent door's kill rule stopped was not carried on; calling the step again started a new
+// conversation at full cost, and what its tools had accepted was lost with their process.
+const KILLED = "The agent worker was stopped: the worker sent no heartbeat for 82 s; its tokens are its last heartbeat's.";
+const killed = (over = {}) => result({ success: false, worker_stopped: "killed", error: KILLED, result: { done: false, missing: ["units-001.json, accepted"], accepted: ["header.json"], conversation_id: "c-killed" }, attempts: [{ gemini: { work_ms: 600_000 } }], ...over });
+
+test("a step whose worker the kill rule stopped is carried on once, from its saved conversation, with its tools' state and the rest of its budget", async () => {
+  const root = project();
+  // An earlier step's tools state, left in the step's folder: a new step never starts from it.
+  mkdirSync(join(root, ".sdlc", "runs", "r1", "thinking"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "runs", "r1", "thinking", "brownfield-architect.state.json"), JSON.stringify({ accepted: [["header.json", true]], refused: [], written: [] }));
+  const configs = [];
+  const logged = [];
+  const { d, calls } = deps(AGENT, (n, thinking) => {
+    const cfg = JSON.parse(readFileSync(thinking.toolsConfig, "utf8"));
+    configs.push({ ...cfg, state_there: existsSync(cfg.state_file) });
+    return n === 1 ? killed() : result({ cost_usd: 0.05 });
+  }, { log: (level, event, fields) => logged.push({ level, event, fields }) });
+  const r = await runThinkingStep(args(root), d);
+  assert.equal(r.route, "done", JSON.stringify(r));
+  assert.equal(r.resumed, true, "the step carried on a saved conversation");
+  assert.equal(calls.dispatch.length, 2);
+  const [one, two] = calls.dispatch.map((c) => c.thinking);
+  assert.equal(one.carryOn, false);
+  assert.equal(one.timeoutSec, 14400);
+  assert.equal(two.carryOn, true);
+  assert.equal(two.resumeId, "c-killed", "the conversation the killed worker kept");
+  assert.equal(two.timeoutSec, 14400 - 600, "what is left of the step's own work budget");
+  assert.equal(configs[0].carry_on, false);
+  assert.equal(configs[0].state_there, false, "a new step's tools start empty: the earlier state file is gone");
+  assert.equal(configs[1].carry_on, true, "the carried-on tools load the killed ones' state");
+  assert.equal(configs[1].state_file, configs[0].state_file);
+  assert.equal(configs[0].state_file, join(root, ".sdlc", "runs", "r1", "thinking", "brownfield-architect.state.json"));
+  assert.ok(Math.abs(r.cost_usd - 0.07) < 1e-9, `both dispatches' cost: ${r.cost_usd}`);
+  assert.equal(calls.record.length, 2, "both dispatches' spend is recorded");
+  const carry = logged.find((l) => l.event === "thinking.carry_on");
+  assert.ok(carry, JSON.stringify(logged.map((l) => l.event)));
+  assert.equal(carry.level, "warn");
+  assert.match(carry.fields.reason, /no heartbeat for 82 s/);
+});
+
+test("a step killed again after it was carried on stops, saying so; a kill with nothing to carry on stops as before", async () => {
+  const twice = deps(AGENT, () => killed());
+  const r = await runThinkingStep(args(project()), twice.d);
+  assert.equal(r.route, "stopped");
+  assert.match(r.reason, /killed twice/);
+  assert.match(r.reason, /no heartbeat for 82 s/);
+  assert.deepEqual(r.missing, ["units-001.json, accepted"]);
+  assert.equal(twice.calls.dispatch.length, 2, "carried on once only");
+  for (const [why, answer] of [
+    ["no saved conversation", killed({ result: { done: false, missing: ["units-001.json, accepted"], accepted: [] } })],
+    ["no budget left", killed({ attempts: [{ gemini: { work_ms: 14_400_000 } }] })],
+    ["no work time known", killed({ attempts: [] })],
+    ["stopped by the request (the person pressed Stop)", killed({ worker_stopped: "cancelled" })],
+    ["a worker that failed on its own", killed({ worker_stopped: undefined })],
+  ]) {
+    const one = deps(AGENT, () => answer);
+    const s = await runThinkingStep(args(project()), one.d);
+    assert.equal(s.route, "stopped", why);
+    assert.equal(one.calls.dispatch.length, 1, why);
+  }
+  // A step whose worker changed a project file is stopped there, not carried on.
+  const repo = await gitProject({ "src/a.ts": "export const a = 1;\n" });
+  const changed = deps(AGENT, () => { put(repo, "src/a.ts", "export const a = 2;\n"); return killed(); });
+  const c = await runThinkingStep(args(repo), changed.d);
+  assert.equal(c.route, "stopped");
+  assert.match(c.reason, /src\/a\.ts/);
+  assert.equal(changed.calls.dispatch.length, 1);
+});
+
+test("through the agent door: a frozen worker is killed by the kill rule, and the step goes on in a new worker from its saved conversation", { timeout: 60_000 }, async () => {
+  // Shortened kill rule: no heartbeat for 2 s on two checks 1 s apart, then SIGKILL 1 s after SIGTERM.
+  const SHORT = { noBeatS: 2, confirmS: 1, termGraceS: 1 };
+  // The worker keeps its summary after its first status, beats once (30 s of its own work), then freezes.
+  const kept = { done: false, missing: ["units-001.json, accepted"], accepted: ["header.json"], conversation_id: "conv-1", text: "" };
+  const frozen = { writes: [{ atMs: 20, summary: kept }], beats: [{ atMs: 50, hb: beat({ work_s: 30 }) }], holdMs: "forever", ignoreTerm: true };
+  const finishes = { holdMs: 50, sidecar: { sdk_version: "0.1.22", usage: { prompt_token_count: 10 } }, summary: { done: true, missing: [], accepted: ["header.json", "units-001.json"], conversation_id: "conv-1", text: "" } };
+  const step = async (runs) => {
+    const fake = fakeWorkerPython({ runs });
+    const root = project();
+    try {
+      return await withEnv({ GEMINI_WORKER_PYTHON: fake.python, GOOGLE_CLOUD_PROJECT: "p", GOOGLE_CLOUD_LOCATION: "global" }, async () => {
+        const door = new AntigravityWorkerAdapter({ id: "flash", adapter: "antigravity-worker", model_name: "gemini-3.8-flash" }, { backstop: SHORT });
+        const { d } = deps(AGENT, () => assert.fail("dispatched through the agent door"), {
+          dispatch: async (packet, thinking) => ({ result: await door.execute(packet, undefined, { project_root: root, work_dir: root, telemetry_path: join(root, "t.jsonl"), thinking }), events: [] }),
+        });
+        return { reply: await runThinkingStep(args(root), d), runs: fake.runs() };
+      });
+    } finally {
+      for (const s of fake.runs()) if (alive(s.pid)) { try { process.kill(s.pid, "SIGKILL"); } catch { /* gone */ } }
+      fake.cleanup();
+    }
+  };
+  const { reply, runs } = await step([frozen, finishes]);
+  assert.equal(reply.route, "done", JSON.stringify(reply));
+  assert.equal(reply.resumed, true);
+  assert.equal(runs.length, 2);
+  const [first, second] = runs;
+  assert.equal(flagValue(first.args, "--timeout"), "14400");
+  assert.equal(first.args.includes("--carry-on"), false);
+  assert.equal(first.toolsConfig.carry_on, false);
+  assert.equal(flagValue(second.args, "--resume-id"), "conv-1", "the conversation the frozen worker kept");
+  assert.ok(second.args.includes("--carry-on"), "told to continue, not to start the task again");
+  assert.equal(flagValue(second.args, "--timeout"), "14370", "the step's budget less the frozen worker's 30 s of work");
+  assert.equal(second.toolsConfig.carry_on, true);
+  // Frozen again after the carry-on: the step stops, naming the second kill.
+  const again = await step([frozen]);
+  assert.equal(again.reply.route, "stopped", JSON.stringify(again.reply));
+  assert.match(again.reply.reason, /killed twice/);
+  assert.match(again.reply.reason, /no heartbeat/);
+  assert.equal(again.runs.length, 2, "carried on once only");
 });

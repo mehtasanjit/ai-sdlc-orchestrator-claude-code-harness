@@ -610,9 +610,11 @@ export interface RunContext {
    * A thinking step (thinking.ts): the agent door runs worker/thinking_worker.py instead of the agent worker, with the
    * step's own tools, its saved conversation and its own work budget. `system` is the session's system instructions
    * (how the step runs, and the helper's instructions); `task` the step's first message (the invocation, or on a
-   * resumed conversation the changes asked for). The packet's instruction stays the whole text.
+   * resumed conversation the changes asked for). The packet's instruction stays the whole text. `carryOn`: this
+   * dispatch carries on one whose worker the kill rule stopped, so the worker continues the saved conversation
+   * (`resumeId`) with the harness's own words instead of sending its task again.
    */
-  thinking?: { role: string; toolsConfig: string; saveDir: string; resumeId?: string; timeoutSec: number; system: string; task: string };
+  thinking?: { role: string; toolsConfig: string; saveDir: string; resumeId?: string; carryOn?: boolean; timeoutSec: number; system: string; task: string };
 }
 
 export type RuleMatcher = {
@@ -688,6 +690,12 @@ export interface ExecutionResult {
   halt?: string;
   /** Agent door: the project files that changed while the worker ran (added, modified or removed). */
   workspace_changes?: string[];
+  /**
+   * Agent door: how the engine stopped the worker, when it did: `killed` by the heartbeat kill rule (no heartbeat, or a
+   * heartbeat reporting work or a call's wait past its bound: executor/stall.ts), or `cancelled` by the request's own
+   * stop. Absent when the worker ended by itself. `error` says why.
+   */
+  worker_stopped?: "killed" | "cancelled";
   /**
    * Why the doubling loop stopped. `_budget_exhausted` means "retries used but
    * model still had headroom" (raise the cap); `_at_model_absolute` means "hit

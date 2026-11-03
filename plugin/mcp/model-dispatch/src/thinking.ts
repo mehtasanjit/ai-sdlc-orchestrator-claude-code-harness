@@ -8,7 +8,9 @@
  * piece (scripts/thinking-tools.mjs).
  * Gemini works in the project itself and has no tool that can change it; the agent door's before-and-after inventory
  * proves it, and a step that changed a project file is stopped. A step that cannot finish stops the run at that step:
- * no other model takes it over. A gate's revise carries on the same conversation.
+ * no other model takes it over. A gate's revise carries on the same conversation. A worker the agent door's kill rule
+ * stopped (frozen, or past a call's bound) is carried on once from the conversation it saved, with what its tools had
+ * accepted and what is left of the step's own work budget.
  */
 
 import { spawnSync } from "node:child_process";
@@ -17,6 +19,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameS
 import { basename, dirname, isAbsolute, join, posix as posixPath, relative, resolve, sep } from "node:path";
 
 import { holdsPrivateKey, modelReadOf } from "./apply.js";
+import { round6 } from "./pricing.js";
 import { openedSpec } from "./spec/store.js";
 
 import type { ExecutionResult, ModelConfig, Phase, RunContext, TaskPacket, TelemetryEvent } from "./types.js";
@@ -424,6 +427,36 @@ function readRecord(path: string): SessionRecord {
   try { return JSON.parse(readFileSync(path, "utf8")); } catch { return {}; }
 }
 
+/**
+ * The worker's summary of a dispatch (thinking_worker.py): whether the step is done, what it owes and has, its
+ * conversation, why it stopped (`reason`), and with `reason: "setup"` what in the step's own setup kept a hand-in from
+ * being checked (`setup_error`).
+ */
+export interface StepSummary { done?: boolean; missing?: string[]; accepted?: string[]; conversation_id?: string; reason?: string | null; setup_error?: string }
+
+/**
+ * Whether a dispatch is carried on, and with how much of the step's budget: its worker was killed by the agent door's
+ * kill rule (no heartbeat, or a heartbeat past a bound: executor/stall.ts), it kept a conversation to carry on and is
+ * not done, and its own work so far (the worker's own clock, from its receipt or its last heartbeat) leaves part of
+ * the budget. The seconds left, whole, or null. A worker the person stopped, or one that ended by itself, is never
+ * carried on, nor one whose work time is not known.
+ */
+export function carryOnBudget(result: ExecutionResult, summary: StepSummary, budgetSec: number): number | null {
+  if (result.worker_stopped !== "killed" || result.halt || summary.done || !summary.conversation_id) return null;
+  const record = result.attempts?.[result.attempts.length - 1]?.gemini;
+  const workMs = record && "work_ms" in record ? record.work_ms : undefined;
+  if (typeof workMs !== "number" || !Number.isFinite(workMs)) return null;
+  const left = Math.floor(budgetSec - workMs / 1000);
+  return left > 0 ? left : null;
+}
+
+/** Several dispatches' tokens, field by field. */
+function sumTokens(results: ExecutionResult[]): ExecutionResult["tokens"] {
+  const out: Record<string, number> = {};
+  for (const r of results) for (const [k, v] of Object.entries(r.tokens ?? {})) if (typeof v === "number") out[k] = (out[k] ?? 0) + v;
+  return { input: 0, input_cached: 0, output: 0, ...out } as ExecutionResult["tokens"];
+}
+
 interface StepLock { pid?: unknown; started_at?: unknown; token?: unknown }
 
 /** A step's lock as its file holds it; undefined when there is none, null when it cannot be read. */
@@ -560,11 +593,17 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
   const toolsConfig = join(stepDir, `${key}.tools.json`);
   const recordPath = join(stepDir, `${key}.json`);
   const saveDir = join(stepDir, `${key}.save`);
-  writeFileSync(toolsConfig, JSON.stringify({
+  // The step's tools keep what they accepted, refused and wrote in this file on every change (thinking-tools.mjs), so a
+  // dispatch that carries on one the kill rule stopped starts from it (carry_on). An earlier step's file is removed
+  // first: a step that is not carried on starts empty, even if its tools never start.
+  const stateFile = resolve(stepDir, `${key}.state.json`);
+  rmSync(stateFile, { force: true });
+  const writeToolsConfig = (carryOn: boolean) => writeFileSync(toolsConfig, JSON.stringify({
     role: args.role, project_root: resolve(args.project_root), run_id: args.run_id, intent: args.intent,
     output_dir: runFolder(args.output_dir), outputs, spec_dir: runFolder(args.output_dir), requirements_path: requirementsPath, code_dir: args.code_dir,
-    run_token: deps.runToken, revise: !!args.revise, acceptance_fix: !!args.acceptance_fix,
+    run_token: deps.runToken, revise: !!args.revise, acceptance_fix: !!args.acceptance_fix, state_file: stateFile, carry_on: carryOn,
   }, null, 2));
+  writeToolsConfig(false);
 
   const prior = readRecord(recordPath).conversation_id;
   // A revise and an acceptance fix carry on the step's saved conversation: the model keeps what it read and decided.
@@ -596,39 +635,68 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
 
   deps.log("info", "thinking.start", { role: args.role, phase: role.phase, model: model.model_name, resumed: !!resumeId });
   const before = projectSnapshot(args.project_root);
-  const { result, events } = await deps.dispatch(packet, { role: args.role, toolsConfig, saveDir, resumeId, timeoutSec: deps.thinkingTimeoutSec, system, task });
-  const after = before ? projectSnapshot(args.project_root) : null;
-  deps.record(events.map((e) => ({ ...e, judgment_role: args.role })));
-  // `reason: "setup"` with `setup_error`: the step's own setup kept a hand-in from being checked (worker/thinking_worker.py).
-  const summary = (result.result ?? {}) as { done?: boolean; missing?: string[]; accepted?: string[]; conversation_id?: string; reason?: string | null; setup_error?: string };
-  if (summary.conversation_id) writeFileSync(recordPath, JSON.stringify({ conversation_id: summary.conversation_id }) + "\n");
-
-  const stop = (why: string, missing?: string[]): ThinkingReply => {
-    deps.log("warn", "thinking.stopped", { role: args.role, phase: role.phase, model: model.model_name, reason: why });
-    return { ...base, route: "stopped", reason: why, ...(missing?.length ? { missing } : {}), ...(summary.accepted?.length ? { accepted: summary.accepted } : {}), cost_usd: result.cost_usd };
-  };
   // Gemini has no tool that writes the project; any change outside what the step itself writes means something else
   // did, or a tool misbehaved: nothing from the step is used. In a git work tree the check is git's own view of the
   // project, before and after; what git ignores is not the project's (a test runner's cache: review, pytest's cache
-  // stopped a finished step). Outside git it is the worker's walked inventory, which the reply calls partial.
+  // stopped a finished step). Outside git it is the workers' walked inventories, which the reply calls partial.
   const own = stepOwnPaths(args, outputs, brownfield);
   const mine = (p: string) => own.some((o) => (o.endsWith("/") ? p.startsWith(o) : p === o)) || OS_FILES.test(p);
-  const seen = before && after ? snapshotChanges(before, after) : notIgnoredByGit(args.project_root, (result.workspace_changes ?? []).map((p) => runFolder(p)));
-  const changed = seen.filter((p) => !mine(p));
-  const changeCheck = before && after ? "git" : "partial: not a git work tree, so the worker's walk of the project is the check; it skips dependency, build and cache folders, compares files over 2 MB by size, and stops at 20,000 files";
+  const dispatched: ExecutionResult[] = [];
+  let checkedByGit = false;
+  const changedSince = (): string[] => {
+    const after = before ? projectSnapshot(args.project_root) : null;
+    checkedByGit = before !== null && after !== null;
+    const seen = before && after ? snapshotChanges(before, after) : notIgnoredByGit(args.project_root, dispatched.flatMap((r) => r.workspace_changes ?? []).map((p) => runFolder(p)));
+    return seen.filter((p) => !mine(p));
+  };
+  const send = async (thinking: NonNullable<RunContext["thinking"]>) => {
+    const { result, events } = await deps.dispatch(packet, thinking);
+    dispatched.push(result);
+    const changed = changedSince();
+    deps.record(events.map((e) => ({ ...e, judgment_role: args.role })));
+    const summary = (result.result ?? {}) as StepSummary;
+    if (summary.conversation_id) writeFileSync(recordPath, JSON.stringify({ conversation_id: summary.conversation_id }) + "\n");
+    return { result, summary, changed };
+  };
+  let { result, summary, changed } = await send({ role: args.role, toolsConfig, saveDir, resumeId, carryOn: false, timeoutSec: deps.thinkingTimeoutSec, system, task });
+  // A worker the kill rule stopped (frozen, or past a call's bound) is carried on once, from the conversation it saved,
+  // its tools starting from what the killed ones had accepted, with what is left of the step's own work budget (design
+  // section 12: "a frozen worker is killed, and the step continues from its saved conversation"; review: calling the
+  // step again started a new conversation at full cost, and the tools' state was lost with their process). Never
+  // after a project file changed: nothing from such a step is used. Its system text is the same as the first's.
+  const left = changed.length ? null : carryOnBudget(result, summary, deps.thinkingTimeoutSec);
+  const carriedOn = left !== null;
+  if (left !== null) {
+    deps.log("warn", "thinking.carry_on", { role: args.role, phase: role.phase, model: model.model_name, reason: result.error, conversation_id: summary.conversation_id, timeout_sec: left });
+    writeToolsConfig(true);
+    ({ result, summary, changed } = await send({ role: args.role, toolsConfig, saveDir, resumeId: summary.conversation_id, carryOn: true, timeoutSec: left, system, task }));
+  }
+  // The step's spend is every dispatch's.
+  const cost = round6(dispatched.reduce((a, r) => a + (r.cost_usd ?? 0), 0));
+  const stop = (why: string, missing?: string[]): ThinkingReply => {
+    deps.log("warn", "thinking.stopped", { role: args.role, phase: role.phase, model: model.model_name, reason: why });
+    return { ...base, route: "stopped", reason: why, ...(missing?.length ? { missing } : {}), ...(summary.accepted?.length ? { accepted: summary.accepted } : {}), cost_usd: cost };
+  };
+  const changeCheck = checkedByGit ? "git" : "partial: not a git work tree, so the worker's walk of the project is the check; it skips dependency, build and cache folders, compares files over 2 MB by size, and stops at 20,000 files";
   const changedText = changed.length ? `project files changed while the step ran: ${changed.slice(0, 10).join(", ")}${changed.length > 10 ? ` and ${changed.length - 10} more` : ""}` : "";
   if (result.halt) {
     // A halt still names what changed (review: it returned before the check, and the files were never named).
     const reason = changedText ? `${result.halt}; ${changedText}` : result.halt;
     deps.log("warn", "thinking.halt", { role: args.role, phase: role.phase, model: model.model_name, reason });
-    return { ...base, route: "halt", reason, cost_usd: result.cost_usd };
+    return { ...base, route: "halt", reason, cost_usd: cost };
   }
   if (changed.length) return stop(changedText);
   // A hand-in's check could not run for the step's own setup (plan-lint's usage error: a run id or folder it cannot
   // use, a job that is not the run's): the worker stopped at once, and the reply says what was wrong and where, as a
   // setup error for the person, never as the model's failure (review: such errors went to Gemini as refusals to fix).
   if (summary.reason === "setup") return stop(`the ${model.model_name} step stopped on its own setup, which no hand-in can fix: ${summary.setup_error ?? result.error ?? "no reason given"}`, summary.missing);
-  if (!summary.done) return stop(stoppedReason(model.model_name, summary, result, deps.thinkingTimeoutSec), summary.missing);
+  if (!summary.done) {
+    // Killed again after its carry-on: the step stops, saying so; any other stop says why its worker stopped, and that
+    // the step had been carried on once.
+    if (carriedOn && result.worker_stopped === "killed") return stop(`the ${model.model_name} step could not finish: its worker was killed twice, the second time after it was carried on from its saved conversation: ${result.error ?? "no reason given"}`, summary.missing);
+    const why = stoppedReason(model.model_name, summary, result, deps.thinkingTimeoutSec);
+    return stop(carriedOn ? `${why} (it had been carried on once, after its worker was killed)` : why, summary.missing);
+  }
   // Every piece is handed in and accepted by the checks a Claude helper's hand-over runs: the step is done, even when
   // its last turn ended with an error (review: a fully accepted step was reported stopped and its work thrown away).
   if (!result.success) deps.log("warn", "thinking.done_after_error", { role: args.role, phase: role.phase, model: model.model_name, reason: result.error });
@@ -639,6 +707,6 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
       return stop(`the acceptance fix was accepted, but ${outputs.acceptance_fix} cannot be read: ${e?.message ?? e}`);
     }
   }
-  deps.log("info", "thinking.end", { role: args.role, phase: role.phase, model: model.model_name, accepted: (summary.accepted ?? []).length, cost_usd: result.cost_usd, change_check: changeCheck === "git" ? "git" : "partial" });
-  return { ...base, route: "done", accepted: summary.accepted ?? [], cost_usd: result.cost_usd, tokens: result.tokens, resumed: !!resumeId, change_check: changeCheck, ...(answer ? { acceptance_fix: answer } : {}) };
+  deps.log("info", "thinking.end", { role: args.role, phase: role.phase, model: model.model_name, accepted: (summary.accepted ?? []).length, cost_usd: cost, change_check: changeCheck === "git" ? "git" : "partial", carried_on: carriedOn });
+  return { ...base, route: "done", accepted: summary.accepted ?? [], cost_usd: cost, tokens: sumTokens(dispatched), resumed: !!resumeId || carriedOn, change_check: changeCheck, ...(answer ? { acceptance_fix: answer } : {}) };
 }

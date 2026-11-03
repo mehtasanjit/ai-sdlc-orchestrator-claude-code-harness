@@ -14,7 +14,9 @@ The agent worker (gemini_worker.py) with five differences:
     thinking_timeout_sec) is spent, or until Gemini answers NO_PROGRESS_TURNS reminders in a row without progress
     (no piece newly accepted, and what it owes unchanged);
   - the conversation is saved under --save-dir and carried on with --resume-id, so a gate's revise continues the
-    session that wrote the pieces instead of starting over;
+    session that wrote the pieces instead of starting over; with --carry-on, a step whose last worker the engine's
+    kill rule stopped goes on from it with the harness's own words instead of its task, and its tools start from what
+    that worker's tools had accepted;
   - a call Google could not serve is waited out, and the same conversation carried on, while the run's busy window
     (--busy-window-sec) is open, as a batch waits out a busy model for a typing call.
 
@@ -319,6 +321,10 @@ async def run(args):
     fn_tools = tools_for(host, args.role)
     resume = args.resume_id or None
     message = task
+    if args.carry_on:
+        # The engine's kill rule stopped this step's last worker (frozen, or past a call's bound): its saved conversation
+        # already holds the task and everything since, so it is continued as the harness continues one it interrupted.
+        message = sv.CONTINUE_MESSAGE
     summary = {"done": False, "missing": [], "accepted": [], "conversation_id": resume, "text": "", "reason": None}
 
     def keep() -> None:
@@ -427,6 +433,9 @@ def main():
     p.add_argument("--thinking", default="NONE")
     p.add_argument("--timeout", type=int, default=14400)
     p.add_argument("--resume-id", default=None)
+    # This dispatch carries on one the engine's kill rule stopped (thinking.ts): the saved conversation (--resume-id) is
+    # continued with the harness's own words, never sent the task again.
+    p.add_argument("--carry-on", action="store_true")
     p.add_argument("--summary-file", default=None)
     # The session's system instructions (how the step runs, the helper's instructions); --task-file is then the task.
     p.add_argument("--system-file", default=None)
@@ -447,6 +456,9 @@ def main():
     args = p.parse_args()
     if args.role not in ROLE_TOOLS:
         print(f"thinking_worker failed: unknown role {args.role}", file=sys.stderr)
+        sys.exit(2)
+    if args.carry_on and not args.resume_id:
+        print("thinking_worker failed: --carry-on continues a saved conversation: pass its --resume-id", file=sys.stderr)
         sys.exit(2)
     try:
         s, summary = asyncio.run(run(args))

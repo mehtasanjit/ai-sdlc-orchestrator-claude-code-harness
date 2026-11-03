@@ -10,7 +10,8 @@
  * The worker runs its session under the call supervisor (worker/agy_supervisor.py): a held call is cut and sent
  * again, Google's status is read, a refused call can move to the leaf's failover_locations, and the usage sidecar is
  * written on every outcome with each try's own usage and location. This adapter prices each try at its own location,
- * day and served tier, and stops the worker only by the heartbeat kill rule (executor/stall.ts).
+ * day and served tier, and stops the worker only by the heartbeat kill rule (executor/stall.ts) or the request's own
+ * stop, which the result then names (`worker_stopped`).
  */
 
 import { spawn } from "node:child_process";
@@ -393,6 +394,8 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         "--node", process.execPath, "--tools-script", THINKING_TOOLS, "--busy-window-sec", String(BUSY_WINDOW_SEC),
         "--system-file", systemFile);
       if (thinking.resumeId) args.push("--resume-id", thinking.resumeId);
+      // A dispatch that carries on one the kill rule stopped: the worker continues its saved conversation.
+      if (thinking.carryOn) args.push("--carry-on");
       args.push("--summary-file", summaryFile);
     }
 
@@ -437,10 +440,11 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     // Read whatever the exit status: a failed delegation still spent tokens. A worker that wrote nothing (killed
     // before it could) is billed its last heartbeat's usage.
     const sidecar = readJsonIfPresent(usageFile);
+    const stopped = AntigravityWorkerAdapter.stoppedBy(run.killed);
     const bill = sidecar
-      ? this.bill(sidecar, { started: dispatchDate, answered: run.ok, stopped: AntigravityWorkerAdapter.stoppedBy(run.killed) })
+      ? this.bill(sidecar, { started: dispatchDate, answered: run.ok, stopped })
       : run.lastBeat
-        ? this.billHeartbeat(run.lastBeat, { started: dispatchDate, stopped: AntigravityWorkerAdapter.stoppedBy(run.killed) })
+        ? this.billHeartbeat(run.lastBeat, { started: dispatchDate, stopped })
         : null;
     const tokens = bill?.tokens ?? mapSidecarTokens(null);
     const cost = bill?.cost_usd ?? 0;
@@ -561,6 +565,9 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         attempts: [attempt],
         terminal_reason: "vendor_error",
         workspace_changes: [...diff.added, ...diff.modified, ...diff.removed],
+        // How the engine stopped the worker, when it did: a thinking step carries on one the kill rule stopped
+        // (thinking.ts), never one the person stopped, nor one that ended by itself.
+        ...(stopped ? { worker_stopped: stopped } : {}),
       };
     }
 

@@ -466,3 +466,34 @@ test("another name for a refused file is found wherever that file sits, a build 
   const { hydrateInputs } = await import(pathToFileURL(resolve(HERE, "..", "dist", "apply.js")).href);
   assert.throws(() => hydrateInputs({ id: "p", inputs: [{ path: "src/notes.txt", reason: "x" }] }, root), /hard link/);
 });
+
+// E-thinking-carry-on. Design §12: "a frozen worker is killed, and the step continues from its saved conversation".
+// Review: the tools kept what they had accepted only in their own process, so a step carried on after its worker was
+// killed would owe every piece again, whatever its conversation said it had handed in.
+test("the tools keep their state in the step's state file: a carried-on step holds what was accepted and refused; any other starts empty", async () => {
+  const root = project();
+  const stateFile = join(root, ".sdlc", "runs", "r1", "thinking", "discovery.state.json");
+  const status = async (t) => JSON.parse((await t.call("status", {})).result);
+  const first = tools(root, "discovery", { state_file: stateFile });
+  assert.match((await first.call("write_discovery", { name: "discovery.md", content: "# Discovery\n" })).result, /wrote/);
+  assert.ok(existsSync(stateFile), "the state is kept on disk at once");
+  // The worker was killed; the step is carried on with a new tools process.
+  const again = await status(tools(root, "discovery", { state_file: stateFile, carry_on: true }));
+  assert.deepEqual(again.accepted, ["discovery:discovery.md"], "what was accepted before the kill is still accepted");
+  assert.deepEqual(again.missing, ["the run's baseline.json (write_discovery)"], "only the rest is owed");
+  assert.deepEqual(again.written, [".sdlc/runs/r1/discovery.md"]);
+  // A refused piece is still owed with its problems.
+  const archState = join(root, ".sdlc", "runs", "r1", "thinking", "brownfield-architect.state.json");
+  const arch = tools(root, "brownfield-architect", { state_file: archState });
+  assert.match((await arch.call("write_section", { name: "header.json", json: "{}" })).error, /refused/);
+  const archAgain = await status(tools(root, "brownfield-architect", { state_file: archState, carry_on: true }));
+  assert.ok(archAgain.missing.some((m) => /^header\.json was refused: header\.json \/: is missing required field/.test(m)), archAgain.missing.join("; "));
+  // A step that is not carried on (a first call, a revise) starts empty, and the file then holds its state.
+  const fresh = tools(root, "discovery", { state_file: stateFile });
+  assert.deepEqual((await status(fresh)).accepted, []);
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, "utf8")).accepted, [], "an earlier step's state is overwritten");
+  // A carried-on step whose tools never kept a state starts empty; one whose state cannot be read is not started.
+  assert.deepEqual((await status(tools(root, "discovery", { state_file: join(root, "no-such.state.json"), carry_on: true }))).accepted, []);
+  writeFileSync(stateFile, "{not json");
+  assert.throws(() => tools(root, "discovery", { state_file: stateFile, carry_on: true }), /state .*cannot be read/);
+});

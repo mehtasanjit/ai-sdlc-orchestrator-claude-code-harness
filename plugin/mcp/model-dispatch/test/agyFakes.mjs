@@ -33,8 +33,15 @@ const n = (existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0) + 1;
 writeFileSync(counter, String(n));
 const plan = cfg.runs[Math.min(n, cfg.runs.length) - 1] || {};
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
-log("start", { n, args });
+// A thinking run's tools config as the run found it (the server rewrites it between dispatches).
+const toolsConfig = flag("--tools-config") && existsSync(flag("--tools-config")) ? JSON.parse(readFileSync(flag("--tools-config"), "utf8")) : undefined;
+log("start", { n, args, toolsConfig });
 const outPath = flag("--out") || flag("--usage-file");
+// Files the worker writes while it runs, before it exits or hangs: a thinking worker keeps its summary after every status.
+for (const w of plan.writes || []) setTimeout(() => {
+  if (w.sidecar !== undefined && outPath) writeFileSync(outPath, JSON.stringify(w.sidecar));
+  if (w.summary !== undefined && flag("--summary-file")) writeFileSync(flag("--summary-file"), JSON.stringify(w.summary));
+}, w.atMs || 0);
 const finish = (which) => {
   const body = which === "term" ? plan.onTerm : plan;
   // A thinking run that changes project files (touchProject: paths relative to the tools config's project_root).
@@ -64,9 +71,11 @@ else setTimeout(() => finish("done"), plan.holdMs || 0);
 /**
  * Makes the stand-in. `runs[i]` is the i-th run's plan: {beats: [{atMs, hb}], holdMs (number or "forever"),
  * receipt, sidecar, summary (a thinking worker's --summary-file), touchProject (project files a thinking run changes),
- * stdout, stderr, exitCode, ignoreTerm,
+ * writes: [{atMs, sidecar?, summary?}] (files written while it runs, as a thinking worker keeps its summary after every
+ * status), stdout, stderr, exitCode, ignoreTerm,
  * onTerm: {receipt|sidecar, exitCode}}; the last plan
- * repeats. `version` is what the version query prints (null: the SDK is not installed).
+ * repeats. `version` is what the version query prints (null: the SDK is not installed). A thinking run's start is
+ * logged with the tools config it found.
  */
 export function fakeWorkerPython({ runs = [{}], version = "0.1.22" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agy-fake-python-"));

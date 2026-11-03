@@ -410,3 +410,32 @@ test("a hand-in whose check cannot run for the step's setup stops the step at on
   assert.equal(r.log.filter((e) => e.ev === "usage").length, 1, "the model's next call was never answered");
   assert.deepEqual(r.summary.missing, ["header.json, accepted", "at least one units file, accepted"], "no refusal is owed for it");
 });
+
+// E-thinking-carry-on. A worker the engine's kill rule stopped is carried on by thinking.ts: its saved conversation
+// already holds the task and everything since, so the new worker continues it as the harness continues a conversation
+// it interrupted, and its tools start from what the killed worker's tools had accepted (their state file).
+test("a carried-on worker continues its saved conversation with the harness's words, its tools holding what was accepted; a revise sends its task", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const state = join(mkdtempSync(join(tmpdir(), "carry-on-state-")), "requirements.state.json");
+  // The first worker's real tools accept the requirements and keep that in the step's state file.
+  const handIn = { sessions: [{ turns: [[{ at: 0, step: step.tool("write_requirements", "ACTIVE", REQUIREMENTS, "w1") }, ...textAnswer(0, "Handed in.", { prompt_token_count: 10 })]] }] };
+  const first = await runWorker("thinking", { script: handIn, timeout: 30, limitMs: 45_000, config: { state_file: state } });
+  assert.equal(first.code, 0, tail(first));
+  // Carried on: the resumed turn hands nothing in, and the step is done by what the tools kept.
+  const script = { sessions: [{ turns: [textAnswer(0, "Everything is handed in.", { prompt_token_count: 10 })] }] };
+  const r = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, brief: "THE TASK", args: ["--resume-id", "standin-earlier", "--carry-on"], config: { state_file: state, carry_on: true } });
+  assert.equal(r.code, 0, tail(r));
+  assert.equal(r.sessions[0].conversation_id, "standin-earlier", "the saved conversation, resumed");
+  assert.equal(r.chats[0].message, "Please continue the task you were working on.", "not the task again");
+  assert.equal(r.summary.done, true, JSON.stringify(r.summary));
+  assert.deepEqual(r.summary.accepted, ["requirements"]);
+  assert.equal(r.chats.length, 1, "no nudge: nothing was owed");
+  // A revise resumes its conversation too, and sends its task: the changes asked for.
+  const revise = await runWorker("thinking", { script: handIn, timeout: 30, limitMs: 45_000, brief: "Changes asked for this step: add FR-2.", args: ["--resume-id", "standin-earlier"] });
+  assert.equal(revise.code, 0, tail(revise));
+  assert.equal(revise.chats[0].message, "Changes asked for this step: add FR-2.");
+  // A carry-on continues a saved conversation: without one nothing is sent.
+  const none = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, args: ["--carry-on"], config: { state_file: state, carry_on: true } });
+  assert.notEqual(none.code, 0);
+  assert.equal(none.sessions.length, 0, "no session was opened");
+  assert.match(none.stderr, /--carry-on[^\n]*--resume-id/);
+});

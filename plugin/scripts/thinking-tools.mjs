@@ -10,6 +10,9 @@
  * model wrote runs before the person approves the plan at Gate 2: a hand-in's file checks wait for dispatch, and a
  * reviewer's file check runs the approved plan's check as the engine runs checks.
  *
+ * What the step has accepted, refused and written is kept in its state file on every change, so a step carried on
+ * after its worker was killed starts from what its tools had accepted.
+ *
  * Protocol: one JSON object per line on stdin, {id, op, args}; one per line on stdout, {id, ok, result} or
  * {id, ok: false, error}, and {id, ok: false, error, setup: true} when the step's own setup keeps a hand-in from being
  * checked (nothing Gemini could fix: the worker stops the step on it). Started with --config <file>, a JSON object
@@ -17,7 +20,7 @@
  */
 import { spawnSync } from "node:child_process";
 import v8 from "node:v8";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -69,7 +72,8 @@ export class ThinkingTools {
    * cfg: {role, project_root, run_id, intent, output_dir (relative to project_root), outputs: {requirements,
    * sections_dir, review, security_review, discovery}, spec_dir, requirements_path, code_dir, run_token (the token the
    * spec store knows the run's pre-flight by), revise (the step answers a gate's changes), acceptance_fix (the
-   * architect answers the acceptance stage)}
+   * architect answers the acceptance stage), state_file (where the step's state is kept), carry_on (the step goes on
+   * after its worker was killed)}
    */
   constructor(cfg) {
     this.cfg = cfg;
@@ -81,6 +85,47 @@ export class ThinkingTools {
     // it answers.
     this.loading = null;
     this.revised = undefined;
+    // The state is kept in cfg.state_file on every change: a step carried on after its worker was killed starts from
+    // what the killed worker's tools kept, and any other step (a first call, a revise) starts empty and overwrites
+    // what an earlier one left (review: the state lived only in this process, so a carried-on step owed every piece
+    // again, whatever its conversation said it had handed in).
+    this.kept = null;
+    if (cfg.carry_on) this.restore();
+    this.keep();
+  }
+
+  /**
+   * A carried-on step's state, as its killed worker's tools kept it. None kept (those tools never started) is an
+   * empty state; a state file that cannot be read stops the tools before anything is sent, never a silent fresh start.
+   */
+  restore() {
+    const file = this.cfg.state_file;
+    if (typeof file !== "string" || file === "") throw new Error("a carried-on step's tools start from its state file: the config names no state_file");
+    const unreadable = (why) => new Error(`the step's state ${file} cannot be read (${why}), so the step cannot be carried on`);
+    let state;
+    try { state = JSON.parse(readFileSync(file, "utf8")); } catch (e) {
+      if (e?.code === "ENOENT") return;
+      throw unreadable(e?.message ?? String(e));
+    }
+    const strings = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
+    const pairs = (v, value) => Array.isArray(v) && v.every((p) => Array.isArray(p) && p.length === 2 && typeof p[0] === "string" && value(p[1]));
+    if (!state || !pairs(state.accepted, (v) => v === true) || !pairs(state.refused, strings) || !strings(state.written)) throw unreadable("not a state these tools keep");
+    this.accepted = new Map(state.accepted);
+    this.refused = new Map(state.refused);
+    this.written = new Set(state.written);
+  }
+
+  /** The state in the step's state file, when it changed: written whole beside it, then moved into place. */
+  keep() {
+    const file = this.cfg.state_file;
+    if (typeof file !== "string" || file === "") return;
+    const text = JSON.stringify({ accepted: [...this.accepted], refused: [...this.refused], written: [...this.written] });
+    if (text === this.kept) return;
+    mkdirSync(dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, text + "\n");
+    renameSync(tmp, file);
+    this.kept = text;
   }
 
   /**
@@ -623,10 +668,15 @@ export class ThinkingTools {
   async call(op, args) {
     const allowed = new Set([...READ_TOOLS, ...(ROLE_TOOLS[this.cfg.role] ?? []), "status"]);
     if (!allowed.has(op)) return { error: `${op} is not a tool of the ${this.cfg.role} step` };
+    let out;
     try {
       await (this.loading ??= this.loadAccepted());
-      return await this[op](args ?? {});
-    } catch (e) { return { error: e?.message ?? String(e) }; }
+      out = await this[op](args ?? {});
+    } catch (e) { out = { error: e?.message ?? String(e) }; }
+    // Kept before the answer goes back, so a worker killed after its hand-in was answered loses nothing accepted. A
+    // state that cannot be kept never undoes a hand-in: a carry-on would owe that piece again, and the stderr says why.
+    try { this.keep(); } catch (e) { process.stderr.write(`thinking-tools: the step's state could not be kept in ${this.cfg.state_file}: ${e?.message ?? e}\n`); }
+    return out;
   }
 }
 
