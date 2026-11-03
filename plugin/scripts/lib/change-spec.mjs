@@ -25,7 +25,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bashDenyRules, deniedBy } from "../ambient/lib/bash-rules.mjs";
 import { serverCommandUnchecked } from "../ambient/lib/own-steps.mjs";
-import { matchGlob, offLimitsMatch } from "./off-limits.mjs";
+import { HARDCODED_OFF_LIMITS, READ_OFF_LIMITS, matchGlob, offLimitsMatch } from "./off-limits.mjs";
 import { runEnded } from "./run-log.mjs";
 import { loadServerLib } from "./server-lib.mjs";
 
@@ -236,10 +236,14 @@ export function liveContract(projectRoot) {
   }
 }
 
-/** A path relative to the project's real folder, through every link, or null when it does not resolve inside it. */
+/**
+ * A path relative to the project's real folder, through every link and spelt as the disk spells it, or null when it
+ * does not resolve inside it. The disk's own spelling matters: macOS opens `.MCP.JSON` or `.mcp.jſon` as `.mcp.json`,
+ * and realpathSync keeps the spelling it was given where realpathSync.native returns the disk's (tried).
+ */
 function realRel(projectRoot, p) {
   try {
-    const rel = relative(realpathSync(projectRoot), realpathSync(resolve(projectRoot, p))).split(sep).join("/");
+    const rel = relative(realpathSync.native(projectRoot), realpathSync.native(resolve(projectRoot, p))).split(sep).join("/");
     return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : null;
   } catch {
     return null;
@@ -248,13 +252,57 @@ function realRel(projectRoot, p) {
 
 const offLimitsLabel = (hit) => `${hit.source === "hardcoded" ? "always" : "the write contract"}: ${hit.pattern}`;
 
-/** Off-limits for this path, by its own name and, when it is a link, by the file it reaches. */
-function offLimitsOf(projectRoot, p, offLimits) {
-  const hit = offLimitsMatch(p, offLimits);
+// Folders the search for another name of a refused file skips: git's own store (refused whole) and installed
+// dependencies and caches, which hold no file of the person's.
+const NAME_SEARCH_SKIP = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".next", ".nuxt", ".turbo", ".cache", "coverage"]);
+const REFUSED_FILE_IDS_MS = 60_000;
+const refusedFileIds = new Map();
+
+/**
+ * The device and inode of each refused file in the project that has more than one name: a hard link to `.env` under
+ * another name is `.env`'s bytes. Found once per project, list and contract, and kept for a minute.
+ */
+function refusedIdsWithLinks(projectRoot, offLimits, base) {
+  const key = `${projectRoot}\0${JSON.stringify(offLimits)}\0${base.length}`;
+  const kept = refusedFileIds.get(key);
+  if (kept && Date.now() - kept.at < REFUSED_FILE_IDS_MS) return kept.ids;
+  const ids = new Set();
+  const walk = (abs, rel) => {
+    let entries;
+    try { entries = readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    for (const d of entries) {
+      const childRel = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) {
+        if (!NAME_SEARCH_SKIP.has(d.name)) walk(join(abs, d.name), childRel);
+      } else if (d.isFile() && offLimitsMatch(childRel, offLimits, base)) {
+        try {
+          const st = statSync(join(abs, d.name));
+          if (st.nlink > 1) ids.add(`${st.dev}:${st.ino}`);
+        } catch {}
+      }
+    }
+  };
+  walk(projectRoot, "");
+  refusedFileIds.set(key, { at: Date.now(), ids });
+  return ids;
+}
+
+/**
+ * Off-limits for this path, by its own name, by the file it reaches (through links, as the disk spells it), and, for
+ * a file with more than one name, by being the same file as a refused one.
+ */
+function offLimitsOf(projectRoot, p, offLimits, base = HARDCODED_OFF_LIMITS) {
+  const hit = offLimitsMatch(p, offLimits, base);
   if (hit) return offLimitsLabel(hit);
   const real = realRel(projectRoot, p);
-  const viaLink = real && real !== p ? offLimitsMatch(real, offLimits) : null;
-  return viaLink ? `${offLimitsLabel(viaLink)}, through the link to ${real}` : null;
+  const viaLink = real && real !== p ? offLimitsMatch(real, offLimits, base) : null;
+  if (viaLink) return `${offLimitsLabel(viaLink)}, through the link to ${real}`;
+  let st;
+  try { st = statSync(resolve(projectRoot, p)); } catch { return null; }
+  if (st.isFile() && st.nlink > 1 && refusedIdsWithLinks(projectRoot, offLimits, base).has(`${st.dev}:${st.ino}`)) {
+    return "the same file as an off-limits one, under another name (a hard link)";
+  }
+  return null;
 }
 
 /**
@@ -265,7 +313,8 @@ function offLimitsOf(projectRoot, p, offLimits) {
 export function readRefusal(projectRoot, runId, p, offLimits = liveContract(projectRoot)?.off_limits ?? []) {
   const own = typeof runId === "string" ? `.sdlc/runs/${runId}/` : null;
   if (own && p.startsWith(own) && (realRel(projectRoot, p) ?? p).startsWith(own)) return null;
-  const why = offLimitsOf(projectRoot, p, offLimits);
+  // A model reads by the read list: the always-off-limits list and every credential file.
+  const why = offLimitsOf(projectRoot, p, offLimits, READ_OFF_LIMITS);
   return why ? `${p} is off-limits (${why})` : null;
 }
 

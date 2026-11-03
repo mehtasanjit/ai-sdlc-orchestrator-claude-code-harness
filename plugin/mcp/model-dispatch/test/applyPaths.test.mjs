@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,12 +72,34 @@ test("an off-limits file is never read into a prompt: the hardcoded list at any 
   rmSync(base, { recursive: true, force: true });
 });
 
+test("credential files, a private key under any name and a hard link to an off-limits file are never read into a prompt", () => {
+  const { base, root } = setup();
+  const put = (rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
+  put(".npmrc", "//registry.npmjs.org/:_authToken=TOKEN\n");
+  put(".claude/settings.json", '{"env":{"ANTHROPIC_API_KEY":"KEY"}}\n');
+  put("deploy/server.pem", "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----\n");
+  put("keys/gcp-service-account.json", '{"type":"service_account","private_key":"KEY"}\n');
+  put(".aws/credentials", "[default]\naws_secret_access_key = KEY\n");
+  put("notes/ops.txt", "-----BEGIN RSA PRIVATE KEY-----\nKEY\n-----END RSA PRIVATE KEY-----\n");
+  linkSync(join(root, ".env"), join(root, "src", "notes.ts"));
+  for (const p of [".npmrc", ".claude/settings.json", "deploy/server.pem", "keys/gcp-service-account.json", ".aws/credentials"]) {
+    assert.throws(() => hydrateInputs(packet([slice(p)]), root), /off-limits/, p);
+  }
+  assert.throws(() => hydrateInputs(packet([slice("notes/ops.txt")]), root), /private key/);
+  assert.throws(() => hydrateInputs(packet([slice("src/notes.ts")]), root), /hard link/);
+  // Another spelling of an off-limits name is refused by its name before the disk is asked (macOS opens it as that file).
+  assert.throws(() => hydrateInputs(packet([slice(".mcp.j\u017Fon")]), root), /off-limits/);
+  assert.equal(hydrateInputs(packet([slice("src/a.ts")]), root).packet.inputs[0].content, "export const a = 1;\n");
+  rmSync(base, { recursive: true, force: true });
+});
+
 test("the live contract's off_limits are never read either; the live run's own folder is, whatever off_limits says", () => {
   const { base, root } = setup({ allowlist: ["src/**"], off_limits: [".sdlc/**", "secrets/**"] });
   mkdirSync(join(root, "secrets"));
-  writeFileSync(join(root, "secrets", "k.pem"), "PEM\n");
-  assert.throws(() => hydrateInputs(packet([slice("secrets/k.pem")]), root), /off-limits.*secrets\/\*\*/);
-  assert.throws(() => hydrateInputs(packet([slice("SECRETS/k.pem")]), root), /off-limits/);
+  // A file only the contract refuses (a .pem is a credential file, refused by the read list on its own).
+  writeFileSync(join(root, "secrets", "k.yml"), "db: x\n");
+  assert.throws(() => hydrateInputs(packet([slice("secrets/k.yml")]), root), /off-limits.*secrets\/\*\*/);
+  assert.throws(() => hydrateInputs(packet([slice("SECRETS/k.yml")]), root), /off-limits/);
   const ok = hydrateInputs(packet([slice(`.sdlc/runs/${RUN}/briefs/shared.md`), slice("src/a.ts")]), root);
   assert.deepEqual(ok.hydrated, [`.sdlc/runs/${RUN}/briefs/shared.md`, "src/a.ts"]);
   assert.throws(() => hydrateInputs(packet([slice(".sdlc/local/write-contract.json")]), root), /off-limits/);

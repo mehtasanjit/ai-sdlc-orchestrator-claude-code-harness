@@ -11,7 +11,7 @@
  * functions from server.ts, which keeps the loop testable with a stub model.
  */
 
-import { closeSync, constants as FS, existsSync, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { closeSync, constants as FS, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -80,6 +80,44 @@ export const HARDCODED_OFF_LIMITS = [
   ".claude/settings.local.json",
   ".git/**",
 ];
+
+// Same lists as plugin/scripts/lib/off-limits.mjs CREDENTIAL_FILES and READ_OFF_LIMITS (apply.test.mjs asserts it):
+// files that hold credentials, never sent to a model on top of the hardcoded list. Reads only: writes are unchanged.
+export const CREDENTIAL_FILES = [
+  ".claude/settings.json",
+  ".npmrc",
+  ".yarnrc.yml",
+  ".pypirc",
+  ".netrc",
+  ".git-credentials",
+  ".vault-token",
+  ".terraformrc",
+  ".docker/config.json",
+  ".kube/config",
+  ".ssh/**",
+  ".aws/**",
+  ".azure/**",
+  ".gnupg/**",
+  ".config/gcloud/**",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.pfx",
+  "*.jks",
+  "*.keystore",
+  "id_rsa*",
+  "id_dsa*",
+  "id_ecdsa*",
+  "id_ed25519*",
+  "credentials.json",
+  "*-credentials.json",
+  "*service-account*.json",
+  "*service_account*.json",
+  "application_default_credentials.json",
+  "*.tfstate",
+  "*.tfstate.backup",
+];
+export const READ_OFF_LIMITS = [...HARDCODED_OFF_LIMITS, ...CREDENTIAL_FILES];
 
 // ---------------------------------------------------------------------------
 // Paths: off-limits matching and the read rule
@@ -182,15 +220,55 @@ function bindingContract(projectRoot: string): { contract: any; runId: string | 
  * Why `rel` may not be read into a model's prompt, or null: the one read rule for everything sent to a model (the
  * planner's plan-lint and findings-to-packets hold a plan to the same rule; this is the last line, the only one a
  * hand-written packet passes). A file on the hardcoded off-limits list (at any depth, as the writer matches it) or on
- * the binding contract's off_limits is never sent. The live run's own folder (.sdlc/runs/<run_id>/, where its briefs
- * live) is exempt from the contract's list. Case is ignored, as the disk ignores it.
+ * the binding contract's off_limits is never sent, and neither is a credential file (READ_OFF_LIMITS). The live run's
+ * own folder (.sdlc/runs/<run_id>/, where its briefs live) is exempt from the contract's list. Names are compared with
+ * case and Unicode form folded (foldName), as the disk treats them.
  */
 export function readOffLimits(rel: string, binding: { contract: any; runId: string | null } | null): string | null {
-  for (const p of HARDCODED_OFF_LIMITS) if (matchesAtAnyDepth(rel, p, true)) return `off-limits (hardcoded): ${p}`;
+  const name = foldName(rel);
+  for (const p of READ_OFF_LIMITS) if (matchesAtAnyDepth(name, foldName(p), true)) return `off-limits (hardcoded): ${p}`;
   if (!binding) return null;
-  if (binding.runId && rel.toLowerCase().startsWith(`.sdlc/runs/${binding.runId.toLowerCase()}/`)) return null;
-  const off = firstMatch(rel, binding.contract?.off_limits, true);
+  if (binding.runId && name.startsWith(`.sdlc/runs/${foldName(binding.runId)}/`)) return null;
+  const patterns: unknown[] = Array.isArray(binding.contract?.off_limits) ? binding.contract.off_limits : [];
+  const off = patterns.find((p): p is string => typeof p === "string" && matchGlob(name, foldName(p), true));
   return off ? `off-limits (contract): ${off}` : null;
+}
+
+/** A name in the one form off-limits names are compared in: Unicode NFC with case folded both ways (`ſ` to `s`). */
+function foldName(s: string): string {
+  return s.normalize("NFC").toUpperCase().toLowerCase();
+}
+
+// Folders the search for another name of a refused file skips: git's store and installed dependencies and caches.
+const NAME_SEARCH_SKIP = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".next", ".nuxt", ".turbo", ".cache", "coverage"]);
+
+/**
+ * Whether a file with more than one name is the same file as an off-limits one: a hard link to `.env` under another
+ * name is `.env`'s bytes. Asked only for an input whose file has more than one link.
+ */
+function sameFileAsOffLimits(projectRoot: string, dev: number, ino: number, binding: { contract: any; runId: string | null } | null): boolean {
+  const walk = (abs: string, rel: string): boolean => {
+    let entries: import("node:fs").Dirent[];
+    try { entries = readdirSync(abs, { withFileTypes: true }); } catch { return false; }
+    for (const d of entries) {
+      const childRel = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) {
+        if (!NAME_SEARCH_SKIP.has(d.name) && walk(join(abs, d.name), childRel)) return true;
+      } else if (d.isFile() && readOffLimits(childRel, binding)) {
+        try {
+          const st = statSync(join(abs, d.name));
+          if (st.dev === dev && st.ino === ino) return true;
+        } catch {}
+      }
+    }
+    return false;
+  };
+  return walk(projectRoot, "");
+}
+
+/** A private key's own marker, in any file: such a file is never sent to a model, whatever its name. */
+function holdsPrivateKey(text: string): boolean {
+  return /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/.test(text);
 }
 
 // ---------------------------------------------------------------------------
@@ -259,16 +337,23 @@ export function hydrateInputs(packet: TaskPacket, projectRoot: string): { packet
     if (!existsSync(abs)) {
       throw new Error(`execute_with_model: input slice "${s.path}" does not exist under project_root (${projectRoot}).`);
     }
-    realRoot ??= realpathSync(projectRoot);
-    const real = realpathSync(abs);
+    // Real paths as the disk spells them: realpathSync keeps the spelling it is given, and macOS opens `.MCP.JSON` or
+    // `.mcp.jſon` as `.mcp.json`.
+    realRoot ??= realpathSync.native(projectRoot);
+    const real = realpathSync.native(abs);
     const realRel = toPosix(relative(realRoot, real));
     if (escapes(realRel)) {
       throw new Error(`execute_with_model: input slice "${s.path}" resolves outside project_root through a symbolic link.`);
     }
-    if (!statSync(real).isFile()) throw new Error(`execute_with_model: input slice "${s.path}" is not a file.`);
-    // And the file it reaches through links, once it is known to be one.
+    const st = statSync(real);
+    if (!st.isFile()) throw new Error(`execute_with_model: input slice "${s.path}" is not a file.`);
+    // And the file it reaches through links, once it is known to be one, and every other name it has.
     if (realRel !== rel) offLimits(realRel);
+    if (st.nlink > 1 && sameFileAsOffLimits(realRoot, st.dev, st.ino, binding ?? null)) {
+      throw new Error(`execute_with_model: input slice "${s.path}" is never sent to a model: it is the same file as an off-limits one, under another name (a hard link).`);
+    }
     const text = readFileSync(abs, "utf8");
+    if (holdsPrivateKey(text)) throw new Error(`execute_with_model: input slice "${s.path}" is never sent to a model: it holds a private key.`);
     let content: string;
     if (s.lines) content = sliceLines(text, s.lines);
     else if (s.section) {

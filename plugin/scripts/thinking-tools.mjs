@@ -18,6 +18,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { readRefusal } from "./lib/change-spec.mjs";
+import { holdsPrivateKey } from "./lib/off-limits.mjs";
 import { loadServerLib } from "./lib/server-lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -64,7 +65,8 @@ export class ThinkingTools {
     const rel = relative(this.root, abs);
     if (rel.startsWith("..") || isAbsolute(rel)) return { error: `${p} is outside the project` };
     let real;
-    try { real = realpathSync(abs); } catch { return { error: `${p} does not exist` }; }
+    // The disk's own spelling (realpathSync keeps the one it is given: macOS opens .MCP.JSON as .mcp.json).
+    try { real = realpathSync.native(abs); } catch { return { error: `${p} does not exist` }; }
     const realRel = relative(this.root, real);
     if (realRel.startsWith("..") || isAbsolute(realRel)) return { error: `${p} leads outside the project` };
     const refusal = readRefusal(this.root, this.cfg.run_id, rel.split(sep).join("/")) ?? (realRel !== rel ? readRefusal(this.root, this.cfg.run_id, realRel.split(sep).join("/")) : null);
@@ -78,7 +80,9 @@ export class ThinkingTools {
     const st = statSync(r.abs);
     if (st.isDirectory()) return { error: `${path} is a folder: use list_files` };
     if (st.size > MAX_FILE_BYTES) return { error: `${path} is ${st.size} bytes; read it by line range is not possible above ${MAX_FILE_BYTES}` };
-    const lines = readFileSync(r.abs, "utf8").split("\n");
+    const text = readFileSync(r.abs, "utf8");
+    if (holdsPrivateKey(text)) return { error: `${path} holds a private key: the read rule keeps it from models` };
+    const lines = text.split("\n");
     const a = Math.max(1, Number(from_line) || 1), b = Math.min(lines.length, Number(to_line) || lines.length);
     return { result: cut(lines.slice(a - 1, b).map((l, i) => `${a + i}\t${l}`).join("\n")) };
   }
@@ -117,7 +121,7 @@ export class ThinkingTools {
       }
       if (!st.isFile() || st.size > MAX_FILE_BYTES) return;
       const text = readFileSync(abs, "utf8");
-      if (text.includes("\u0000")) return;
+      if (text.includes("\u0000") || holdsPrivateKey(text)) return;
       text.split("\n").forEach((line, i) => { if (hits.length < MAX_SEARCH_HITS && re.test(line)) hits.push(`${posix}:${i + 1}: ${line.slice(0, 300)}`); });
     };
     walk(start.abs, start.rel === "" ? "" : start.rel);
