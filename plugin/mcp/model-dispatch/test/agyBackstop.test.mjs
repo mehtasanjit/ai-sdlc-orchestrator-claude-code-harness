@@ -144,16 +144,24 @@ test("the kill rule sends SIGTERM first: a worker that answers it with its recei
     kept.cleanup();
   }
   const stubborn = fakeWorkerPython({ runs: [{ beats: [{ atMs: 100, hb: beat() }], holdMs: "forever", ignoreTerm: true }] });
+  // The engine's two signals to the worker's process group, timed here as the engine sends them: the time the stand-in
+  // writes down for SIGTERM is later by however long its handler took to run.
+  const signals = [];
+  const kill = process.kill;
+  process.kill = (pid, sig) => { if (pid < 0) signals.push({ sig, at: Date.now() }); return kill.call(process, pid, sig); };
   try {
-    const { r, endedAt } = await typeOnce(stubborn);
+    const { r } = await typeOnce(stubborn);
     assert.ok(r, "not stopped within 15 s");
     const term = stubborn.events().find((e) => e.ev === "term");
     assert.ok(term, "SIGTERM first");
     const [run] = stubborn.runs();
     assert.equal(alive(run.pid), false, "SIGKILL followed");
-    const grace = endedAt - term.t;
+    const sentTerm = signals.find((s) => s.sig === "SIGTERM"), sentKill = signals.find((s) => s.sig === "SIGKILL");
+    assert.ok(sentTerm && sentKill && sentTerm.at <= sentKill.at, `the engine's signals: ${JSON.stringify(signals)}`);
+    const grace = sentKill.at - sentTerm.at;
     assert.ok(grace >= 900 && grace < 5_000, `SIGKILL came ${grace} ms after SIGTERM (termGraceS 1 s)`);
   } finally {
+    process.kill = kill;
     stubborn.cleanup();
   }
 });

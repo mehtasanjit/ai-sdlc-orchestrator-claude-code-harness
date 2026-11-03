@@ -6,7 +6,10 @@
  * A test writes a script of what each model call sends back (recorded 0.1.22 sequences from
  * fixtures/agy-standin/recorded.json where one exists), runs a worker with it, and reads what the worker wrote (its
  * receipt or usage sidecar), what it asked of the SDK (the stand-in's log: sessions, locations, retry settings,
- * chat() messages, cancel() calls) and the heartbeat lines it printed on stderr, each with the time it arrived.
+ * chat() messages, cancel() calls) and the heartbeat lines it printed on stderr: `beats`, each with the time this
+ * process read it, and `sent`, each with the time the worker wrote it. A test that times a heartbeat, or puts it before
+ * or after something the worker did, uses `sent`: its "mono" is the worker's own time.monotonic(), the clock of the
+ * stand-in's other events, while the time a line is read is later by however long a busy machine takes to get to it.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -85,7 +88,9 @@ const HEARTBEAT = /^@mmo-heartbeat (\{.*\})\s*$/;
 /**
  * Runs one worker against `script` and collects what it left. `kind` is "typist" or "agent"; `args` are added to
  * the command line the engine built before the supervisor's flags (agyWorkerArgs, buildWorkerArgs); `killAfterMs` sends `killSignal` to the
- * worker that long after it started. Everything is in a scratch folder removed afterwards.
+ * worker that long after it started. Everything is in a scratch folder removed afterwards. Returns, besides what the
+ * worker wrote: `beats` (heartbeats as read here), `sent` (heartbeats as written, on the worker's clock: {mono, wall,
+ * hb}), and the stand-in's `log`.
  */
 export async function runWorker(kind, { script, args = [], timeout = 30, env = {}, killAfterMs, killSignal = "SIGTERM", limitMs = 60_000, brief = "Write src/a.ts.", answerSchema } = {}) {
   const dir = mkdtempSync(join(tmpdir(), `agy-${kind}-`));
@@ -138,7 +143,13 @@ export async function runWorker(kind, { script, args = [], timeout = 30, env = {
     });
     const read = (p) => { try { return JSON.parse(readFileSync(p, "utf8")); } catch { return null; } };
     const log = existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
-    return { ...r, elapsedMs: Date.now() - started, startedWall: started / 1000, [kind === "typist" ? "receipt" : "sidecar"]: read(out), log, sessions: log.filter((e) => e.ev === "agent"), chats: log.filter((e) => e.ev === "chat"), cancels: log.filter((e) => e.ev === "cancel") };
+    const sent = log.filter((e) => e.ev === "heartbeat").map((e) => {
+      const m = e.line.match(HEARTBEAT);
+      let hb = null;
+      try { hb = m ? JSON.parse(m[1]) : null; } catch { /* a malformed line keeps hb null, as in beats */ }
+      return { mono: e.mono, wall: e.wall, hb };
+    });
+    return { ...r, elapsedMs: Date.now() - started, startedWall: started / 1000, [kind === "typist" ? "receipt" : "sidecar"]: read(out), log, sent, sessions: log.filter((e) => e.ev === "agent"), chats: log.filter((e) => e.ev === "chat"), cancels: log.filter((e) => e.ev === "cancel") };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

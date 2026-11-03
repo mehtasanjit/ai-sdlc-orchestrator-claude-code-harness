@@ -286,7 +286,8 @@ describe("the typist worker's call supervisor", { skip: NO_PYTHON, concurrency: 
     const r = await runWorker("typist", { script: { sessions: [{ aexit: { block: 2.5 }, turns: [ev] }] }, args: ["--heartbeat-sec", "1"] });
     assert.equal(r.code, 0, tail(r));
     const exitStart = r.log.find((e) => e.ev === "aexit_start"), exitEnd = r.log.find((e) => e.ev === "aexit_end");
-    const before = r.beats.filter((b) => b.wall < exitStart.wall);
+    // Each heartbeat by when the worker wrote it, on the clock of the stand-in's events (runWorker's `sent`).
+    const before = r.sent.filter((h) => h.mono < exitStart.mono);
     assert.ok(before.length >= 3, `${before.length} heartbeats in a 4.5 s call at 1 s`);
     for (const { hb } of before) {
       assert.equal(hb?.v, 1, JSON.stringify(hb));
@@ -296,10 +297,10 @@ describe("the typist worker's call supervisor", { skip: NO_PYTHON, concurrency: 
       assert.equal(hb.location, "global");
       assert.equal(typeof hb.usage, "object");
     }
-    const gaps = before.slice(1).map((b, i) => b.atMs - before[i].atMs);
+    const gaps = before.slice(1).map((h, i) => Math.round((h.mono - before[i].mono) * 1000));
     assert.ok(gaps.every((g) => g > 500 && g < 2_000), `heartbeat gaps ${gaps}`);
     assert.ok(r.beats.some((b) => Number(b.hb?.usage?.global?.prompt_token_count) === BILLED.prompt_token_count), "a heartbeat after a billed call carries its usage by location");
-    assert.ok(!r.beats.some((b) => b.wall > exitStart.wall + 0.3 && b.wall < exitEnd.wall - 0.1), "no heartbeat while the loop is blocked");
+    assert.ok(!r.sent.some((h) => h.mono > exitStart.mono && h.mono < exitEnd.mono), "no heartbeat while the loop is blocked");
   });
 
   // W-slept: a sleep of the computer, measured by the clocks that do and do not count it.
