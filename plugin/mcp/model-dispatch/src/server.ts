@@ -65,7 +65,8 @@ import { leanOpusCliProblem } from "./executor/typists.js";
 import { judgingAgentLeaves, probeEvents, probeTypists, runTypingLeaves } from "./typistProbe.js";
 import { runCard } from "./runCard.js";
 import { PLUGIN_ROOT } from "./paths.js";
-import { JUDGMENT_ROLES, executeJudgment, type JudgmentDeps } from "./judgment.js";
+import { JUDGMENT_MODULE, JUDGMENT_ROLES, JUDGMENT_TASK_TYPE, executeJudgment, type JudgmentDeps } from "./judgment.js";
+import { moveAside, SPEC_RECORDS } from "./spec/store.js";
 import { BusyLedger } from "./busyLedger.js";
 import { bindingConflict, checkAgsdk, leafLocations, writeBinding, type BoundLeaf } from "./agsdkPreflight.js";
 
@@ -1169,11 +1170,23 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const deps: JudgmentDeps = {
           pluginRoot: PLUGIN_ROOT,
           route: (phase) => {
-            const d = pickModel({ phase, task_type: "judgment", module: String(a.role), retry_count: 0, intent: a.intent }, policy, selectOverrides());
+            const d = pickModel({ phase, task_type: JUDGMENT_TASK_TYPE, module: JUDGMENT_MODULE, retry_count: 0, intent: a.intent }, policy, selectOverrides());
             return { model: getModel(policy, d.modelId), reason: d.reason };
           },
+          // The agent door's own guards, as runPacket applies them: a pre-flight in this server process, and the run's
+          // busy ledger (Google serving nothing for its window halts the run rather than falling back to Claude).
+          agentDoorProblem: () => (run ? null : "this server has not checked the Google project and SDK it would use. Call preflight_dispatch first; nothing was dispatched."),
+          contractActive: (root) => hasActiveWriteContract(root),
           dispatch: async (packet, workDir) => {
+            const ledger = ledgerFor(run);
+            const sentAt = ledger.time();
             const one = await dispatchOnce(packet, policy, { ...a, work_dir: workDir }, { run, noAppend: true, signal: extra.signal });
+            const leafName = getModel(policy, one.decision.modelId).model_name;
+            const lastAttempt = one.result.attempts?.[one.result.attempts.length - 1];
+            if (lastAttempt?.unavailable) {
+              const stop = ledger.unavailable(leafName, lastAttempt.unavailable, sentAt);
+              if (stop) one.result.halt = `${stop}; the run stopped here. Run it again when Google serves again`;
+            } else if (one.result.success || one.result.tokens.output > 0) ledger.served(leafName);
             return { result: one.result, events: one.events };
           },
           record: (evs) => { if (a.telemetry_path) for (const ev of evs) appendEvent(a.telemetry_path, ev); },
@@ -1181,6 +1194,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             const r = replyOf(await handleExecutorTool("submit_spec_section", { spec_dir: specDir, section, file }, executorCtx));
             return { ok: !!r.ok, problems: (r.errors ?? []).map((e: any) => `${e.path ?? "/"} ${e.message ?? e}`) };
           },
+          resetSpec: (specDir) => { moveAside(specDir, SPEC_RECORDS); },
           finalizeSpec: async (specDir, requirementsPath) => {
             const r = replyOf(await handleExecutorTool("finalize_spec", { spec_dir: specDir, requirements_path: requirementsPath }, executorCtx));
             const missing: string[] = r.missing_coverage ?? [];

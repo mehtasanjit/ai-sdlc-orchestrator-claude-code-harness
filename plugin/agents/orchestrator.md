@@ -92,9 +92,11 @@ Paths in `outputs` are relative to `project_root`. Act on the reply's `route`:
   the architect: every section handed over and the spec finalized, so `design.md` is rendered). Do not
   delegate the helper and do not redo the step; continue the run from those outputs as if the helper
   had returned. Log the step's `delegate.subagent.start`/`end` pair with `--subagent=<role>@<model>`.
+- **`halt`**: Google served nothing of the model for the run's busy window. Stop the run and tell the user the
+  reply's `reason`, as for any halt the server reports; do not run the step in this session.
 - **`claude`, `fallback: true`**: the agent failed the step (the reply's `reason` says why; the server
-  already wrote its spend to telemetry with `judgment_fallback`). Log it, then do the step in this
-  session as for `fallback: false`:
+  already wrote its spend to telemetry with `judgment_fallback`, and put the step's outputs back as they were before
+  it). Log it, then do the step in this session as for `fallback: false`:
 
   ```bash
   node "${CLAUDE_PLUGIN_ROOT}/scripts/mmo-log.mjs" --event=judgment.fallback --level=warn \
@@ -139,6 +141,8 @@ below still applies.
    ```bash
    node "${CLAUDE_PLUGIN_ROOT}/scripts/driver-model-check.mjs" --project-root "$(pwd)"
    ```
+
+   On a brownfield run add `--intent=<intent>`, so a policy rule scoped to the job is read as `execute_judgment` reads it.
 
    passing the run's policy the same way you pass it to `preflight_dispatch` (`--policy=<name>` for a
    named policy, `--policy-path=<file>` for an explicit file; a repo-local `routing-policy.yaml`
@@ -259,7 +263,7 @@ below still applies.
    infer the mode from `ANTHROPIC_API_KEY` presence — presence alone is not the same as an explicit
    choice, and env-var-driven mode switches would silently change published cost numbers.
 
-   **Vendor-authoritative mode (`vendor`)** — `ANTHROPIC_API_KEY` MUST also be set; if it is not, abort with: "vendor mode requires ANTHROPIC_API_KEY — export it, or rerun in estimated mode." Dispatch every mechanical call via `execute_with_model` and every thinking step via `execute_judgment`; this session's own turns, and any thinking step the policy routes to Claude, run in this session on the driver model. The MCP server hits the vendor API directly and records real vendor-reported `input_tokens`, `input_tokens_cached`, and `output_tokens` on the event. The server prices those vendor tokens into `cost_usd` itself, at the dated price list's rate for the model (the policy's `pricing` block only when the model sets `pricing_override: true`); you never compute or edit that figure. Every event's `provenance` field MUST be `"vendor"` — the MCP server stamps this on every dispatched event itself, so you never write it for `execute_with_model` calls.
+   **Vendor-authoritative mode (`vendor`)** — `ANTHROPIC_API_KEY` is needed only for a model this run's server calls through the Anthropic API; pre-flight names that model and halts when the key is missing, so check nothing yourself. Dispatch every mechanical call via `execute_with_model` and every thinking step via `execute_judgment`; this session's own turns, and any thinking step the policy routes to Claude, run in this session on the driver model, and the post-run collector prices them from their transcripts, as it prices the helpers. The MCP server hits the vendor API directly and records real vendor-reported `input_tokens`, `input_tokens_cached`, and `output_tokens` on the event. The server prices those vendor tokens into `cost_usd` itself, at the dated price list's rate for the model (the policy's `pricing` block only when the model sets `pricing_override: true`); you never compute or edit that figure. Every event's `provenance` field MUST be `"vendor"` — the MCP server stamps this on every dispatched event itself, so you never write it for `execute_with_model` calls.
 
    **Estimator mode (`estimated`)** — dispatch mechanical-tier calls via MCP as usual, and every thinking step via `execute_judgment` (those events still carry vendor tokens and `provenance: "vendor"`; a step the policy routes to Claude comes back `route: claude` and is yours, estimated as below). For your own direct-tier calls, use the character-count heuristic (≈3.8 chars/token) for tokens, take rates from that model's `effective_price.rates` in the `load_policy` result (see **Rates you apply yourself** below), and call `log_telemetry` with `provenance: "estimated"` on the event (the server also defaults an omitted stamp to `"estimated"` on this path, so a forgotten field can no longer make the report disown the run as "unknown"). `ANTHROPIC_API_KEY` is deliberately ignored in this mode even if set — the user chose estimated numbers, so estimated is what is emitted. What model that direct-tier work *executes* on is `CLAUDE_CODE_SUBAGENT_MODEL` — exported at launch, verified by rule 0's driver-model check — so the model being priced and the model doing the work are the same one; the agent files themselves carry no `model:` pin (a frontmatter pin would silently override the policy, which is the bug the check exists to prevent).
 

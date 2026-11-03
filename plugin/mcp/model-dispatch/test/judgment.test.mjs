@@ -12,12 +12,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { cloneWorkspace, executeJudgment, outputProblem, roleInstructions, JUDGMENT_ROLES } from "../dist/judgment.js";
+import { cloneWorkspace, destinationProblem, executeJudgment, outputProblem, roleInstructions, JUDGMENT_ROLES } from "../dist/judgment.js";
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -40,7 +40,7 @@ function repo() {
 const result = (over = {}) => ({ result: null, tokens: { input: 10, input_cached: 0, output: 5 }, cost_usd: 0.01, latency_ms: 1, cache_hit: false, success: true, ...over });
 
 function deps(model, agent, over = {}) {
-  const calls = { dispatch: [], record: [], submit: [], lint: [], finalize: 0 };
+  const calls = { dispatch: [], record: [], submit: [], lint: [], finalize: 0, reset: 0 };
   const scratch = mkdtempSync(join(tmpdir(), "mmo-judg-scratch-"));
   return {
     calls,
@@ -48,6 +48,9 @@ function deps(model, agent, over = {}) {
     d: {
       pluginRoot: PLUGIN_ROOT,
       route: () => ({ model, reason: "test rule" }),
+      agentDoorProblem: () => null,
+      contractActive: () => false,
+      resetSpec: () => { calls.reset++; },
       dispatch: async (packet, workDir) => {
         calls.dispatch.push({ packet, workDir });
         const r = await agent(workDir, calls.dispatch.length, packet);
@@ -213,4 +216,131 @@ test("the server resolves a relative telemetry_path against project_root before 
   const at = src.indexOf('case "execute_judgment"');
   assert.ok(at > 0);
   assert.match(src.slice(at, at + 600), /telemetry_path: resolvePath\(a0j\.project_root, a0j\.telemetry_path\)/);
+});
+
+// Review findings (independent review of the branch, 2026-11-03).
+
+test("an output the agent leaves as a link is not taken in, and the step falls back with the project untouched", async () => {
+  const root = repo();
+  mkdirSync(join(root, "src", "inner"), { recursive: true });
+  const dir = ".sdlc/runs/r1/change.sections/";
+  const { d, calls } = deps(AGENT, (work, n) => {
+    if (n > 1) return;
+    mkdirSync(join(work, dir), { recursive: true });
+    writeFileSync(join(work, dir, "header.json"), "{}");
+    symlinkSync(join(root, "src"), join(work, dir, "evil"));
+  });
+  const r = await executeJudgment(args(root, { role: "brownfield-architect", outputs: [dir] }), d);
+  assert.equal(r.fallback, true);
+  assert.match(r.reason, /evil is not a regular file/);
+  assert.equal(existsSync(join(root, ".sdlc/runs/r1/change.sections")), false, "nothing was left in the project");
+  assert.equal(calls.lint.length, 0);
+});
+
+test("a destination reached through a link in the project is refused", () => {
+  const root = repo();
+  mkdirSync(join(root, ".sdlc", "runs"), { recursive: true });
+  symlinkSync(join(root, "src.ts"), join(root, ".sdlc", "runs", "r1"));
+  assert.match(destinationProblem(root, ".sdlc/runs/r1/x.json"), /is a link/);
+  assert.equal(destinationProblem(root, ".sdlc/runs/r2/x.json"), null);
+});
+
+test("the clone leaves out links that reach outside it, credentials and the remote", () => {
+  const root = repo();
+  const outside = mkdtempSync(join(tmpdir(), "mmo-judg-outside-"));
+  symlinkSync(outside, join(root, "abs-link"));
+  symlinkSync("../", join(root, "up-link"));
+  mkdirSync(join(root, "lib"));
+  writeFileSync(join(root, "lib", "a.js"), "");
+  symlinkSync("lib/a.js", join(root, "in-link"));
+  writeFileSync(join(root, ".env"), "SECRET=1");
+  writeFileSync(join(root, ".env.example"), "SECRET=");
+  mkdirSync(join(root, ".claude"));
+  writeFileSync(join(root, ".claude", "settings.local.json"), "{}");
+  const scratch = mkdtempSync(join(tmpdir(), "mmo-judg-scratch-"));
+  const clone = cloneWorkspace(root, scratch);
+  assert.equal(existsSync(join(clone, "abs-link")), false);
+  assert.throws(() => lstatSync(join(clone, "up-link")));
+  assert.ok(lstatSync(join(clone, "in-link")).isSymbolicLink(), "a link inside the project is kept");
+  assert.equal(existsSync(join(clone, ".env")), false);
+  assert.equal(existsSync(join(clone, ".env.example")), true);
+  assert.equal(existsSync(join(clone, ".claude", "settings.local.json")), false);
+  assert.equal(execFileSync("git", ["-C", clone, "remote"], { encoding: "utf8" }).trim(), "");
+  rmSync(scratch, { recursive: true, force: true });
+  rmSync(outside, { recursive: true, force: true });
+});
+
+test("a fallback puts back the outputs as they were before the step", async () => {
+  const root = repo();
+  mkdirSync(join(root, "out"), { recursive: true });
+  writeFileSync(join(root, "out", "review.json"), '{"before":true}');
+  const { d } = deps(AGENT, (work) => writeFileSync(join(work, "out", "review.json"), "{}"), {
+    submitSection: async () => ({ ok: true, problems: [] }),
+  });
+  // The architect role's checks run after the copy-back; a refusal both rounds is a fallback.
+  const r = await executeJudgment(args(root, { role: "architect", outputs: ["out/review.json"], spec_dir: join(root, "out") }), {
+    ...d,
+    finalizeSpec: async () => ({ ok: false, problems: ["no unit covers FR-1"] }),
+  });
+  assert.equal(r.fallback, true);
+  assert.equal(readFileSync(join(root, "out", "review.json"), "utf8"), '{"before":true}');
+});
+
+test("a greenfield architect that falls back after a partial hand-over has its spec moved aside for the Claude architect", async () => {
+  const root = repo();
+  const dir = "out/spec.sections/";
+  const { d, calls } = deps(AGENT, (work) => {
+    mkdirSync(join(work, dir), { recursive: true });
+    writeFileSync(join(work, dir, "header.json"), "{}");
+  });
+  const r = await executeJudgment(args(root, { role: "architect", outputs: [dir], spec_dir: join(root, "out") }), {
+    ...d,
+    finalizeSpec: async () => ({ ok: false, problems: ["no unit covers FR-1"] }),
+  });
+  assert.equal(r.fallback, true);
+  assert.equal(calls.reset, 1);
+  assert.match(calls.dispatch[1].packet.instruction, /add a new units file/);
+});
+
+test("an agent call that throws is a fallback with the clone removed", async () => {
+  const root = repo();
+  const { d, scratch } = deps(AGENT, () => { throw new Error("socket hang up"); });
+  const r = await executeJudgment(args(root), d);
+  assert.equal(r.fallback, true);
+  assert.match(r.reason, /socket hang up/);
+  assert.deepEqual(readdirSync(scratch), []);
+});
+
+test("Google serving nothing for the busy window halts the step instead of falling back", async () => {
+  const root = repo();
+  const { d, calls } = deps(AGENT, () => result({ success: false, halt: "gemini-4-argon: nothing served for 300 s" }));
+  const r = await executeJudgment(args(root), d);
+  assert.equal(r.route, "halt");
+  assert.match(r.reason, /nothing served/);
+  assert.equal(calls.record[0].judgment_fallback, undefined);
+});
+
+test("no agent call is sent before this server's pre-flight", async () => {
+  const root = repo();
+  const { d, calls } = deps(AGENT, () => assert.fail("no dispatch"));
+  await assert.rejects(executeJudgment(args(root), { ...d, agentDoorProblem: () => "Call preflight_dispatch first" }), /preflight_dispatch/);
+  assert.equal(calls.dispatch.length, 0);
+});
+
+test("a leftover, inactive write contract does not make a greenfield run brownfield", async () => {
+  const root = repo();
+  mkdirSync(join(root, ".sdlc", "local"), { recursive: true });
+  writeFileSync(join(root, ".sdlc", "local", "write-contract.json"), '{"active":false}');
+  const { d } = deps(CLAUDE, () => assert.fail("no dispatch"));
+  assert.equal((await executeJudgment(args(root, { outputs: ["examples/x/review.json"] }), d)).route, "claude");
+  await assert.rejects(executeJudgment(args(root, { outputs: ["examples/x/review.json"] }), { ...d, contractActive: () => true }), /outside \.sdlc/);
+});
+
+test("the agent's packet carries the run's intent, so it is dispatched by the rule that routed it", async () => {
+  const root = repo();
+  const { d, calls } = deps(AGENT, (work) => { mkdirSync(join(work, "out"), { recursive: true }); writeFileSync(join(work, "out", "review.json"), "{}"); });
+  await executeJudgment(args(root, { intent: "bugfix" }), d);
+  assert.equal(calls.dispatch[0].packet.intent, "bugfix");
+  assert.equal(calls.dispatch[0].packet.task_type, "judgment");
+  assert.equal(calls.dispatch[0].packet.module, "judgment");
 });

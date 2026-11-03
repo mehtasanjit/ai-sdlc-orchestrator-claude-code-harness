@@ -88,15 +88,12 @@ export const JUDGMENT_PHASES = [
  */
 export const IN_SESSION_ADAPTERS = new Set(["builtin-anthropic", "claude-cli"]);
 
-function routeJudgmentPhases(policy, routing, overrides) {
+function routeJudgmentPhases(policy, routing, overrides, intent) {
   return JUDGMENT_PHASES.map((phase) => {
-    // task_type/module are empty and retry_count 0: shipped policies match
-    // judgment phases on `phase:` alone, and a rule that additionally
-    // requires a task_type deliberately does not describe the phase-level
-    // driver route this check verifies. intent stays undefined (greenfield
-    // packet shape) so intent-scoped rules never match here either.
+    // The context execute_judgment routes a thinking step with (judgment.ts JUDGMENT_TASK_TYPE, JUDGMENT_MODULE, the
+    // run's intent), so this check pins the model the step actually gets.
     const decision = routing.pickModel(
-      { phase, task_type: "", module: "", retry_count: 0 },
+      { phase, task_type: "judgment", module: "judgment", retry_count: 0, ...(intent ? { intent } : {}) },
       policy,
       overrides
     );
@@ -153,8 +150,8 @@ export function deriveDriverModel(policy, routing, overrides = {}) {
  * model: the one the Claude-routed steps name, or the policy's `driver:` block when none names Claude. Throws when
  * there is none or more than one.
  */
-export function deriveSessionModel(policy, routing, overrides = {}) {
-  const perPhase = routeJudgmentPhases(policy, routing, overrides);
+export function deriveSessionModel(policy, routing, overrides = {}, intent) {
+  const perPhase = routeJudgmentPhases(policy, routing, overrides, intent);
   const claude = perPhase.filter((p) => IN_SESSION_ADAPTERS.has(p.adapter));
   const names = [...new Set([...claude.map((p) => p.modelName), ...(policy.driver ? [policy.driver.model_name] : [])])];
   if (names.length === 0) {
@@ -264,7 +261,7 @@ export function declarationNote(declaration, actual, expected, policyName) {
 }
 
 function parseArgs(argv) {
-  const args = { projectRoot: undefined, policy: undefined, policyPath: undefined, printOnly: false };
+  const args = { projectRoot: undefined, policy: undefined, policyPath: undefined, printOnly: false, intent: undefined };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eat = (flag) => (a.startsWith(`${flag}=`) ? a.slice(flag.length + 1) : argv[++i]);
@@ -272,7 +269,8 @@ function parseArgs(argv) {
     else if (a === "--project-root" || a.startsWith("--project-root=")) args.projectRoot = eat("--project-root");
     else if (a === "--policy" || a.startsWith("--policy=")) args.policy = eat("--policy");
     else if (a === "--policy-path" || a.startsWith("--policy-path=")) args.policyPath = eat("--policy-path");
-    else throw new Error(`unknown argument '${a}' (expected --project-root, --policy, --policy-path, --print-only)`);
+    else if (a === "--intent" || a.startsWith("--intent=")) args.intent = eat("--intent");
+    else throw new Error(`unknown argument '${a}' (expected --project-root, --policy, --policy-path, --intent, --print-only)`);
   }
   return args;
 }
@@ -299,7 +297,7 @@ export async function main(argv = process.argv.slice(2)) {
     ? policyMod.loadPolicyFromPath(resolve(args.policyPath))
     : policyMod.loadPolicy({ policyName: args.policy, projectRoot: args.projectRoot });
   const overrides = routingMod.parseSelectOverrides(process.env.MMO_SELECT);
-  const derived = deriveSessionModel(policy, routingMod, overrides);
+  const derived = deriveSessionModel(policy, routingMod, overrides, args.intent);
 
   if (args.printOnly) {
     console.log(derived.modelName);
