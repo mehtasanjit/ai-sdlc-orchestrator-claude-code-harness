@@ -17,6 +17,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameS
 import { basename, dirname, isAbsolute, join, posix as posixPath, relative, resolve, sep } from "node:path";
 
 import { holdsPrivateKey, modelReadOf } from "./apply.js";
+import { openedSpec } from "./spec/store.js";
 
 import type { ExecutionResult, ModelConfig, Phase, RunContext, TaskPacket, TelemetryEvent } from "./types.js";
 
@@ -406,6 +407,17 @@ export function stoppedReason(model: string, summary: { reason?: string | null; 
   return `the ${model} step ${why}${summary.missing?.length ? `; still owed: ${summary.missing.join("; ")}` : ""}`;
 }
 
+/**
+ * The pieces of this run's finalized spec in `specDir` (its header, each units file, finalize), or null when the spec
+ * there is not this run's (another pre-flight's token, or none to tell) or is not finalized (spec.json is written only by
+ * a passing finalize, and a header after it moves it aside).
+ */
+function finalizedSpecOf(specDir: string, runToken: string | undefined, sectionsDir: string): string[] | null {
+  if (!runToken || openedSpec(specDir)?.run !== runToken || !existsSync(join(specDir, "spec.json"))) return null;
+  const units = existsSync(sectionsDir) ? readdirSync(sectionsDir).filter((f) => /^units-\d{3}\.json$/.test(f)).sort() : [];
+  return ["header.json", ...units, "finalize"];
+}
+
 interface SessionRecord { conversation_id?: string }
 
 function readRecord(path: string): SessionRecord {
@@ -533,6 +545,17 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
   if (notReady) throw new Error(`run_thinking_step: ${notReady}`);
 
   const outputs = roleOutputs(args.role, args);
+  // An architect called again in the run whose spec it finalized (no revise, no acceptance fix) owes nothing: the step
+  // is done, and nothing is sent (review of the hand-in fixes: Gemini was paid for a turn that could at best finalize
+  // the spec again, or hand its header in first, which opens a new spec and moves the approved one aside). A new
+  // pre-flight is a new run token, whose architect writes its own spec.
+  if (args.role === "architect" && !args.revise && args.acceptance_fix === undefined) {
+    const pieces = finalizedSpecOf(join(args.project_root, runFolder(args.output_dir)), deps.runToken, join(args.project_root, outputs.sections_dir));
+    if (pieces) {
+      deps.log("info", "thinking.already_done", { role: args.role, phase: role.phase, model: model.model_name });
+      return { ...base, route: "done", accepted: pieces, cost_usd: 0, tokens: { input: 0, input_cached: 0, output: 0 }, resumed: false, change_check: "none: nothing ran" };
+    }
+  }
   const instructions = stepInstructions(deps.pluginRoot, role, args.project_root, args.output_dir);
   const toolsConfig = join(stepDir, `${key}.tools.json`);
   const recordPath = join(stepDir, `${key}.json`);

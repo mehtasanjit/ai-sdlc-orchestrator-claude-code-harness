@@ -351,6 +351,38 @@ test("a Gemini architect called with no requirements_path still has its finalize
   assert.ok(r.missing.some((m) => /^finalize/.test(m)), r.missing.join("; "));
 });
 
+test("an architect called again in the run whose spec it finalized is done at once, and nothing is sent; a new pre-flight's call goes to Gemini", async () => {
+  // Review of the hand-in fixes: the step's tools owed only finalize then, so Gemini was paid for a turn that could at
+  // best finalize the spec again, or hand its header in first, which opens a new spec and moves the approved one aside.
+  const { ThinkingTools } = await import(pathToFileURL(join(PLUGIN_ROOT, "scripts", "thinking-tools.mjs")).href);
+  const root = project();
+  mkdirSync(join(root, "out"), { recursive: true });
+  writeFileSync(join(root, "out", "requirements.md"), "# R\n- FR-1: answer ping.\n");
+  const header = { stack: ["Python 3.13"], commands: [{ name: "tests", run: "pytest -q", cwd: ".", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }], no_audit_reason: "a test", decisions: [{ topic: "ids", choice: "integer", reason: "simplest" }], shared: { conventions: [], data_model: [], api: [] } };
+  const unit = { id: "U01", path: "src/app.py", phase: "codegen", import_line: "", exports: [], behaviour: "answers ping", depends_on: [], style_from: { reason: "first file" }, covers: ["FR-1"], tests: [], approx_lines: 20 };
+  const hands = async (thinking) => {
+    const tools = new ThinkingTools(JSON.parse(readFileSync(thinking.toolsConfig, "utf8")));
+    await tools.call("submit_section", { name: "header.json", json: JSON.stringify(header) });
+    await tools.call("submit_section", { name: "units-001.json", json: JSON.stringify([unit]) });
+    assert.match(String((await tools.call("finalize", {})).result), /^finalized: 1 unit/);
+    return { result: result({ result: { ...JSON.parse((await tools.call("status", {})).result), conversation_id: "c1" } }), events: [] };
+  };
+  const first = deps(AGENT, () => assert.fail("replaced"), { runToken: "tok-1", dispatch: async (packet, thinking) => hands(thinking) });
+  assert.equal((await runThinkingStep(args(root, { role: "architect", intent: undefined, output_dir: "out" }), first.d)).route, "done");
+  const spec = readFileSync(join(root, "out", "spec.json"), "utf8");
+  const again = deps(AGENT, () => result(), { runToken: "tok-1" });
+  const r = await runThinkingStep(args(root, { role: "architect", intent: undefined, output_dir: "out" }), again.d);
+  assert.equal(r.route, "done", JSON.stringify(r));
+  assert.equal(again.calls.dispatch.length, 0, "nothing was sent to Gemini");
+  assert.equal(r.cost_usd, 0);
+  assert.deepEqual(r.accepted, ["header.json", "units-001.json", "finalize"]);
+  assert.equal(readFileSync(join(root, "out", "spec.json"), "utf8"), spec, "the finalized spec is left as it was");
+  // A new pre-flight is a new run: its architect writes its own spec.
+  const next = deps(AGENT, () => result(), { runToken: "tok-2" });
+  await runThinkingStep(args(root, { role: "architect", intent: undefined, output_dir: "out" }), next.d);
+  assert.equal(next.calls.dispatch.length, 1, "a new run's step goes to Gemini");
+});
+
 test("per-module reviews are separate steps: each keeps its own files, conversation and packet", async () => {
   const root = project();
   const review = (m, conv) => deps(AGENT, () => result({ result: { done: true, missing: [], accepted: ["review"], conversation_id: conv } }));
