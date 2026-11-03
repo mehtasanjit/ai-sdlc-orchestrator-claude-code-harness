@@ -11,13 +11,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { THINKING_ROLES, outputDirProblem, roleInstructions, roleOutputs, runThinkingStep, stepKey } from "../dist/thinking.js";
 import { AntigravityWorkerAdapter } from "../dist/adapters/AntigravityWorkerAdapter.js";
+import { configureSinks, log as pluginLog } from "../dist/log.js";
+import { submitSpecSection } from "../dist/spec/store.js";
 import { alive, beat, fakeWorkerPython, flagValue, withEnv } from "./agyFakes.mjs";
 import { NO_PYTHON, PYTHON, STANDIN, step as standinStep, textAnswer } from "./agyStandin.mjs";
 
@@ -540,26 +542,70 @@ test("only the step's own hand-ins are spared: the code under review, the plugin
   assert.match((await runThinkingStep(args(bf), changing(() => put(bf, ".sdlc/local/write-contract.json", "{\"active\":false}\n")))).reason, /write-contract\.json/);
 });
 
-test("the run log the plugin writes during a step is the step's own: the log beside the run's telemetry, its rotated pieces, the run's own log; a file of that name elsewhere is not", async () => {
+test("what the plugin's logger writes while a step runs is the step's own, as the logger itself reports: its log, the pieces it rotates out, a stale lock it clears; a file it never wrote is the project's", async () => {
   // Live test of 0.10.1: the server's logger writes orchestrator.log beside the run's telemetry while the step runs
   // (log.ts configureSinks), and the change check stopped a step whose requirements were accepted, naming that log.
+  // The step asks the logger which files it wrote, so no copy of the logger's names can go stale.
   const root = await gitProject({ "src/a.ts": "export const a = 1;\n" });
-  const step = (edit, over = {}) => runThinkingStep(args(root, { role: "senior-reviewer", intent: undefined, output_dir: "examples/s/passes/r1", telemetry_path: "examples/s/passes/r1/telemetry.jsonl", ...over }), changing(() => { put(root, "examples/s/passes/r1/review.json", "{}\n"); edit(); }));
-  const logs = () => {
-    put(root, "examples/s/passes/r1/orchestrator.log", "MMO: thinking.start\n");
-    put(root, "examples/s/passes/r1/orchestrator.log.1", "MMO: an older piece\n");
-    put(root, "examples/s/passes/r1/orchestrator.log.rotating", "");
-    put(root, ".sdlc/runs/r1/orchestrator.log", "MMO: the run's own log\n");
-    put(root, ".sdlc/local/debug.log", "MMO: the debug log the logger falls back to\n");
-    put(root, ".sdlc/local/debug.log.2", "MMO: an older piece of it\n");
+  const d = "examples/s/passes/r1";
+  const logs = (telemetry) => () => { configureSinks({ telemetryPath: join(root, telemetry) }); pluginLog("info", "thinking.probe", { n: 1 }); };
+  const step = (edit, over = {}) => runThinkingStep(args(root, { role: "senior-reviewer", intent: undefined, output_dir: d, telemetry_path: `${d}/telemetry.jsonl`, ...over }), changing(() => { put(root, `${d}/review.json`, "{}\n"); edit(); }));
+  assert.equal((await step(logs(`${d}/telemetry.jsonl`))).route, "done", "the log the logger wrote beside the run's telemetry is not the project's");
+  // A full log, rotated while the step ran: the logger moves it to .1 and the earlier .1 to .2, after clearing the
+  // lock a crashed process left.
+  put(root, `${d}/orchestrator.log`, "x".repeat(5 * 1024 * 1024));
+  put(root, `${d}/orchestrator.log.1`, "MMO: an older piece\n");
+  put(root, `${d}/orchestrator.log.rotating`, "");
+  const stale = new Date(Date.now() - 120_000);
+  utimesSync(join(root, `${d}/orchestrator.log.rotating`), stale, stale);
+  assert.equal((await step(logs(`${d}/telemetry.jsonl`))).route, "done", "the pieces it rotated out and the lock it cleared are its own");
+  assert.ok(existsSync(join(root, `${d}/orchestrator.log.2`)) && !existsSync(join(root, `${d}/orchestrator.log.rotating`)), "the log did rotate");
+  // Telemetry kept outside the run's folder: the log the logger wrote beside it is the step's too.
+  assert.equal((await step(logs("records/t/telemetry.jsonl"), { telemetry_path: "records/t/telemetry.jsonl" })).route, "done");
+  // A file the logger never wrote is the project's, whatever its name: one named like its log, beside it or elsewhere,
+  // a piece of no log, the run's own log the plugin's scripts write, the debug log's folder.
+  for (const f of ["src/orchestrator.log", `${d}/m1/orchestrator.log`, `${d}/orchestrator.log.bak`, ".sdlc/runs/r1/orchestrator.log", ".sdlc/local/notes.log"]) {
+    const r = await step(() => put(root, f, "MMO: written by something else\n"));
+    assert.equal(r.route, "stopped", f);
+    assert.ok(r.reason.includes(f), `${f}: ${r.reason}`);
+  }
+});
+
+test("an architect step that opens a new spec moves the earlier spec's records aside, as the spec store lists them: the move is the step's own, not a change to the project", async () => {
+  // Review of 0.10.1: the step listed the store's records itself and missed five of the eight the store moves on a new
+  // header (a Gate 2 revise, an acceptance fix), so a step that only replaced its own spec would have been stopped.
+  const d = "examples/s/passes/r1";
+  const earlier = { "spec.parts/header.json": "{}\n", "spec.json": "{}\n", "design.md": "# Design\n", "acceptance/round-1/01-install.log": "ok\n", "acceptance.json": "{}\n", "acceptance.md": "| AC-1 | pass |\n", "written-files.json": "[]\n", "shared-brief.txt": "the brief\n" };
+  const root = await gitProject({ "src/a.ts": "export const a = 1;\n", [`${d}/requirements.md`]: "# Requirements\nFR-1 GET /ping answers.\nAC-1 GET /ping answers 200.\n", ...Object.fromEntries(Object.entries(earlier).map(([f, t]) => [`${d}/${f}`, t])) });
+  const header = {
+    stack: ["Node.js 20", "Express", "Jest"],
+    commands: [{ name: "tests", run: "npm test", cwd: ".", role: "check", checks: ["AC-1"], pass: { exit_code: 0 }, timeout_s: 600 }],
+    no_audit_reason: "the brief fixes the environment and names no audit tool",
+    decisions: [{ topic: "framework", choice: "Express", rejected: ["Fastify"], reason: "the brief names it" }],
+    shared: { conventions: ["camelCase names"], data_model: [], api: [{ method: "GET", path: "/ping", access: "any", request: "none", response: "Pong", success_status: 200, error_statuses: [] }] },
   };
-  assert.equal((await step(logs)).route, "done", "the plugin's own logs are not the project's");
-  // Telemetry kept outside the run's folder: the log beside it is the run's too.
-  assert.equal((await step(() => put(root, "records/t/orchestrator.log", "MMO: x\n"), { telemetry_path: "records/t/telemetry.jsonl" })).route, "done");
-  // A file of that name anywhere else is the project's.
-  assert.match((await step(() => put(root, "src/orchestrator.log", "x\n"))).reason, /src\/orchestrator\.log/);
-  assert.match((await step(() => put(root, "examples/s/passes/r1/orchestrator.log.bak", "x\n"))).reason, /orchestrator\.log\.bak/);
-  assert.match((await step(() => put(root, ".sdlc/local/notes.log", "x\n"))).reason, /\.sdlc\/local\/notes\.log/, "the debug log alone, never its folder");
+  const opened = submitSpecSection.bind(null, join(root, d), { section: "header", header }, { run: "r2" });
+  const architect = (edit) => runThinkingStep(args(root, { role: "architect", intent: undefined, output_dir: d }), changing(edit));
+  let reply;
+  const r = await architect(() => { reply = opened(); });
+  assert.equal(reply.ok, true, JSON.stringify(reply.errors));
+  assert.ok(reply.previous, "the header opened a new spec and moved the earlier records");
+  for (const [f, text] of Object.entries(earlier)) assert.equal(readFileSync(join(reply.previous, f), "utf8"), text, `${f} moved, never deleted`);
+  assert.equal(r.route, "done", r.reason);
+  // A file of the run's folder the store does not move is still the project's.
+  assert.match((await architect(() => put(root, `${d}/notes.md`))).reason, /notes\.md/);
+});
+
+test("the dispatch's evidence is the step's own where the dispatch writes it, beside the run's telemetry; the same folder anywhere else is the project's", async () => {
+  const root = await gitProject({ "src/a.ts": "export const a = 1;\n" });
+  const d = "examples/s/passes/r1";
+  let n = 0; // each write is new content, so an earlier call's file is changed again
+  const step = (f, telemetry_path = "records/t/telemetry.jsonl") => runThinkingStep(args(root, { role: "requirements", intent: undefined, output_dir: d, telemetry_path }), changing(() => { put(root, `${d}/requirements.md`, `# R ${++n}\n`); put(root, f, `{"n": ${n}}\n`); }));
+  assert.equal((await step("records/t/delegation/worker-summary-r1-requirements.json")).route, "done", "beside the telemetry, where the adapter writes it");
+  assert.equal((await step(`${d}/delegation/worker-summary-r1-requirements.json`, `${d}/telemetry.jsonl`)).route, "done", "beside telemetry kept in the run's folder");
+  for (const f of [`${d}/delegation/worker-summary-r1-requirements.json`, ".sdlc/delegation/worker-summary-r1-requirements.json"]) {
+    assert.match((await step(f)).reason, /delegation\/worker-summary/, `${f}: not where this step's dispatch writes`);
+  }
 });
 
 test("a run folder written ./out is the same folder; an operating system's own files are not the project's", async () => {

@@ -11,7 +11,7 @@
 
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 
 /**
  * Never descended into. Machine-generated dirs (npm install fills node_modules)
@@ -208,6 +208,16 @@ export function diffInventories(before: Inventory, after: Inventory): InventoryD
       ...new Set([...before.unreadable, ...after.unreadable].map((u) => u.path)),
     ].sort(),
   };
+}
+
+/**
+ * Where a dispatch's evidence lands (each worker's task, usage, record, summary and system files): beside the run's
+ * telemetry, where the report reads it; with no telemetry, under the workspace's .sdlc/, so a hand-run invocation never
+ * writes into wherever the server was launched from. The agent door writes there, and a thinking step's change check
+ * takes the same folder as the step's own (thinking.ts stepOwnPaths): one rule, so the two cannot disagree.
+ */
+export function evidenceDir(telemetryPath: string | undefined, workdir: string): string {
+  return telemetryPath ? join(dirname(telemetryPath), "delegation") : join(workdir, ".sdlc", "delegation");
 }
 
 /** Schema tag; the report can meet records from older plugin versions. */

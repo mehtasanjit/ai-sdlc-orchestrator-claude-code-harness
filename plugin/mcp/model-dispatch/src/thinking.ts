@@ -19,8 +19,10 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameS
 import { basename, dirname, isAbsolute, join, posix as posixPath, relative, resolve, sep } from "node:path";
 
 import { holdsPrivateKey, modelReadOf } from "./apply.js";
+import { evidenceDir } from "./delegation/evidence.js";
+import { loggerTouched } from "./log.js";
 import { round6 } from "./pricing.js";
-import { openedSpec } from "./spec/store.js";
+import { openedSpec, PREVIOUS_DIR, SPEC_RECORDS } from "./spec/store.js";
 
 import type { ExecutionResult, ModelConfig, Phase, RunContext, TaskPacket, TelemetryEvent } from "./types.js";
 
@@ -178,6 +180,10 @@ export function projectPathProblem(projectRoot: string, p: unknown, label: strin
 /** Where the plugin's stack notes are named in the helpers' instructions, a folder outside the project. */
 const PLUGIN_STACKS = "${CLAUDE_PLUGIN_ROOT}/skills/pipeline/stacks/";
 
+/** The step's own folders in its run's folder: its records (conversation, packet, tools' state) and its input copies. */
+const STEP_RECORDS_DIR = "thinking";
+const STEP_INPUTS_DIR = "inputs";
+
 /**
  * The helper's instructions as this step reads them: where they name the plugin's stack notes, which lie outside the
  * project and so outside the step's tools, the notes are copied into the run's inputs and named there (review: the
@@ -186,7 +192,7 @@ const PLUGIN_STACKS = "${CLAUDE_PLUGIN_ROOT}/skills/pipeline/stacks/";
 export function stepInstructions(pluginRoot: string, role: ThinkingRole, projectRoot: string, outputDir: string): string {
   const text = roleInstructions(pluginRoot, role);
   if (!text.includes(PLUGIN_STACKS)) return text;
-  const rel = `${runFolder(outputDir)}/inputs/plugin-stacks`;
+  const rel = `${runFolder(outputDir)}/${STEP_INPUTS_DIR}/plugin-stacks`;
   const from = join(pluginRoot, "skills", "pipeline", "stacks");
   mkdirSync(join(projectRoot, rel), { recursive: true });
   for (const f of readdirSync(from)) if (f.endsWith(".md")) copyFileSync(join(from, f), join(projectRoot, rel, f));
@@ -233,45 +239,46 @@ export function snapshotChanges(before: ProjectSnapshot, after: ProjectSnapshot)
 /** Files an operating system writes on its own beside a project's (a file browser's folder records): never its content. */
 const OS_FILES = /(^|\/)(\.DS_Store|\._[^/]+|Thumbs\.db|desktop\.ini|Icon\r)$/i;
 
-/** The debug log the plugin's logger falls back to when it has no run log (log.ts configureSinks). */
-const DEBUG_LOG = ".sdlc/local/debug.log";
-
 /**
- * What a step itself writes, which its change check spares: in brownfield the run's own records folder; in greenfield
- * only the step's records, its inputs, each piece it hands in, the spec store's records, the dispatch's evidence and
- * telemetry, and the plugin's own logs (stepOwns spares the pieces its logger rotates out). Not the rest of the run's folder: under /mmo:pass the code under review lies inside it (review: a change
- * to it during a review went unseen, as did one to .sdlc/project.json).
+ * What a step itself writes, which its change check spares, each named by the code that writes it: in brownfield the
+ * run's own records folder; in greenfield the step's records and input copies, each piece it hands in, the records the
+ * spec store keeps for an architect's spec (spec/store.ts), and the dispatch's evidence and telemetry
+ * (delegation/evidence.ts). The plugin's logger reports the files it writes itself (stepOwns). Not the rest of the
+ * run's folder: under /mmo:pass the code under review lies inside it (review: a change to it during a review went
+ * unseen, as did one to .sdlc/project.json).
  */
 export function stepOwnPaths(args: ThinkingArgs, outputs: Record<string, string>, brownfield: boolean): string[] {
   const d = runFolder(args.output_dir);
-  // The plugin's own logs, which its logger writes while the step runs (log.ts): the run's log beside its telemetry,
-  // the run's own under .sdlc/runs/<run_id>/, and the debug log it falls back to; each with the pieces it rotates out
-  // (stepOwns; live test of 0.10.1: a step whose requirements were accepted was stopped, naming the log the server had
-  // just written). The debug log alone, never its folder: the write contract beside it is checked.
-  if (brownfield) return [`${d}/`, DEBUG_LOG];
-  const own = [`${d}/thinking/`, `${d}/inputs/`, `${d}/delegation/`, `${d}/telemetry.jsonl`, `${d}/orchestrator.log`, ".sdlc/delegation/", DEBUG_LOG];
-  if (typeof args.run_id === "string" && args.run_id) own.push(`.sdlc/runs/${args.run_id.toLowerCase()}/orchestrator.log`);
+  if (brownfield) return [`${d}/`];
+  const own = [`${d}/${STEP_RECORDS_DIR}/`, `${d}/${STEP_INPUTS_DIR}/`];
   for (const [key, p] of Object.entries(outputs)) own.push(key === "sections_dir" ? `${runFolder(p)}/` : runFolder(p));
-  if (args.role === "architect") own.push(`${d}/spec.parts/`, `${d}/spec.json`, `${d}/design.md`, `${d}/previous/`);
-  if (typeof args.telemetry_path === "string" && args.telemetry_path) {
-    const t = posix(relative(resolve(args.project_root), resolve(args.project_root, args.telemetry_path)));
-    if (!t.startsWith("..")) own.push(t, `${posixPath.dirname(t)}/delegation/`, `${posixPath.dirname(t)}/orchestrator.log`);
-  }
+  // A header that opens a new spec moves the earlier spec's records, files and folders, under PREVIOUS_DIR (store.ts
+  // moveAside), in the folder the architect's tools are given as spec_dir: the run's (review of 0.10.1: a copy of the
+  // store's list here missed five of its eight records, so a step that only opened a new spec was stopped).
+  if (args.role === "architect") own.push(...SPEC_RECORDS.flatMap((n) => [`${d}/${n}`, `${d}/${n}/`]), `${d}/${PREVIOUS_DIR}/`);
+  // The dispatch records each call in the run's telemetry and keeps its evidence where evidenceDir puts it, from the
+  // same telemetry path and workspace the step's dispatch is given (server.ts: work_dir is the project).
+  const root = resolve(args.project_root);
+  const inProject = (abs: string): string | null => {
+    const rel = posix(relative(root, abs));
+    return rel === "" || rel === ".." || rel.startsWith("../") || isAbsolute(rel) ? null : rel;
+  };
+  const telemetry = typeof args.telemetry_path === "string" && args.telemetry_path ? resolve(root, args.telemetry_path) : undefined;
+  const t = telemetry === undefined ? null : inProject(telemetry);
+  if (t !== null) own.push(t);
+  const evidence = inProject(evidenceDir(telemetry, root));
+  if (evidence !== null) own.push(`${evidence}/`);
   return own;
 }
 
-/** A piece the plugin's logger rotates out of a log, or the lock it takes to do so: `<log>.<n>`, `<log>.rotating` (log.ts rotateIfNeeded). */
-const LOG_PIECE = /^(.+\.log)(\.\d+|\.rotating)$/;
-
 /**
  * Whether a path the change check found is the step's own (stepOwnPaths): under one of its folders, one of its files,
- * an operating system's own file, or a piece the plugin's logger rotated out of a log the step owns.
+ * an operating system's own file, or a file the plugin's logger touched while the server ran (log.ts loggerTouched): its
+ * log, the pieces it rotated out, its lock. The logger is asked rather than its names copied (live test of 0.10.1: the
+ * log it wrote beside the run's telemetry stopped a step whose requirements were accepted).
  */
-export function stepOwns(own: string[], p: string): boolean {
-  if (OS_FILES.test(p) || own.some((o) => (o.endsWith("/") ? p.startsWith(o) : p === o))) return true;
-  const piece = LOG_PIECE.exec(posixPath.basename(p));
-  const dir = posixPath.dirname(p);
-  return piece !== null && own.includes(`${dir === "." ? "" : `${dir}/`}${piece[1]}`);
+export function stepOwns(own: string[], p: string, projectRoot: string): boolean {
+  return OS_FILES.test(p) || own.some((o) => (o.endsWith("/") ? p.startsWith(o) : p === o)) || loggerTouched(join(projectRoot, p));
 }
 
 /**
@@ -299,7 +306,7 @@ const MAX_INPUT_BYTES = 2_000_000;
 export function stepInputsCopied(projectRoot: string, outputDir: string, inputs: unknown): string[] {
   if (inputs === undefined) return [];
   if (!Array.isArray(inputs) || inputs.some((p) => typeof p !== "string" || p === "")) throw new Error("run_thinking_step: inputs must be a list of file paths");
-  const dir = join(projectRoot, outputDir, "inputs");
+  const dir = join(projectRoot, outputDir, STEP_INPUTS_DIR);
   const copies: string[] = [];
   const names = new Set<string>();
   for (const given of inputs as string[]) {
@@ -326,7 +333,7 @@ export function stepInputsCopied(projectRoot: string, outputDir: string, inputs:
     names.add(file.toLowerCase());
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, file), text);
-    copies.push(posix(join(outputDir, "inputs", file)));
+    copies.push(posix(join(outputDir, STEP_INPUTS_DIR, file)));
   }
   return copies;
 }
@@ -573,7 +580,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
     if (args.revise) throw new Error("run_thinking_step: pass acceptance_fix or revise, not both: an acceptance fix answers the acceptance stage and changes no spec section");
     if (typeof args.acceptance_fix !== "string" || !args.acceptance_fix.trim()) throw new Error("run_thinking_step: acceptance_fix holds the acceptance receipt's failure and its log_path");
   }
-  const stepDir = join(args.project_root, args.output_dir, "thinking");
+  const stepDir = join(args.project_root, args.output_dir, STEP_RECORDS_DIR);
   mkdirSync(stepDir, { recursive: true });
   // Each step keeps its own files, conversation and packet: a run has one step per role, except the senior review,
   // which greenfield runs once per module, each with its own review_path (review: one module's revise resumed another
@@ -667,7 +674,7 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
   // project, before and after; what git ignores is not the project's (a test runner's cache: review, pytest's cache
   // stopped a finished step). Outside git it is the workers' walked inventories, which the reply calls partial.
   const own = stepOwnPaths(args, outputs, brownfield);
-  const mine = (p: string) => stepOwns(own, p);
+  const mine = (p: string) => stepOwns(own, p, args.project_root);
   const dispatched: ExecutionResult[] = [];
   let checkedByGit = false;
   const changedSince = (): string[] => {

@@ -5,14 +5,15 @@
  * asserted by tools/test/logging.test.mjs — the two files cannot import each
  * other (this one compiles into the MCP server; the other runs standalone
  * from a command prompt that cannot import a module), so every change here
- * needs the matching change there.
+ * needs the matching change there. The record of the files this logger has touched (loggerTouched) is the server's
+ * alone: its change check is the only reader, and the scripts' processes compare nothing.
  *
  * Never write to stdout: stdout is the MCP stdio JSON-RPC transport, and one
  * stray byte corrupts the framing (envBootstrap.ts).
  */
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { redactText } from "./redact.js";
 
 export type Level = "error" | "warn" | "info" | "debug" | "trace";
@@ -93,11 +94,45 @@ function scrubFreeText(fields: Record<string, unknown>): Record<string, unknown>
   return out;
 }
 
+/**
+ * Every file this process's logger has appended to, made, renamed or removed: each log, the pieces its rotation moved,
+ * the lock it took or cleared. The logger names these files, so code that compares a project before and after its own
+ * work asks it which are its own (thinking.ts, a step's change check) rather than keeping a copy of their names, which
+ * went stale (live test of 0.10.1: a step was stopped by the log the server wrote while it ran). Each is kept as
+ * written and by its folder's real path, so another spelling of the same folder is the same file.
+ */
+const touched = new Set<string>();
+/** The paths already recorded as given, so a log line costs no folder lookup once its file is known. */
+const recorded = new Set<string>();
+
+function spellings(path: string): string[] {
+  const abs = resolve(path);
+  try {
+    return [abs, join(realpathSync.native(dirname(abs)), basename(abs))];
+  } catch {
+    return [abs]; // its folder does not exist (yet)
+  }
+}
+
+/** Records a file the logger is about to touch, and returns it. Its folder exists by then (made, or holding the log). */
+function own(path: string): string {
+  if (!recorded.has(path)) {
+    recorded.add(path);
+    for (const s of spellings(path)) touched.add(s);
+  }
+  return path;
+}
+
+/** Whether this process's logger has appended to, made, renamed or removed the file at `path`. */
+export function loggerTouched(path: string): boolean {
+  return spellings(path).some((s) => touched.has(s));
+}
+
 /** POSIX guarantees an O_APPEND write below PIPE_BUF is atomic — one call, trailing newline included. */
 function appendAtomic(path: string, line: string): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, line + "\n");
+    appendFileSync(own(path), line + "\n");
   } catch {
     // A logging failure must never stop a run.
   }
@@ -120,8 +155,8 @@ function shiftPieces(path: string): void {
     const n = name.slice(base.length + 1);
     if (/^[1-9]\d{0,5}$/.test(n)) numbers.push(Number(n));
   }
-  for (const n of numbers.sort((a, b) => b - a)) renameSync(`${path}.${n}`, `${path}.${n + 1}`);
-  renameSync(path, `${path}.1`);
+  for (const n of numbers.sort((a, b) => b - a)) renameSync(own(`${path}.${n}`), own(`${path}.${n + 1}`));
+  renameSync(own(path), own(`${path}.1`));
 }
 
 /** Rotate under an exclusive lock; skip (keep appending) if another process holds it. */
@@ -141,12 +176,13 @@ function rotateIfNeeded(path: string): void {
       if (age < STALE_LOCK_MS) return; // another process is rotating right now
       // Stale — a crashed process left this behind. Treat as abandoned.
       try {
-        unlinkSync(lockPath);
+        unlinkSync(own(lockPath));
       } catch {
         /* ignore */
       }
     }
     appendFileSync(lockPath, "", { flag: "wx" });
+    own(lockPath);
   } catch {
     return; // lost the race — someone else is rotating
   }

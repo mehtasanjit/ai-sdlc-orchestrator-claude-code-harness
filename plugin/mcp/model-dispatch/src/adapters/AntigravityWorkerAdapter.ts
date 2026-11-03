@@ -17,7 +17,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 
 import type {
   AttemptRecord,
@@ -48,6 +48,7 @@ import {
 import {
   buildDelegationRecord,
   diffInventories,
+  evidenceDir,
   takeInventory,
 } from "../delegation/evidence.js";
 import {
@@ -363,12 +364,8 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       );
     }
 
-    // Evidence lands beside telemetry, where the report reads. Fallback under
-    // the workspace keeps a hand-run invocation from writing into wherever
-    // the server was launched from.
-    const outDir = runContext?.telemetry_path
-      ? join(dirname(runContext.telemetry_path), "delegation")
-      : join(workdir, ".sdlc", "delegation");
+    // Evidence lands beside telemetry, where the report reads (evidenceDir).
+    const outDir = evidenceDir(runContext?.telemetry_path, workdir);
 
     const stem = evidenceStem(packet);
     const taskFile = join(outDir, `worker-task-${stem}.md`);
