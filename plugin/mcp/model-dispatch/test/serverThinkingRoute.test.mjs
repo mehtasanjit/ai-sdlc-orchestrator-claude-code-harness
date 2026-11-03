@@ -64,6 +64,9 @@ test("a Gemini architect's step carries its run's spec token, the one submit_spe
   ].join("\n"));
   const policy_path = join(root, "policy.yaml");
   const step = { role: "architect", prompt: "Design from requirements.md.", project_root: root, run_id: "r3", output_dir: "out", policy_path };
+  // The run's requirements, which its requirements step hands in: the architect checks coverage against them.
+  mkdirSync(join(root, "out"), { recursive: true });
+  writeFileSync(join(root, "out", "requirements.md"), "# R\n- FR-1: ping.\n");
   const tokenOfStep = () => JSON.parse(readFileSync(join(root, "out", "thinking", "architect.tools.json"), "utf8")).run_token;
   try {
     await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {

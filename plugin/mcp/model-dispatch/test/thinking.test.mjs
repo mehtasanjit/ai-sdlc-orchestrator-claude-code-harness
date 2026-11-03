@@ -135,6 +135,9 @@ test("a revise carries on the step's saved conversation with the changes asked f
 
 test("a greenfield architect's revise hands the whole spec in again, as its instructions say; other steps hand in what changed", async () => {
   const root = project();
+  // A real run's architect checks coverage against the run's requirements, which the requirements step handed in.
+  mkdirSync(join(root, "out"), { recursive: true });
+  writeFileSync(join(root, "out", "requirements.md"), "# R\n- FR-1: ping.\n");
   const { d, calls } = deps(AGENT, () => result({ result: { done: true, missing: [], accepted: ["header.json", "units-001.json", "finalize"], conversation_id: "c1" } }));
   const architect = (over) => args(root, { role: "architect", intent: undefined, output_dir: "out", ...over });
   const config = () => JSON.parse(readFileSync(join(root, "out", "thinking", "architect.tools.json"), "utf8"));
@@ -150,6 +153,8 @@ test("a greenfield architect's revise hands the whole spec in again, as its inst
   assert.equal(config().revise, true, "the tools hold the step to the approved spec");
   // With no saved conversation the revise starts over, told the same.
   const fresh = project();
+  mkdirSync(join(fresh, "out"), { recursive: true });
+  writeFileSync(join(fresh, "out", "requirements.md"), "# R\n- FR-1: ping.\n");
   const f = deps(AGENT, () => result({ result: { done: true, missing: [], accepted: [] } }));
   await runThinkingStep(args(fresh, { role: "architect", intent: undefined, output_dir: "out", revise: "U02: also return 409" }), f.d);
   assert.match(f.calls.dispatch[0].packet.instruction, /## Changes asked for[\s\S]*then every units file in order, changed or not/);
@@ -162,6 +167,9 @@ test("a greenfield architect's revise hands the whole spec in again, as its inst
 
 test("an acceptance fix is the architect's: it carries on the architect's conversation, and its reply carries the answer", async () => {
   const root = project();
+  // A real run's architect checks coverage against the run's requirements, which the requirements step handed in.
+  mkdirSync(join(root, "out"), { recursive: true });
+  writeFileSync(join(root, "out", "requirements.md"), "# R\n- FR-1: ping.\n");
   const fix = { failures: [{ path: "package.json", problem: "set overrides.semver to 7.6.3: the audit's high advisory" }] };
   const { d, calls } = deps(AGENT, (n) => {
     // The step's tools write the answer when it is accepted; the second call is the acceptance fix.
@@ -244,6 +252,33 @@ test("a step's input is judged by the file it reads: a link or a second name for
     assert.equal(one.calls.dispatch.length, 0);
     assert.equal(existsSync(join(root, "out", "inputs")), false, "nothing was copied");
   }
+});
+
+test("the brownfield architect reads the plugin's stack notes its instructions name, copied into the run's folder", async () => {
+  const root = project();
+  const { d, calls } = deps(AGENT, () => result());
+  await runThinkingStep(args(root), d);
+  const instruction = calls.dispatch[0].packet.instruction;
+  assert.doesNotMatch(instruction, /\$\{CLAUDE_PLUGIN_ROOT\}\/skills\/pipeline\/stacks/);
+  assert.match(instruction, /\.sdlc\/runs\/r1\/inputs\/plugin-stacks\/nest\.md/);
+  for (const f of ["nest.md", "python.md", "generic.md"]) {
+    assert.equal(readFileSync(join(root, ".sdlc", "runs", "r1", "inputs", "plugin-stacks", f), "utf8"), readFileSync(join(PLUGIN_ROOT, "skills", "pipeline", "stacks", f), "utf8"), f);
+  }
+});
+
+test("the folders a step is given are inside the project, and the architect checks coverage against the run's requirements", async () => {
+  const root = project();
+  const { d, calls } = deps(AGENT, () => result({ result: { done: true, missing: [], accepted: ["header.json", "units-001.json", "finalize"], conversation_id: "c1" } }));
+  const architect = (over) => args(root, { role: "architect", intent: undefined, output_dir: "out", ...over });
+  await assert.rejects(runThinkingStep(architect({}), d), /requirements/, "no requirements_path and no out/requirements.md");
+  mkdirSync(join(root, "out"), { recursive: true });
+  writeFileSync(join(root, "out", "requirements.md"), "# R\n- FR-1: ping.\n");
+  await runThinkingStep(architect({}), d);
+  assert.equal(JSON.parse(readFileSync(join(root, "out", "thinking", "architect.tools.json"), "utf8")).requirements_path, "out/requirements.md", "the run's own requirements by default");
+  await assert.rejects(runThinkingStep(architect({ requirements_path: "../elsewhere.md" }), d), /requirements_path/);
+  await assert.rejects(runThinkingStep(architect({ requirements_path: "/etc/hosts" }), d), /requirements_path/);
+  await assert.rejects(runThinkingStep(args(root, { role: "senior-reviewer", intent: undefined, output_dir: "out", code_dir: "../x" }), d), /code_dir/);
+  assert.equal(calls.dispatch.length, 1, "nothing was sent for a refused call");
 });
 
 test("per-module reviews are separate steps: each keeps its own files, conversation and packet", async () => {

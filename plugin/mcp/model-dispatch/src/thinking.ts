@@ -11,7 +11,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { holdsPrivateKey, modelReadOf } from "./apply.js";
@@ -142,6 +142,34 @@ export function notIgnoredByGit(projectRoot: string, paths: string[]): string[] 
   if (r.status !== 0 && r.status !== 1) return paths;
   const ignored = new Set((r.stdout ?? "").split("\0").filter(Boolean));
   return paths.filter((p) => !ignored.has(p));
+}
+
+/**
+ * A folder or file the manager names for the step (code_dir, requirements_path): given relative to project_root and
+ * inside it, as output_dir is. Review: both were used as given, so a step could be pointed outside the project.
+ */
+export function projectPathProblem(projectRoot: string, p: unknown, label: string): string | null {
+  if (p === undefined) return null;
+  if (typeof p !== "string" || p === "" || isAbsolute(p) || !inside(projectRoot, p)) return `${label} '${String(p)}' must be inside project_root, given relative to it`;
+  return null;
+}
+
+/** Where the plugin's stack notes are named in the helpers' instructions, a folder outside the project. */
+const PLUGIN_STACKS = "${CLAUDE_PLUGIN_ROOT}/skills/pipeline/stacks/";
+
+/**
+ * The helper's instructions as this step reads them: where they name the plugin's stack notes, which lie outside the
+ * project and so outside the step's tools, the notes are copied into the run's inputs and named there (review: the
+ * Gemini brownfield architect could not read nest.md, which its instructions require).
+ */
+export function stepInstructions(pluginRoot: string, role: ThinkingRole, projectRoot: string, outputDir: string): string {
+  const text = roleInstructions(pluginRoot, role);
+  if (!text.includes(PLUGIN_STACKS)) return text;
+  const rel = `${posix(outputDir).replace(/\/+$/, "")}/inputs/plugin-stacks`;
+  const from = join(pluginRoot, "skills", "pipeline", "stacks");
+  mkdirSync(join(projectRoot, rel), { recursive: true });
+  for (const f of readdirSync(from)) if (f.endsWith(".md")) copyFileSync(join(from, f), join(projectRoot, rel, f));
+  return text.split(PLUGIN_STACKS).join(`${rel}/`);
 }
 
 /** A step's own name in its run: its role, and for a senior review with its own review_path, that path too. */
@@ -282,6 +310,16 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const brownfield = args.role.startsWith("brownfield-") || args.role === "discovery" || deps.contractActive(args.project_root);
   const dirProblem = outputDirProblem(args.project_root, args.output_dir, brownfield) ?? reviewPathProblem(args.project_root, args.output_dir, args.review_path);
   if (dirProblem) throw new Error(`run_thinking_step: ${dirProblem}`);
+  const pathProblem = projectPathProblem(args.project_root, args.code_dir, "code_dir") ?? projectPathProblem(args.project_root, args.requirements_path, "requirements_path");
+  if (pathProblem) throw new Error(`run_thinking_step: ${pathProblem}`);
+  // The greenfield architect's finalize checks that every requirement is covered, against requirements_path; without
+  // one it finalized unchecked (review). Its default is the run's own requirements.md, which the requirements step
+  // hands in there, and a design step with no such file is refused before anything is sent.
+  let requirementsPath = args.requirements_path;
+  if (args.role === "architect" && args.acceptance_fix === undefined) {
+    requirementsPath ??= `${posix(args.output_dir).replace(/\/+$/, "")}/requirements.md`;
+    if (!existsSync(join(args.project_root, requirementsPath))) throw new Error(`run_thinking_step: the architect checks every requirement is covered against requirements_path '${requirementsPath}', which names no file`);
+  }
   if (args.acceptance_fix !== undefined) {
     if (args.role !== "architect") throw new Error(`run_thinking_step: an acceptance fix is the architect's (role 'architect'), not the ${args.role}'s`);
     if (args.revise) throw new Error("run_thinking_step: pass acceptance_fix or revise, not both: an acceptance fix answers the acceptance stage and changes no spec section");
@@ -302,6 +340,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   if (notReady) throw new Error(`run_thinking_step: ${notReady}`);
 
   const outputs = roleOutputs(args.role, args);
+  const instructions = stepInstructions(deps.pluginRoot, role, args.project_root, args.output_dir);
   const stepDir = join(args.project_root, args.output_dir, "thinking");
   mkdirSync(stepDir, { recursive: true });
   // Each step keeps its own files, conversation and packet: a run has one step per role, except the senior review,
@@ -313,7 +352,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const saveDir = join(stepDir, `${key}.save`);
   writeFileSync(toolsConfig, JSON.stringify({
     role: args.role, project_root: resolve(args.project_root), run_id: args.run_id, intent: args.intent,
-    output_dir: posix(args.output_dir), outputs, spec_dir: posix(args.output_dir), requirements_path: args.requirements_path, code_dir: args.code_dir,
+    output_dir: posix(args.output_dir), outputs, spec_dir: posix(args.output_dir), requirements_path: requirementsPath, code_dir: args.code_dir,
     run_token: deps.runToken, revise: !!args.revise, acceptance_fix: !!args.acceptance_fix,
   }, null, 2));
 
@@ -323,7 +362,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const fix = args.acceptance_fix ? `An install or audit command of the acceptance list failed.\n\n${args.acceptance_fix}\n\n${ACCEPTANCE_FIX_HAND_IN}` : "";
   const instruction = resumeId
     ? (fix ? `Acceptance fix: ${fix}` : `Changes asked for this step:\n\n${args.revise}\n\n${reviseHandIn(args.role)}`)
-    : `${preface(args.role)}\n\n## The helper's instructions\n\n${roleInstructions(deps.pluginRoot, role)}\n\n## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}\n\n${reviseHandIn(args.role)}` : ""}${fix ? `\n\n## Acceptance fix\n\n${fix}` : ""}`;
+    : `${preface(args.role)}\n\n## The helper's instructions\n\n${instructions}\n\n## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}\n\n${reviseHandIn(args.role)}` : ""}${fix ? `\n\n## Acceptance fix\n\n${fix}` : ""}`;
   const packet: TaskPacket = {
     id: `${args.run_id ?? "run"}-${key}`,
     phase: role.phase,
