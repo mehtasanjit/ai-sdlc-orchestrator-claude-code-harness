@@ -336,9 +336,11 @@ const runKey = (specPath: string) => `${realpathSync(specPath)}#${openedSpec(dir
  * preflight_dispatch, so a new pre-flight is a new run. The spec store reads
  * it to tell a header sent again within one run (the units stay) from a new
  * run's header (a new spec), even when the earlier spec was never finalized.
+ * A Gemini architect's thinking step hands its sections in with the same
+ * token (server.ts run_thinking_step), so both paths keep one run's spec.
  */
 const RUN_TOKENS = new WeakMap<RunState, string>();
-function runToken(run: RunState): string {
+export function runToken(run: RunState): string {
   let t = RUN_TOKENS.get(run);
   if (t === undefined) { t = randomUUID(); RUN_TOKENS.set(run, t); }
   return t;

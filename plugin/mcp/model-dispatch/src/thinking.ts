@@ -82,6 +82,12 @@ export interface ThinkingDeps {
   /** True while a brownfield run's write contract binds the project. */
   contractActive: (projectRoot: string) => boolean;
   thinkingTimeoutSec: number;
+  /**
+   * The token the spec store knows the run's pre-flight by (executor/tools.ts runToken). A Gemini architect's sections
+   * go in with it, as submit_spec_section's do: a new run's header opens a new spec, and an earlier run's unfinalized
+   * units never join this run's (review: a stopped run's units were finalized into the Gemini-planned spec).
+   */
+  runToken?: string;
   dispatch: (packet: TaskPacket, thinking: NonNullable<RunContext["thinking"]>) => Promise<{ result: ExecutionResult; events: TelemetryEvent[] }>;
   record: (events: TelemetryEvent[]) => void;
   log: (level: "info" | "warn", event: string, fields: Record<string, unknown>) => void;
@@ -268,6 +274,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   writeFileSync(toolsConfig, JSON.stringify({
     role: args.role, project_root: resolve(args.project_root), run_id: args.run_id, intent: args.intent,
     output_dir: posix(args.output_dir), outputs, spec_dir: posix(args.output_dir), requirements_path: args.requirements_path, code_dir: args.code_dir,
+    run_token: deps.runToken,
   }, null, 2));
 
   const prior = readRecord(recordPath).conversation_id;

@@ -52,7 +52,8 @@ const cut = (s) => (s.length > MAX_RESULT_CHARS ? `${s.slice(0, MAX_RESULT_CHARS
 export class ThinkingTools {
   /**
    * cfg: {role, project_root, run_id, intent, output_dir (relative to project_root), outputs: {requirements,
-   * sections_dir, review, security_review, discovery}, spec_dir, requirements_path, code_dir}
+   * sections_dir, review, security_review, discovery}, spec_dir, requirements_path, code_dir, run_token (the token the
+   * spec store knows the run's pre-flight by)}
    */
   constructor(cfg) {
     this.cfg = cfg;
@@ -218,7 +219,9 @@ export class ThinkingTools {
     const kind = name === "header.json" ? "header" : "units";
     const loaded = specStore.readSectionFile(specDir, relative(specDir, join(this.root, n.rel)), kind);
     if (loaded.error) return { error: loaded.error };
-    const r = specStore.submitSpecSection(specDir, kind === "header" ? { section: "header", header: loaded.value } : { section: "units", units: loaded.value });
+    // With the run's token, as submit_spec_section sends it: a new run's header opens a new spec, and units go only
+    // into the spec this run opened.
+    const r = specStore.submitSpecSection(specDir, kind === "header" ? { section: "header", header: loaded.value } : { section: "units", units: loaded.value }, this.cfg.run_token ? { run: this.cfg.run_token } : {});
     if (r.ok) { this.accepted.set(name, true); this.accepted.delete("finalize"); return { result: `accepted ${name}: ${r.total_units} unit(s) in the spec` }; }
     return { error: `refused:\n${r.errors.map((e) => `${e.path} ${e.message}`).join("\n")}` };
   }

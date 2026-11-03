@@ -56,7 +56,7 @@ import { executorView } from "./executor/run.js";
 import { resolveProjectRoot } from "./project-root.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
 // Typed-spec executor tools (greenfield runs): listed below, handled in executor/tools.ts.
-import { EXECUTOR_TOOLS, EXECUTOR_TOOL_NAMES, STAGE_CONCURRENCY, fallbackLeaf, typistForLeaf, executorClaudeLeaves, executorPolicyNotes, handleExecutorTool, type RunState } from "./executor/tools.js";
+import { EXECUTOR_TOOLS, EXECUTOR_TOOL_NAMES, STAGE_CONCURRENCY, fallbackLeaf, typistForLeaf, executorClaudeLeaves, executorPolicyNotes, handleExecutorTool, runToken, type RunState } from "./executor/tools.js";
 import { BROWNFIELD_INTENTS, TypistApplyAdapter, usesServerTypist } from "./applyTypist.js";
 import { EDIT_ANSWER_SCHEMA } from "./executor/brief.js";
 import { HANDOFF_TOOLS, HANDOFF_TOOL_NAMES, handleHandoffTool } from "./handoff/tools.js";
@@ -1196,6 +1196,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           agentDoorProblem: () => (run ? null : "this server has not checked the Google project and SDK it would use. Call preflight_dispatch first; nothing was dispatched."),
           contractActive: (root) => hasActiveWriteContract(root),
           thinkingTimeoutSec: policy.thinking_timeout_sec ?? DEFAULT_THINKING_TIMEOUT_SEC,
+          runToken: runToken(recorded),
           dispatch: async (packet, thinking) => {
             const ledger = ledgerFor(run);
             const sentAt = ledger.time();

@@ -95,3 +95,39 @@ test("a dependency audit runs only its named commands", async () => {
   const t = tools(root, "security-reviewer");
   assert.match((await t.call("run_dependency_audit", { kind: "rm -rf /" })).error, /kind is one of npm-audit, npm-outdated, pip-outdated/);
 });
+
+test("a Gemini architect's spec holds only its own run's units, as submit_spec_section's does", async () => {
+  const { loadServerLib } = await import(pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "lib", "server-lib.mjs")).href);
+  const { specStore } = await loadServerLib();
+  const header = {
+    stack: ["Python 3.13", "FastAPI", "pytest"],
+    commands: [{ name: "backend tests", run: "pytest -q", cwd: "backend", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }],
+    no_audit_reason: "a test", decisions: [{ topic: "ids", choice: "integer", rejected: ["uuid"], reason: "simplest" }],
+    shared: { conventions: ["snake_case"], data_model: [{ name: "Todo", fields: [{ name: "id", type: "int", constraints: "primary key" }] }], api: [{ method: "POST", path: "/todos", access: "any", request: "TodoCreate", response: "Todo", success_status: 201, error_statuses: [422] }] },
+  };
+  const unit = (id, path) => ({ id, path, phase: "codegen", import_line: "", exports: [{ name: "Todo", kind: "class", params: [], returns: "Todo" }], behaviour: `writes ${path}`, depends_on: [], style_from: { reason: "first file of its kind" }, covers: ["FR-1.1"], tests: [{ name: "valid", given: "a title", expect: "a Todo" }], approx_lines: 20 });
+  const architect = (root, run_token) => new ThinkingTools({ role: "architect", project_root: root, run_id: "r2", output_dir: "out", outputs: { sections_dir: "out/spec.sections" }, spec_dir: "out", run_token });
+  // An earlier run (its own pre-flight) handed in its header and one units file through the server, then stopped
+  // before finalize: a crashed run, or a run id used again.
+  const earlierRun = () => {
+    const root = mkdtempSync(join(tmpdir(), "mmo-spec-"));
+    const specDir = join(root, "out");
+    mkdirSync(specDir);
+    assert.equal(specStore.submitSpecSection(specDir, { section: "header", header }, { run: "earlier-run" }).ok, true);
+    assert.equal(specStore.submitSpecSection(specDir, { section: "units", units: [unit("U01", "src/from_earlier_run.py")] }, { run: "earlier-run" }).ok, true);
+    return root;
+  };
+
+  const root = earlierRun();
+  const t = architect(root, "this-run");
+  assert.match((await t.call("submit_section", { name: "header.json", json: JSON.stringify(header) })).result, /accepted header\.json: 0 unit/);
+  assert.match((await t.call("submit_section", { name: "units-001.json", json: JSON.stringify([unit("U02", "src/todo.py")]) })).result, /1 unit/);
+  // The same header again within the run keeps the run's units (a fix and a hand-in again, not a new spec).
+  assert.match((await t.call("submit_section", { name: "header.json", json: JSON.stringify(header) })).result, /accepted header\.json: 1 unit/);
+  assert.match((await t.call("finalize", {})).result, /finalized: 1 unit/);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "out", "spec.json"), "utf8")).units.map((u) => u.path), ["src/todo.py"], "the earlier run's unit is not in this run's spec");
+
+  // Units first, into the spec another run opened: refused, header first.
+  const other = earlierRun();
+  assert.match((await architect(other, "this-run").call("submit_section", { name: "units-001.json", json: JSON.stringify([unit("U02", "src/todo.py")]) })).error, /earlier run's spec/);
+});
