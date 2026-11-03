@@ -326,6 +326,13 @@ test("the folders a step is given are inside the project, and the architect chec
   await assert.rejects(runThinkingStep(architect({ requirements_path: "/etc/hosts" }), d), /requirements_path/);
   await assert.rejects(runThinkingStep(args(root, { role: "senior-reviewer", intent: undefined, output_dir: "out", code_dir: "../x" }), d), /code_dir/);
   assert.equal(calls.dispatch.length, 1, "nothing was sent for a refused call");
+  // The code under review may be the whole project (live test of 0.10.1: a brownfield senior review given code_dir "."
+  // was refused as outside the project). A requirements file never is the project folder itself.
+  for (const code_dir of [".", "./", root]) {
+    const r = await runThinkingStep(args(root, { role: "senior-reviewer", intent: undefined, output_dir: "out", code_dir: code_dir === root ? "." : code_dir }), d);
+    assert.equal(r.route, "done", `code_dir ${code_dir}: ${JSON.stringify(r)}`);
+  }
+  await assert.rejects(runThinkingStep(architect({ requirements_path: "." }), d), /requirements_path/);
 });
 
 test("a Gemini architect called with no requirements_path still has its finalize refused for uncovered requirements", async () => {

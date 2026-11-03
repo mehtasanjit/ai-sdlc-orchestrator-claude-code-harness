@@ -165,8 +165,12 @@ export function notIgnoredByGit(projectRoot: string, paths: string[]): string[] 
  * A folder or file the manager names for the step (code_dir, requirements_path): given relative to project_root and
  * inside it, as output_dir is. Review: both were used as given, so a step could be pointed outside the project.
  */
-export function projectPathProblem(projectRoot: string, p: unknown, label: string): string | null {
+export function projectPathProblem(projectRoot: string, p: unknown, label: string, opts: { root?: boolean } = {}): string | null {
   if (p === undefined) return null;
+  // With `root`, the project folder itself is the path's own answer: the code under review can be the whole project
+  // (live test of 0.10.1: a brownfield senior review given code_dir "." was refused as outside the project).
+  const isRoot = typeof p === "string" && p !== "" && !isAbsolute(p) && relative(resolve(projectRoot), resolve(projectRoot, p)) === "";
+  if (opts.root && isRoot) return null;
   if (typeof p !== "string" || p === "" || isAbsolute(p) || !inside(projectRoot, p)) return `${label} '${String(p)}' must be inside project_root, given relative to it`;
   return null;
 }
@@ -554,7 +558,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const brownfield = args.role.startsWith("brownfield-") || deps.contractActive(args.project_root);
   const dirProblem = outputDirProblem(args.project_root, args.output_dir, brownfield, args.run_id) ?? reviewPathProblem(args.project_root, args.output_dir, args.review_path);
   if (dirProblem) throw new Error(`run_thinking_step: ${dirProblem}`);
-  const pathProblem = projectPathProblem(args.project_root, args.code_dir, "code_dir") ?? projectPathProblem(args.project_root, args.requirements_path, "requirements_path");
+  const pathProblem = projectPathProblem(args.project_root, args.code_dir, "code_dir", { root: true }) ?? projectPathProblem(args.project_root, args.requirements_path, "requirements_path");
   if (pathProblem) throw new Error(`run_thinking_step: ${pathProblem}`);
   // The greenfield architect's finalize checks that every requirement is covered, against requirements_path; without
   // one it finalized unchecked (review). Its default is the run's own requirements.md, which the requirements step
