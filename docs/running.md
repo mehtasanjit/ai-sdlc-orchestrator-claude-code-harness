@@ -63,10 +63,18 @@ Best when you want to script the run, redirect all output to a file, or run over
 ```bash
 export CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-7   # the policy's Claude model; the run-start check needs it in both auth modes
 claude --print "/mmo:pass --auth=vendor --policy=opus-only --run-id=pass1 examples/workforce-ops/brief.md" \
-  --permission-mode acceptEdits \
+  --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
   --output-format stream-json --verbose \
   > examples/workforce-ops/passes/pass1/live-run.log
 ```
+
+A headless run cannot answer a permission prompt, so everything it needs must be allowed up front: shell commands
+(the plugin's own scripts through `node`, such as the run-start check, telemetry and the run's summary, and the
+generated project's install and tests through `npm`), reading the plugin's own instruction files, and the plugin's
+server tools (`mcp__plugin_mmo_model-dispatch`: pre-flight, dispatch, the thinking steps). The `--allowedTools` list
+above allows those three, and with `Bash` any other shell command the session decides to run, so give a headless run
+a folder made for it. With `acceptEdits` alone the run stops at its first step, the run-start check ("This command
+requires approval"), before anything is spent.
 
 Every HITL gate auto-approves. The full transcript lands in `live-run.log`.
 
@@ -129,7 +137,7 @@ Steps:
    ```bash
    export CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-7   # the Claude model of the project's default policy (opus-plus-flash)
    claude --print "/mmo:pass --auth=vendor --study=my-project --run-id=pass1 my-brief.md" \
-     --permission-mode acceptEdits \
+     --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
      --output-format stream-json --verbose \
      > examples/my-project/passes/pass1/live-run.log
    ```
@@ -190,9 +198,11 @@ Each pass writes to a separate directory under `examples/<study-id>/passes/`. To
 ```bash
 # headless form
 claude --print "/mmo:pass --auth=vendor --policy=opus-only --run-id=baseline examples/workforce-ops/brief.md" \
+  --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
   --output-format stream-json --verbose > examples/workforce-ops/passes/baseline/live-run.log
 
 claude --print "/mmo:pass --auth=vendor --policy=opus-plus-flash --run-id=multi-model examples/workforce-ops/brief.md" \
+  --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
   --output-format stream-json --verbose > examples/workforce-ops/passes/multi-model/live-run.log
 
 node tools/report.mjs examples/workforce-ops/passes/baseline

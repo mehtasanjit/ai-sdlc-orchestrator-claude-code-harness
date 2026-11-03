@@ -37,7 +37,7 @@ tail -f .sdlc/runs/<run-id>/orchestrator.log
 or, live, since every line also goes to stderr:
 
 ```bash
-claude --print "/mmo:pass --auth=vendor --run-id=pass1 my-brief.md" 2>&1 | grep "MMO:"
+claude --print "/mmo:pass --auth=vendor --run-id=pass1 my-brief.md" --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" 2>&1 | grep "MMO:"
 ```
 
 ## Line format
