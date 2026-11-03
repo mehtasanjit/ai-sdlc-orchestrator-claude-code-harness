@@ -483,3 +483,17 @@ test("a carried-on worker keeps its summary from its tools' first status, before
   assert.equal(r.summary.done, false);
   assert.equal(r.summary.conversation_id, "standin-earlier");
 });
+
+// Carrying a step on rests on what the SDK has shown: a saved conversation, whose turn ended in a harness that closed,
+// resumes. A worker stopped while its first turn was out keeps that conversation's id too, but nothing says that
+// interrupted turn was saved (for a revise, its comments). The summary says whether a session of its own answered.
+test("a worker's summary says whether a session of its own answered: one stopped in its first turn has not", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const answered = await runWorker("thinking", { script: { sessions: [{ turns: [[{ at: 0, step: step.tool("write_requirements", "ACTIVE", REQUIREMENTS, "w1") }, ...textAnswer(0, "Handed in.", { prompt_token_count: 10 })]] }] }, timeout: 30, limitMs: 45_000 });
+  assert.equal(answered.code, 0, tail(answered));
+  assert.equal(answered.summary.answered, true, JSON.stringify(answered.summary));
+  // Stopped (SIGTERM, as the kill rule stops a worker whose loop still runs) while its first call is held.
+  const cut = await runWorker("thinking", { script: { sessions: [{ turns: [[{ at: 0, step: step.user("go") }, { at: 0, hold: true }]] }] }, timeout: 30, limitMs: 45_000, killAfterMs: 1_500, killSignal: "SIGTERM" });
+  assert.ok(cut.summary, tail(cut));
+  assert.equal(cut.summary.conversation_id, "standin-1", "its conversation is named");
+  assert.equal(cut.summary.answered, false, "but no session of its own answered");
+});

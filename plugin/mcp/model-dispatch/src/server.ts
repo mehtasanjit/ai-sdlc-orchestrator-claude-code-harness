@@ -1080,10 +1080,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "and nothing is sent for it. " +
         "A step that cannot finish replies 'stopped' with the reason, saying in plain words what stopped it, and what is still owed, " +
         "and Google serving nothing for the run's busy window replies 'halt': stop the run in both cases; no other " +
-        "model takes the step over. A worker the agent door's kill rule stops (frozen) is carried on once, here, from " +
-        "the conversation it saved, with what its tools had accepted (the reply's `resumed` is true); a second kill " +
-        "replies 'stopped'. Pass `revise` (a gate's comments, or a check's lines to fix) to carry on the step's " +
-        "saved conversation. Pass `acceptance_fix` (role 'architect') for the acceptance stage's install or audit failure: " +
+        "model takes the step over. A worker the agent door's kill rule stops (frozen) after a turn of its own is " +
+        "carried on once, here, from the conversation it saved, with what its tools had accepted (the reply's " +
+        "`resumed` is true); a second kill replies 'stopped'. Pass `revise` (a gate's comments, or a check's lines " +
+        "to fix) to carry on the step's saved conversation. Pass `acceptance_fix` (role 'architect') for the " +
+        "acceptance stage's install or audit failure: " +
         "the reply's `acceptance_fix` holds the `failures` entries for execute_stage repair, or `cannot_pass`, the one " +
         "line why the brief's fixed stack cannot pass.",
       inputSchema: {

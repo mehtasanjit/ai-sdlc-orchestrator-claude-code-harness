@@ -22,7 +22,9 @@ The agent worker (gemini_worker.py) with five differences:
 
 Everything else is the agent worker's: the call supervisor (stall cuts, failover, busy budget, heartbeat, the time
 limit counting own work only) and its usage sidecar. stdout carries one JSON line, also kept in --summary-file after
-every turn: {done, missing, accepted, conversation_id, text, reason}. `reason` says why the step stopped: done (every
+every turn: {done, missing, accepted, conversation_id, answered, text, reason}; `answered`: a session of this
+worker's own answered, so its conversation holds a turn that ended in a harness that closed, which is what a carry-on
+resumes. `reason` says why the step stopped: done (every
 piece accepted), budget (its own work time reached --timeout), no_progress (NO_PROGRESS_TURNS reminders in a row
 answered without progress), busy (Google could not serve the model for the run's busy window), tool_dead (a tool
 call, the status one included, gave no answer in its limit, or the tools could not report the step's status),
@@ -321,7 +323,7 @@ async def run(args):
     fn_tools = tools_for(host, args.role)
     resume = args.resume_id or None
     message = task
-    summary = {"done": False, "missing": [], "accepted": [], "conversation_id": resume, "text": "", "reason": None}
+    summary = {"done": False, "missing": [], "accepted": [], "conversation_id": resume, "answered": False, "text": "", "reason": None}
 
     def keep() -> None:
         # The summary is the step's state (what is accepted and owed, the conversation to carry on): kept after every
@@ -363,6 +365,7 @@ async def run(args):
             # The conversation the session itself ran, by the SDK's own id: never the newest file in the save folder.
             resume = s.conversation_id or resume
             summary["conversation_id"] = resume
+            summary["answered"] = summary["answered"] or s.ok
             summary["text"] = s.text
             answer = host.call("status")
             if host.dead or not answer.get("ok"):

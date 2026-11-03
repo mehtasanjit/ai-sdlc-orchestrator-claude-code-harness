@@ -584,7 +584,7 @@ test("every role's instructions resolve from the shipped plugin", () => {
 // Review: a worker the agent door's kill rule stopped was not carried on; calling the step again started a new
 // conversation at full cost, and what its tools had accepted was lost with their process.
 const KILLED = "The agent worker was stopped: the worker sent no heartbeat for 82 s; its tokens are its last heartbeat's.";
-const killed = (over = {}) => result({ success: false, worker_stopped: "killed", error: KILLED, result: { done: false, missing: ["units-001.json, accepted"], accepted: ["header.json"], conversation_id: "c-killed" }, attempts: [{ gemini: { work_ms: 600_000 } }], ...over });
+const killed = (over = {}) => result({ success: false, worker_stopped: "killed", error: KILLED, result: { done: false, missing: ["units-001.json, accepted"], accepted: ["header.json"], conversation_id: "c-killed", answered: true }, attempts: [{ gemini: { work_ms: 600_000 } }], ...over });
 
 test("a step whose worker the kill rule stopped is carried on once, from its saved conversation, with its tools' state and the rest of its budget", async () => {
   const root = project();
@@ -630,7 +630,8 @@ test("a step killed again after it was carried on stops, saying so; a kill with 
   assert.deepEqual(r.missing, ["units-001.json, accepted"]);
   assert.equal(twice.calls.dispatch.length, 2, "carried on once only");
   for (const [why, answer] of [
-    ["no saved conversation", killed({ result: { done: false, missing: ["units-001.json, accepted"], accepted: [] } })],
+    ["no saved conversation", killed({ result: { done: false, missing: ["units-001.json, accepted"], accepted: [], answered: true } })],
+    ["no session of its own answered (its interrupted turn, a revise's comments, may not be saved)", killed({ result: { done: false, missing: ["units-001.json, accepted"], accepted: [], conversation_id: "c-killed", answered: false } })],
     ["no budget left", killed({ attempts: [{ gemini: { work_ms: 14_400_000 } }] })],
     ["no work time known", killed({ attempts: [] })],
     ["stopped by the request (the person pressed Stop)", killed({ worker_stopped: "cancelled" })],
@@ -655,7 +656,7 @@ test("through the agent door: a frozen worker is killed by the kill rule, and th
   const SHORT = { noBeatS: 2, confirmS: 1, termGraceS: 1 };
   // The worker's first session ends (its receipt: 1 s of work) and it keeps its summary after the status; its next
   // session beats once (30 s of its own work in all), then the worker freezes.
-  const kept = { done: false, missing: ["units-001.json, accepted"], accepted: ["header.json"], conversation_id: "conv-1", text: "" };
+  const kept = { done: false, missing: ["units-001.json, accepted"], accepted: ["header.json"], conversation_id: "conv-1", answered: true, text: "" };
   const firstSession = { sdk_version: "0.1.22", vertex_location: "global", work_s: 1, usage: { prompt_token_count: 10 }, tries: [{ location: "global", ended_by: "answer", http_codes: [], s: 1, usage: { prompt_token_count: 10 } }] };
   const frozen = { writes: [{ atMs: 20, sidecar: firstSession, summary: kept }], beats: [{ atMs: 50, hb: beat({ work_s: 30, usage: { global: { prompt_token_count: 40 } } }) }], holdMs: "forever", ignoreTerm: true };
   const finishes = { holdMs: 50, sidecar: { sdk_version: "0.1.22", usage: { prompt_token_count: 10 } }, summary: { done: true, missing: [], accepted: ["header.json", "units-001.json"], conversation_id: "conv-1", text: "" } };

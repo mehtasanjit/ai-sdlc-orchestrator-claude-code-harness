@@ -429,20 +429,23 @@ function readRecord(path: string): SessionRecord {
 
 /**
  * The worker's summary of a dispatch (thinking_worker.py): whether the step is done, what it owes and has, its
- * conversation, why it stopped (`reason`), and with `reason: "setup"` what in the step's own setup kept a hand-in from
- * being checked (`setup_error`).
+ * conversation, why it stopped (`reason`), with `reason: "setup"` what in the step's own setup kept a hand-in from
+ * being checked (`setup_error`), and whether a session of its own answered (so that conversation holds a turn that
+ * ended in a harness that closed).
  */
-export interface StepSummary { done?: boolean; missing?: string[]; accepted?: string[]; conversation_id?: string; reason?: string | null; setup_error?: string }
+export interface StepSummary { done?: boolean; missing?: string[]; accepted?: string[]; conversation_id?: string; reason?: string | null; setup_error?: string; answered?: boolean }
 
 /**
  * Whether a dispatch is carried on, and with how much of the step's budget: its worker was killed by the agent door's
- * kill rule (no heartbeat, or a heartbeat past a bound: executor/stall.ts), it kept a conversation to carry on and is
- * not done, and its own work so far (the worker's own clock, from its receipt or its last heartbeat) leaves part of
- * the budget. The seconds left, whole, or null. A worker the person stopped, or one that ended by itself, is never
- * carried on, nor one whose work time is not known.
+ * kill rule (no heartbeat, or a heartbeat past a bound: executor/stall.ts), it kept a conversation that holds a turn of
+ * its own that answered and is not done, and its own work so far (the worker's own clock, from its receipt or its last
+ * heartbeat) leaves part of the budget. The seconds left, whole, or null. A worker the person stopped, or one that
+ * ended by itself, is never carried on, nor one whose work time is not known. Nor one stopped before a session of its
+ * own answered: a conversation whose turn ended in a harness that closed is what the SDK has been shown to resume, and
+ * that interrupted turn (for a revise, its comments) may not be saved.
  */
 export function carryOnBudget(result: ExecutionResult, summary: StepSummary, budgetSec: number): number | null {
-  if (result.worker_stopped !== "killed" || result.halt || summary.done || !summary.conversation_id) return null;
+  if (result.worker_stopped !== "killed" || result.halt || summary.done || !summary.conversation_id || summary.answered !== true) return null;
   const record = result.attempts?.[result.attempts.length - 1]?.gemini;
   const workMs = record && "work_ms" in record ? record.work_ms : undefined;
   if (typeof workMs !== "number" || !Number.isFinite(workMs)) return null;
