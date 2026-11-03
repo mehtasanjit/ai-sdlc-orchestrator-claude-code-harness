@@ -205,3 +205,34 @@ test("a hand-in is written only inside the step's own folder, never beside the p
   const ok = new ThinkingTools({ role: "brownfield-senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/m1/review.json" } });
   assert.match(text(await ok.call("write_review", { content: review })), /wrote/);
 });
+
+test("a reviewer sees that env files exist and which keys they declare, never a value", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-envkeys-"));
+  const put = (rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
+  put("app/.env.example", "JWT_SECRET=\nDATABASE_URL=\n");
+  put("app/.env.test", `JWT_SECRET=${"x".repeat(32)}\nDATABASE_URL=postgres://localhost:5432/test\n`);
+  put("app/.env", `JWT_SECRET=${SECRET}\n`);
+  put("app/src/config.ts", "export const schema = Joi.object({ JWT_SECRET: Joi.string().min(32) });\n");
+  mkdirSync(join(root, ".sdlc", "runs", "r1"), { recursive: true });
+  const t = new ThinkingTools({ role: "senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/review.json" } });
+  const listed = text(await t.call("list_files", { path: "app" }));
+  for (const name of [".env.example", ".env.test", ".env"]) assert.match(listed, new RegExp(`^\\${name}  \\(kept from you by the read rule\\)$`, "m"), `${name} is listed: ${listed}`);
+  const fixture = text(await t.call("env_keys", { path: "app/.env.test" }));
+  assert.match(fixture, /^JWT_SECRET  \(32 characters\)$/m);
+  assert.match(fixture, /^DATABASE_URL  \(\d+ characters, a URL\)$/m);
+  assert.doesNotMatch(fixture, /xxxx|localhost/, "no value leaves the machine");
+  const real = text(await t.call("env_keys", { path: "app/.env" }));
+  assert.equal(real.trim(), "JWT_SECRET", "the real env file gives its key names only");
+  assert.ok((await t.call("env_keys", { path: "app/src/config.ts" })).error, "env_keys reads only env files");
+  assert.ok((await t.call("read_file", { path: "app/.env.test" })).error, "the contents stay refused");
+});
+
+test("the worker offers each role the same tools as the tool process serves it", async () => {
+  const { ROLE_TOOLS } = await import(pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "thinking-tools.mjs")).href);
+  const py = (await import("node:fs")).readFileSync(resolve(HERE, "..", "worker", "thinking_worker.py"), "utf8");
+  const block = py.match(/^ROLE_TOOLS = (\{[\s\S]*?^\})/m)?.[1];
+  assert.ok(block, "thinking_worker.py has a ROLE_TOOLS table");
+  assert.deepEqual(JSON.parse(block.replace(/,(\s*[\]}])/g, "$1")), ROLE_TOOLS);
+  for (const role of ["senior-reviewer", "brownfield-senior-reviewer", "security-reviewer", "brownfield-security-reviewer"]) assert.ok(ROLE_TOOLS[role].includes("env_keys"), role);
+  assert.ok(!ROLE_TOOLS.architect.includes("env_keys"));
+});

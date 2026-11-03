@@ -15,7 +15,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -27,6 +27,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** A tool answer is cut here; the model reads the rest by line range. */
 export const MAX_RESULT_CHARS = 60_000;
+// The env files whose values are example or test fixtures by convention: env_keys gives each value's shape.
+const ENV_FIXTURES = new Set([".env.example", ".env.test"]);
 const MAX_FILE_BYTES = 2_000_000;
 const MAX_SEARCH_HITS = 200;
 const WALK_SKIP = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".next", ".nuxt", ".turbo", ".cache", "coverage"]);
@@ -37,10 +39,10 @@ export const ROLE_TOOLS = {
   requirements: ["write_requirements"],
   architect: ["submit_section", "finalize", "registry_versions"],
   "brownfield-architect": ["write_section"],
-  "senior-reviewer": ["write_review"],
-  "brownfield-senior-reviewer": ["git_diff", "read_provenance", "run_file_check", "write_review"],
-  "security-reviewer": ["run_dependency_audit", "write_review"],
-  "brownfield-security-reviewer": ["git_diff", "read_provenance", "run_dependency_audit", "write_review"],
+  "senior-reviewer": ["env_keys", "write_review"],
+  "brownfield-senior-reviewer": ["git_diff", "read_provenance", "run_file_check", "env_keys", "write_review"],
+  "security-reviewer": ["run_dependency_audit", "env_keys", "write_review"],
+  "brownfield-security-reviewer": ["git_diff", "read_provenance", "run_dependency_audit", "env_keys", "write_review"],
   discovery: ["baseline_status", "write_discovery"],
 };
 export const READ_TOOLS = ["read_file", "list_files", "search_files"];
@@ -96,12 +98,43 @@ export class ThinkingTools {
     const out = [];
     for (const name of readdirSync(r.abs).sort()) {
       const childRel = join(r.rel, name).split(sep).join("/");
-      if (readRefusal(this.root, this.cfg.run_id, childRel)) continue;
       let st;
       try { st = lstatSync(join(r.abs, name)); } catch { continue; }
-      out.push(st.isDirectory() ? `${name}/` : name);
+      // A refused entry is named, so a reviewer knows it exists (its env check needs .env.example and .env.test);
+      // its contents stay refused (env_keys gives an env file's key names).
+      const shown = st.isDirectory() ? `${name}/` : name;
+      out.push(readRefusal(this.root, this.cfg.run_id, childRel) ? `${shown}  (kept from you by the read rule)` : shown);
     }
     return { result: cut(out.join("\n")) };
+  }
+
+  /**
+   * An env file's key names, never its values, as discovery records them (agents/discovery.md, group 7). For the
+   * fixture files (.env.example, .env.test) each value's shape too, its length and whether it is a URL: what a
+   * reviewer's env check asks (a 32-character secret, a valid URL) without any value leaving the machine.
+   */
+  env_keys({ path }) {
+    if (typeof path !== "string" || !/^\.env(\..+)?$/i.test(basename(path))) return { error: "name an env file: .env, .env.example, .env.test or .env.<anything>" };
+    const abs = resolve(this.root, path);
+    const rel = relative(this.root, abs);
+    if (rel.startsWith("..") || isAbsolute(rel)) return { error: `${path} is outside the project` };
+    let real;
+    try { real = realpathSync.native(abs); } catch { return { error: `${path} does not exist` }; }
+    const realRel = relative(this.root, real);
+    if (realRel.startsWith("..") || isAbsolute(realRel)) return { error: `${path} leads outside the project` };
+    if (!statSync(real).isFile()) return { error: `${path} is not a file` };
+    const fixture = ENV_FIXTURES.has(basename(realRel).toLowerCase());
+    const out = [];
+    for (const line of readFileSync(real, "utf8").split("\n")) {
+      const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(.*)$/);
+      if (!m) continue;
+      if (!fixture) { out.push(m[1]); continue; }
+      const value = m[2].trim().replace(/^(['"])(.*)\1$/, "$2");
+      let url = false;
+      try { url = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) && Boolean(new URL(value)); } catch { url = false; }
+      out.push(`${m[1]}  (${value === "" ? "empty" : `${value.length} characters`}${url ? ", a URL" : ""})`);
+    }
+    return { result: out.length ? out.join("\n") : `${path} declares no keys` };
   }
 
   search_files({ pattern, path = "." }) {

@@ -122,6 +122,12 @@ def tools_for(host: ToolHost, role: str) -> list:
         """Run a dependency check: kind 'npm-audit', 'npm-outdated' or 'pip-outdated'."""
         return host.text("run_dependency_audit", kind=kind)
 
+    def env_keys(path: str) -> str:
+        """The key names an env file declares (.env, .env.example, .env.test, ...), never its values; for .env.example
+        and .env.test, each value's length and whether it is a URL. Env files are listed but their contents are kept
+        from you."""
+        return host.text("env_keys", path=path)
+
     def write_review(content: str) -> str:
         """Hand in the review: for the security review, security_review.md in Markdown; for the senior review, the review
         JSON object with its findings array (each finding with file, issue and fix)."""
@@ -137,7 +143,7 @@ def tools_for(host: ToolHost, role: str) -> list:
 
     every = {f.__name__: f for f in [read_file, list_files, search_files, write_requirements, write_section, submit_section,
                                      finalize, registry_versions, git_diff, read_provenance, run_file_check,
-                                     run_dependency_audit, write_review, baseline_status, write_discovery]}
+                                     run_dependency_audit, env_keys, write_review, baseline_status, write_discovery]}
     names = ["read_file", "list_files", "search_files"] + ROLE_TOOLS[role]
     return [every[n] for n in names]
 
@@ -146,10 +152,10 @@ ROLE_TOOLS = {
     "requirements": ["write_requirements"],
     "architect": ["submit_section", "finalize", "registry_versions"],
     "brownfield-architect": ["write_section"],
-    "senior-reviewer": ["write_review"],
-    "brownfield-senior-reviewer": ["git_diff", "read_provenance", "run_file_check", "write_review"],
-    "security-reviewer": ["run_dependency_audit", "write_review"],
-    "brownfield-security-reviewer": ["git_diff", "read_provenance", "run_dependency_audit", "write_review"],
+    "senior-reviewer": ["env_keys", "write_review"],
+    "brownfield-senior-reviewer": ["git_diff", "read_provenance", "run_file_check", "env_keys", "write_review"],
+    "security-reviewer": ["run_dependency_audit", "env_keys", "write_review"],
+    "brownfield-security-reviewer": ["git_diff", "read_provenance", "run_dependency_audit", "env_keys", "write_review"],
     "discovery": ["baseline_status", "write_discovery"],
 }
 

@@ -37,13 +37,15 @@ test("credentials, paths outside the project and links out of it are never read"
   assert.match((await t.call("read_file", { path: "src/a.ts" })).result, /1\texport const a = 1;/);
 });
 
-test("search and listing skip the files the read rule keeps from models", async () => {
+test("search never reads the files the read rule keeps from models; a listing names them, marked, with nothing of theirs", async () => {
   const root = project();
   const t = tools(root, "requirements");
   const hits = (await t.call("search_files", { pattern: "SECRET|token" })).result;
   assert.match(hits, /src\/a\.ts:2/);
   assert.doesNotMatch(hits, /SECRET/);
-  assert.doesNotMatch((await t.call("list_files", { path: "." })).result, /\.env/);
+  const listed = (await t.call("list_files", { path: "." })).result;
+  assert.match(listed, /^\.env  \(kept from you by the read rule\)$/m);
+  assert.doesNotMatch(listed, /hunter2/);
 });
 
 test("a role gets only its own tools", async () => {
