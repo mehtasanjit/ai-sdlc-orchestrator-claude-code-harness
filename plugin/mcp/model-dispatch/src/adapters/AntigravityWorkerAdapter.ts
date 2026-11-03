@@ -120,6 +120,39 @@ function tryDate(t: any, dispatchStart: Date): Date {
 
 const msOf = (s: unknown): number => (typeof s === "number" && Number.isFinite(s) ? Math.round(s * 1000) : 0);
 
+/** The token counts a heartbeat and a receipt both carry, with the SDK's field names. */
+const USAGE_COUNTS = ["prompt_token_count", "cached_content_token_count", "candidates_token_count", "thoughts_token_count", "total_token_count"] as const;
+/** A heartbeat's work_s is rounded to a tenth of a second (worker/agy_supervisor.py), a receipt's to a thousandth. */
+const HEARTBEAT_WORK_ROUNDING_S = 0.1;
+
+/**
+ * A stopped worker's receipt brought up to its last heartbeat, when that heartbeat is newer: what it counts beyond the
+ * receipt's tries at a location is one more try there (ended as the engine stopped the worker), and the call's work,
+ * wait and sleep are the heartbeat's. Null when the heartbeat is not newer, or the receipt has no tries to add to.
+ *
+ * Newer: more of some billed token count, or more of the worker's own work than the heartbeat's rounding explains. For
+ * a worker the engine stopped both readings only grow, so a receipt it wrote after its last heartbeat (on SIGTERM) is
+ * never older; a thinking worker writes one as each session ends and goes on in later sessions, so one frozen in a
+ * later session leaves an older receipt behind. Billed from that receipt alone, the session it froze in was neither
+ * paid nor counted as its work, and a carried-on step's budget is read from that work (thinking.ts carryOnBudget).
+ */
+function receiptUpToHeartbeat(receipt: any, hb: Heartbeat, endedBy: string): any {
+  const tries: any[] = Array.isArray(receipt?.tries) ? receipt.tries : [];
+  if (!tries.length) return null;
+  const extra: any[] = [];
+  for (const [location, u] of Object.entries(hb.usage ?? {})) {
+    const usage: Record<string, number> = {};
+    for (const f of USAGE_COUNTS) {
+      const held = tries.filter((t) => t?.location === location).reduce((a, t) => a + (Number(t?.usage?.[f]) || 0), 0);
+      usage[f] = Math.max(0, (Number((u as any)?.[f]) || 0) - held);
+    }
+    if (USAGE_COUNTS.some((f) => usage[f] > 0)) extra.push({ location, ended_by: endedBy, http_codes: [], s: 0, usage });
+  }
+  const moreWork = typeof hb.work_s === "number" && typeof receipt?.work_s === "number" && hb.work_s > receipt.work_s + HEARTBEAT_WORK_ROUNDING_S;
+  if (!extra.length && !moreWork) return null;
+  return { ...receipt, tries: [...tries, ...extra], work_s: hb.work_s, google_wait_s: hb.wait_s, ...(typeof hb.slept_s === "number" ? { slept_s: hb.slept_s } : {}) };
+}
+
 export class AntigravityWorkerAdapter implements ModelAdapter {
   readonly id: string;
   readonly modelConfig: ModelConfig;
@@ -438,14 +471,18 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     const after = takeInventory(workdir, { exclude: [outDir] });
 
     // Read whatever the exit status: a failed delegation still spent tokens. A worker that wrote nothing (killed
-    // before it could) is billed its last heartbeat's usage.
+    // before it could) is billed its last heartbeat's usage; one the engine stopped after its last receipt, that
+    // receipt brought up to its last heartbeat (receiptUpToHeartbeat).
     const sidecar = readJsonIfPresent(usageFile);
     const stopped = AntigravityWorkerAdapter.stoppedBy(run.killed);
-    const bill = sidecar
-      ? this.bill(sidecar, { started: dispatchDate, answered: run.ok, stopped })
+    const caughtUp = stopped && sidecar && run.lastBeat ? receiptUpToHeartbeat(sidecar, run.lastBeat, stopped) : null;
+    const receipt = caughtUp ?? sidecar;
+    const bill = receipt
+      ? this.bill(receipt, { started: dispatchDate, answered: run.ok, stopped })
       : run.lastBeat
         ? this.billHeartbeat(run.lastBeat, { started: dispatchDate, stopped })
         : null;
+    const fromBeat = run.lastBeat !== null && (caughtUp !== null || receipt === null);
     const tokens = bill?.tokens ?? mapSidecarTokens(null);
     const cost = bill?.cost_usd ?? 0;
     const latency = Date.now() - started;
@@ -497,11 +534,12 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       unreadable_n: diff.unreadable.length,
     });
 
-    // The worker's own reason when it gave one (a refusal, a stall, an interrupted answer, the work limit).
+    // The worker's own reason when it gave one (a refusal, a stall, an interrupted answer, the work limit); a stopped
+    // worker's says what its tokens were read from.
     const error = run.ok
       ? undefined
       : run.killed !== null
-        ? run.error
+        ? `${run.error}${fromBeat ? "; its tokens are its last heartbeat's" : ""}. ${run.tail}`
         : typeof sidecar?.error === "string" && sidecar.error
           ? `The agent worker exited ${run.code}: ${sidecar.error}`
           : run.error;
@@ -623,7 +661,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     waitBoundS: number,
     packetId: string,
     signal?: AbortSignal,
-  ): Promise<{ ok: boolean; stdout: string; error: string; code: number | null; killed: string | null; lastBeat: Heartbeat | null }> {
+  ): Promise<{ ok: boolean; stdout: string; error: string; tail: string; code: number | null; killed: string | null; lastBeat: Heartbeat | null }> {
     const spawnStarted = Date.now();
     return new Promise((resolveRun) => {
       const child = spawn(this.python, args, {
@@ -668,7 +706,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       };
 
       child.on("error", (err) => {
-        settle({ ok: false, stdout, code: null, killed: null, lastBeat: watch.lastBeat, error: `Could not start the agent worker with '${this.python}': ${err.message}` });
+        settle({ ok: false, stdout, code: null, killed: null, lastBeat: watch.lastBeat, tail: "", error: `Could not start the agent worker with '${this.python}': ${err.message}` });
       });
 
       child.on("close", (code) => {
@@ -688,17 +726,15 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         const tailText = tail(withoutHeartbeats(stderr));
         if (killed !== null) {
           if (killed !== STOPPED_BY_REQUEST) log("warn", "agsdk.backstop_kill", { packet_id: packetId, reason: killed });
-          settle({
-            ok: false, stdout, code, killed, lastBeat: watch.lastBeat,
-            error: `The agent worker was stopped: ${killed}${watch.lastBeat ? "; its tokens are its last heartbeat's" : ""}. ${tailText}`,
-          });
+          // Why it was stopped; execute() adds what its tokens were read from, which only its receipt can tell.
+          settle({ ok: false, stdout, code, killed, lastBeat: watch.lastBeat, tail: tailText, error: `The agent worker was stopped: ${killed}` });
           return;
         }
         if (code !== 0) {
-          settle({ ok: false, stdout, code, killed: null, lastBeat: watch.lastBeat, error: `The agent worker exited ${code}. ${tailText}` });
+          settle({ ok: false, stdout, code, killed: null, lastBeat: watch.lastBeat, tail: tailText, error: `The agent worker exited ${code}. ${tailText}` });
           return;
         }
-        settle({ ok: true, stdout, code, killed: null, lastBeat: watch.lastBeat, error: "" });
+        settle({ ok: true, stdout, code, killed: null, lastBeat: watch.lastBeat, tail: tailText, error: "" });
       });
     });
   }

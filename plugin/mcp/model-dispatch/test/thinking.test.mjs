@@ -652,9 +652,11 @@ test("a step killed again after it was carried on stops, saying so; a kill with 
 test("through the agent door: a frozen worker is killed by the kill rule, and the step goes on in a new worker from its saved conversation", { timeout: 60_000 }, async () => {
   // Shortened kill rule: no heartbeat for 2 s on two checks 1 s apart, then SIGKILL 1 s after SIGTERM.
   const SHORT = { noBeatS: 2, confirmS: 1, termGraceS: 1 };
-  // The worker keeps its summary after its first status, beats once (30 s of its own work), then freezes.
+  // The worker's first session ends (its receipt: 1 s of work) and it keeps its summary after the status; its next
+  // session beats once (30 s of its own work in all), then the worker freezes.
   const kept = { done: false, missing: ["units-001.json, accepted"], accepted: ["header.json"], conversation_id: "conv-1", text: "" };
-  const frozen = { writes: [{ atMs: 20, summary: kept }], beats: [{ atMs: 50, hb: beat({ work_s: 30 }) }], holdMs: "forever", ignoreTerm: true };
+  const firstSession = { sdk_version: "0.1.22", vertex_location: "global", work_s: 1, usage: { prompt_token_count: 10 }, tries: [{ location: "global", ended_by: "answer", http_codes: [], s: 1, usage: { prompt_token_count: 10 } }] };
+  const frozen = { writes: [{ atMs: 20, sidecar: firstSession, summary: kept }], beats: [{ atMs: 50, hb: beat({ work_s: 30, usage: { global: { prompt_token_count: 40 } } }) }], holdMs: "forever", ignoreTerm: true };
   const finishes = { holdMs: 50, sidecar: { sdk_version: "0.1.22", usage: { prompt_token_count: 10 } }, summary: { done: true, missing: [], accepted: ["header.json", "units-001.json"], conversation_id: "conv-1", text: "" } };
   const step = async (runs) => {
     const fake = fakeWorkerPython({ runs });

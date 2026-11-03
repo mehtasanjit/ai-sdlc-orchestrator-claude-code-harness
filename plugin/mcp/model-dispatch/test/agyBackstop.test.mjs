@@ -187,3 +187,41 @@ test("an agent worker killed after its heartbeat stopped is billed its last hear
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A thinking worker writes its receipt as each of its sessions ends and runs on in later sessions, so a worker frozen
+// in a later session leaves an older receipt behind. Found with the thinking step's carry-on, whose budget is the
+// killed worker's own work: billed from that older receipt, the session it froze in was neither paid nor timed.
+test("a killed worker is billed its newest reading: its last heartbeat when its receipt is older, its receipt when written after", async () => {
+  const SESSION_1 = { prompt_token_count: 1000, cached_content_token_count: 0, candidates_token_count: 100, thoughts_token_count: 0, total_token_count: 1100 };
+  const BOTH = { prompt_token_count: 5000, cached_content_token_count: 0, candidates_token_count: 400, thoughts_token_count: 0, total_token_count: 5400 };
+  const receipt = (usage, work_s) => ({ sdk_version: "0.1.22", vertex_location: "global", work_s, usage, tries: [{ location: "global", ended_by: "answer", http_codes: [], s: work_s, usage }] });
+  const killedOnce = async (plan) => {
+    const fake = fakeWorkerPython({ runs: [plan] });
+    const dir = mkdtempSync(join(tmpdir(), "backstop-newest-"));
+    mkdirSync(join(dir, "work"));
+    try {
+      const packet = { id: "tp_x_002", phase: "codegen", task_type: "x", module: "m", instruction: "do", inputs: [], outputSchema: { type: "object" }, acceptance: [], budget: { maxInputTokens: 1000, maxOutputTokens: 1000 } };
+      return await withEnv({ GEMINI_WORKER_PYTHON: fake.python, GOOGLE_CLOUD_PROJECT: "p", GOOGLE_CLOUD_LOCATION: "global" }, () =>
+        Promise.race([new AntigravityWorkerAdapter({ ...FLASH, worker_timeout_sec: 600 }, { backstop: SHORT }).execute(packet, undefined, { work_dir: join(dir, "work"), telemetry_path: join(dir, "t.jsonl") }), sleep(15_000).then(() => null)]));
+    } finally {
+      for (const s of fake.runs()) if (alive(s.pid)) { try { process.kill(s.pid, "SIGKILL"); } catch { /* gone */ } }
+      fake.cleanup();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  // Its first session ended (receipt: 1 s of work, that session's tokens); the next one billed more (the heartbeat:
+  // 30 s, both sessions' tokens), and then the worker froze.
+  const stale = await killedOnce({ writes: [{ atMs: 20, sidecar: receipt(SESSION_1, 1) }], beats: [{ atMs: 60, hb: beat({ work_s: 30, usage: { global: BOTH } }) }], holdMs: "forever", ignoreTerm: true });
+  assert.ok(stale, "the frozen worker was not stopped within 15 s");
+  assert.equal(stale.worker_stopped, "killed");
+  assert.deepEqual({ input: stale.tokens.input, output: stale.tokens.output }, { input: 5000, output: 400 }, "the last heartbeat's tokens, not the older receipt's");
+  assert.equal(stale.attempts[0].gemini.work_ms, 30_000, "the last heartbeat's work");
+  assert.ok(Math.abs(stale.cost_usd - flashCost({ input: 5000, input_cached: 0, output: 400 })) < 1e-9, `billed ${stale.cost_usd}`);
+  assert.match(String(stale.error), /its tokens are its last heartbeat's/);
+  // A worker that answers SIGTERM with its receipt, after its last heartbeat, is billed that receipt, and says so.
+  const final = await killedOnce({ beats: [{ atMs: 50, hb: beat({ work_s: 1, usage: { global: SESSION_1 } }) }], holdMs: "forever", onTerm: { sidecar: receipt(BOTH, 31), exitCode: 1 } });
+  assert.ok(final, "the worker was not stopped within 15 s");
+  assert.deepEqual({ input: final.tokens.input, output: final.tokens.output }, { input: 5000, output: 400 }, "the receipt's tokens");
+  assert.equal(final.attempts[0].gemini.work_ms, 31_000);
+  assert.doesNotMatch(String(final.error), /its tokens are its last heartbeat's/, "billed from its receipt, not its heartbeat");
+});
