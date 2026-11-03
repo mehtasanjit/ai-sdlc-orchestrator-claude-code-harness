@@ -203,6 +203,26 @@ test("a step whose worker stopped after every piece was accepted is done; one wi
   assert.equal(again.calls.dispatch[0].thinking.resumeId, "c7");
 });
 
+test("files git ignores (a test runner's cache) do not stop a step; a tracked file still does; outside git, nothing is ignored", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const repo = project();
+  execFileSync("git", ["-C", repo, "init", "-q"]);
+  mkdirSync(join(repo, "src"), { recursive: true });
+  writeFileSync(join(repo, "src", "a.ts"), "export const a = 1;\n");
+  // pytest writes its cache with a .gitignore of "*" inside it, so git ignores the whole folder.
+  mkdirSync(join(repo, ".pytest_cache", "v", "cache"), { recursive: true });
+  writeFileSync(join(repo, ".pytest_cache", ".gitignore"), "*\n");
+  const cache = [".pytest_cache/.gitignore", ".pytest_cache/v/cache/nodeids"];
+  const step = (root, changes) => runThinkingStep(args(root), deps(AGENT, () => result({ workspace_changes: changes })).d);
+  assert.equal((await step(repo, cache)).route, "done", "a cache the project's own check wrote is not a change to the project");
+  const source = await step(repo, [...cache, "src/a.ts"]);
+  assert.equal(source.route, "stopped");
+  assert.match(source.reason, /src\/a\.ts/);
+  assert.doesNotMatch(source.reason, /pytest_cache/);
+  const plain = project();
+  assert.equal((await step(plain, cache)).route, "stopped", "with no git to say what is ignored, every change counts");
+});
+
 test("each role's hand-in paths are fixed under the run's folder", () => {
   const a = { output_dir: "out/" };
   assert.deepEqual(roleOutputs("requirements", a), { requirements: "out/requirements.md" });

@@ -10,6 +10,7 @@
  * no other model takes it over. A gate's revise carries on the same conversation.
  */
 
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -113,6 +114,19 @@ export function reviewPathProblem(projectRoot: string, dir: string, reviewPath: 
     : "..";
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return `review_path '${String(reviewPath)}' must be a file inside output_dir ('${dir}'), given relative to project_root`;
   return null;
+}
+
+/**
+ * The paths git does not ignore in the project (tracked files, and untracked ones it would add), from a list relative to
+ * project_root. Outside a git work tree, or if git cannot answer, every path is kept: nothing says what is ignored.
+ */
+export function notIgnoredByGit(projectRoot: string, paths: string[]): string[] {
+  if (!paths.length) return paths;
+  const r = spawnSync("git", ["-C", projectRoot, "check-ignore", "-z", "--stdin"], { input: paths.join("\0") + "\0", encoding: "utf8", timeout: 30_000 });
+  // check-ignore exits 0 when some path is ignored, 1 when none is, and otherwise (128: not a work tree) answers nothing.
+  if (r.status !== 0 && r.status !== 1) return paths;
+  const ignored = new Set((r.stdout ?? "").split("\0").filter(Boolean));
+  return paths.filter((p) => !ignored.has(p));
 }
 
 /** A step's own name in its run: its role, and for a senior review with its own review_path, that path too. */
@@ -292,7 +306,10 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   // Gemini has no tool that writes the project; any change outside the step's own folders means something else
   // did, or a tool misbehaved: nothing from the step is used.
   const own = [posix(args.output_dir).replace(/\/+$/, "") + "/", ".sdlc/"];
-  const changed = (result.workspace_changes ?? []).map(posix).filter((p) => !own.some((o) => p.startsWith(o)));
+  // What git ignores is not the project's own: a check the step ran writes it (a test runner's cache, an OS's folder
+  // file), and git never sees it (review: pytest's cache stopped a finished step). A file git tracks, or would add,
+  // still stops the step.
+  const changed = notIgnoredByGit(args.project_root, (result.workspace_changes ?? []).map(posix).filter((p) => !own.some((o) => p.startsWith(o))));
   if (changed.length) return stop(`project files changed while the step ran: ${changed.slice(0, 10).join(", ")}${changed.length > 10 ? ` and ${changed.length - 10} more` : ""}`);
   if (!result.success && !summary.done) return stop(`the ${model.model_name} step could not finish: ${result.error ?? "no reason given"}`, summary.missing);
   if (!summary.done) return stop(`the ${model.model_name} step ended with pieces still owed`, summary.missing);
