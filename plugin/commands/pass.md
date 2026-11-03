@@ -8,7 +8,7 @@ Invoke the `orchestrator` subagent to execute one full SDLC run (with `--mode=br
 **Arguments:** $ARGUMENTS
 
 **Argument parsing (the orchestrator must do this):**
-- `--auth=<vendor|estimated>` — **required**. Picks the telemetry mode for the whole run. `vendor` dispatches every LLM call via the MCP server so telemetry carries real vendor-reported tokens; `estimated` uses a char-count heuristic for direct-tier calls. If the flag is missing or carries any other value, abort — see rule 6 in the orchestrator's system prompt for the exact abort text.
+- `--auth=<vendor|estimated>` — **required**. Picks the telemetry mode for the whole run. `vendor` dispatches every typed file and every thinking step the policy routes to another vendor via the MCP server, so telemetry carries real vendor-reported tokens (the session's own model runs the phases routed to it); `estimated` uses a char-count heuristic for direct-tier calls. If the flag is missing or carries any other value, abort — see rule 6 in the orchestrator's system prompt for the exact abort text.
 - `--policy=<name>` — routing policy name. When absent, resolves to the current project's `default_policy` field from `.sdlc/project.json` (written by `/mmo:setup`'s policy step or by `/mmo:policy`), or `opus-plus-flash` if no project default is set.
 - `--study=<study-id>` — case-study identifier. Defaults to `workforce-ops`. Set this to a project-specific id when running against a brief other than the shipped `examples/workforce-ops/brief.md`, so telemetry and packets stay grouped by project.
 - `--run-id=<run-id>` — run identifier within the study. Defaults to `pass1`.

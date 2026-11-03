@@ -61,6 +61,7 @@ The session pauses at each HITL gate; approve or redirect at each one.
 Best when you want to script the run, redirect all output to a file, or run overnight without babysitting.
 
 ```bash
+export CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-7   # the policy's Claude model; the run-start check needs it in both auth modes
 claude --print "/mmo:pass --auth=vendor --policy=opus-only --run-id=pass1 examples/workforce-ops/brief.md" \
   --permission-mode acceptEdits \
   --output-format stream-json --verbose \
@@ -80,7 +81,7 @@ Every HITL gate auto-approves. The full transcript lands in `live-run.log`.
 
 ### Arguments
 
-- `--auth=<vendor|estimated>` — **required**. `vendor` dispatches every typed file and every thinking step the policy routes to another vendor via the MCP server, so telemetry carries real vendor-reported tokens (needs `ANTHROPIC_API_KEY`); `estimated` uses a char-count heuristic for direct-tier calls (works on a Claude Code subscription without an API key). Both require `CLAUDE_CODE_SUBAGENT_MODEL` set before `claude` launches (from a terminal, exported or in the `env` block of `<project>/.claude/settings.local.json`; from the desktop app, in the `env` block of `~/.claude/settings.json`, since the app ignores project settings files), set to the policy's driver model — the driver subagents execute whatever that variable names, and the orchestrator's run-start check stops the run (printing where to set it) when it is unset or disagrees with what the policy prices. See [setup.md](setup.md#anthropic) and [methodology.md](methodology.md).
+- `--auth=<vendor|estimated>` — **required**. `vendor` dispatches every typed file and every thinking step the policy routes to another vendor via the MCP server, so telemetry carries real vendor-reported tokens (`ANTHROPIC_API_KEY` is needed only when the policy has a model the server calls through the Anthropic API (`adapter: builtin-anthropic`, or a `claude-cli` model with its own `auth.env`); pre-flight names that model and halts when the key is missing); `estimated` uses a char-count heuristic for direct-tier calls (works on a Claude Code subscription without an API key). Both require `CLAUDE_CODE_SUBAGENT_MODEL` set before `claude` launches (from a terminal, exported or in the `env` block of `<project>/.claude/settings.local.json`; from the desktop app, in the `env` block of `~/.claude/settings.json`, since the app ignores project settings files), set to the policy's driver model — the driver subagents execute whatever that variable names, and the orchestrator's run-start check stops the run (printing where to set it) when it is unset or disagrees with what the policy prices. See [setup.md](setup.md#anthropic) and [methodology.md](methodology.md).
 - `--policy=<name>` — routing policy. Resolves in this order: the flag, then `.sdlc/project.json.default_policy` written by `/mmo:setup` or `/mmo:policy change`, then `opus-plus-flash`. Any file under `plugin/config/policies/*.yaml` is a valid name — that listing is the authoritative preset set (a wrong name makes the loader print the live list). The directory sits inside the installed plugin, so a custom YAML dropped there is wiped by every `/plugin update`; put a per-repo policy in `<project root>/routing-policy.yaml` instead, which the loader prefers automatically.
 - `--study=<id>` — case-study identifier. Defaults to `workforce-ops`. Change this whenever you run the pipeline on a brief other than the shipped one, so telemetry and packets stay grouped by project. Output lands in `examples/<study-id>/passes/<run-id>/`.
 - `--run-id=<id>` — becomes the pass's directory name under `examples/<study-id>/passes/`. Any string works. Defaults to `pass1`.
@@ -126,6 +127,7 @@ Steps:
    Or headless:
 
    ```bash
+   export CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-7   # the Claude model of the project's default policy (opus-plus-flash)
    claude --print "/mmo:pass --auth=vendor --study=my-project --run-id=pass1 my-brief.md" \
      --permission-mode acceptEdits \
      --output-format stream-json --verbose \

@@ -638,6 +638,14 @@ test("the version notes have no section for a build that was never released, and
 /** One version's note, by its version. */
 const versionNote = (version) => NOTES.slice(NOTES.indexOf(`### v${version}\n`)).split(/\n(?=### v)/)[0];
 
+test("the current version's note carries no run names or session history", () => {
+  // Review of 0.10.0: the two note tests below were pinned to v0.9.3, so the current note went unchecked.
+  const version = JSON.parse(read("plugin", ".claude-plugin", "plugin.json")).version;
+  const note = versionNote(version);
+  assert.ok(note.length > 100, `a v${version} note in docs/methodology.md`);
+  assert.doesNotMatch(note, /\bLarge\d|\bRun \d+\b|first try/, "no run names or session history");
+});
+
 test("the v0.9.3 note carries no run names, says how pre-flight events count, and which turns are command turns", () => {
   const version = "0.9.3";
   const note = versionNote(version);
