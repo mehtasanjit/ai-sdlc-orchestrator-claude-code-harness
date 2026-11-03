@@ -7,10 +7,10 @@
 # its checks after one fix round is handed back to the session's Claude helper, and its
 # telemetry events carry judgment_fallback. Discovery, the orchestrator's own turns and
 # the gates run on the driver: model, which the driver check pins
-# (CLAUDE_CODE_SUBAGENT_MODEL) under both auth modes; estimated and vendor alike. Version 1 of this policy ran
+# (CLAUDE_CODE_SUBAGENT_MODEL) under both auth modes; estimated and vendor alike. Versions up to 2 of this policy ran
 # under plugins before 0.10.0, where the session's own model planned and reviewed
-# whatever the rules said; version 2 keeps those runs apart in telemetry.
-version: 2
+# whatever the rules said; version 3 keeps those runs apart in telemetry.
+version: 3
 name: flash-agsdk-only
 
 # The session's model: the orchestrator, discovery, the gates, and any thinking step
@@ -41,6 +41,7 @@ models:
     # the flat global endpoint by default. Vertex-only: the Antigravity SDK is
     # ADC-only and has no API-key door, so no `auth:` block.
     worker_timeout_sec: 540
+    failover_locations: [us, eu]  # a refused or held call carries on at us, then eu, billed +10% there
     # No max_output_tokens_absolute — agent sessions manage their own per-turn
     # limits.
 

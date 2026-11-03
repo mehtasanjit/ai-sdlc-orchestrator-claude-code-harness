@@ -9,7 +9,8 @@
 # one here would type files. With none, the last attempt follows the rules below.
 # Version 2: the greenfield passes on runs/argon4-pairings (ai-sdlc-multi-model-orchestration)
 # ran a different policy under this name as version 1 (other rules and model ids). Telemetry
-# records policy_name and policy_version, so this one is version 2 to keep the two apart.
+# records policy_name and policy_version, so this one started at version 2 to keep the two apart
+# (version 3 turns failover on).
 #
 # Thinking steps follow the rules below (plugin 0.10.0). Requirements, the architect
 # and both reviewers run on Argon as an agent through execute_judgment, in a scratch
@@ -17,10 +18,10 @@
 # its checks after one fix round is handed back to the session's Claude helper, and its
 # telemetry events carry judgment_fallback. Discovery, the orchestrator's own turns and
 # the gates run on the driver: model, which the driver check pins
-# (CLAUDE_CODE_SUBAGENT_MODEL) under both auth modes; estimated and vendor alike. Version 2 of this policy ran
+# (CLAUDE_CODE_SUBAGENT_MODEL) under both auth modes; estimated and vendor alike. Versions up to 3 of this policy ran
 # under plugins before 0.10.0, where the session's own model planned and reviewed
-# whatever the rules said; version 3 keeps those runs apart in telemetry.
-version: 3
+# whatever the rules said; version 4 keeps those runs apart in telemetry.
+version: 4
 name: argon4-plus-flash38
 
 # The session's model: the orchestrator, discovery, the gates, and any thinking step
@@ -47,6 +48,7 @@ models:
     # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so
     # no `auth:` block.
     worker_timeout_sec: 540
+    failover_locations: [us, eu]  # a refused or held call carries on at us, then eu, billed +10% there
     # No `reasoning:`: every typist runs at low effort (executor/tools.ts
     # TYPIST_EFFORT), so a tier here would read as a setting and change nothing.
     # No max_output_tokens_absolute — agent sessions manage their own per-turn
@@ -68,6 +70,7 @@ models:
     # Pinned with Argon's leaf, so both models bill on the same endpoint.
     region: global
     worker_timeout_sec: 540
+    failover_locations: [us, eu]  # a refused or held call carries on at us, then eu, billed +10% there
 
 rules:
   # Judgment tier → Argon. The server is never asked to route these in a brownfield

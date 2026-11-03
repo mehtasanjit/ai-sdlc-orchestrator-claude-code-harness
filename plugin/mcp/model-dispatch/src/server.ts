@@ -62,10 +62,12 @@ import { EDIT_ANSWER_SCHEMA } from "./executor/brief.js";
 import { HANDOFF_TOOLS, HANDOFF_TOOL_NAMES, handleHandoffTool } from "./handoff/tools.js";
 import { handoffListing } from "./handoff/listing.js";
 import { leanOpusCliProblem } from "./executor/typists.js";
-import { probeEvents, probeTypists, runTypingLeaves } from "./typistProbe.js";
+import { judgingAgentLeaves, probeEvents, probeTypists, runTypingLeaves } from "./typistProbe.js";
 import { runCard } from "./runCard.js";
 import { PLUGIN_ROOT } from "./paths.js";
 import { JUDGMENT_ROLES, executeJudgment, type JudgmentDeps } from "./judgment.js";
+import { BusyLedger } from "./busyLedger.js";
+import { bindingConflict, checkAgsdk, leafLocations, writeBinding, type BoundLeaf } from "./agsdkPreflight.js";
 
 /**
  * Cheap up-front schema validation for TaskPacket inputs to execute_with_model.
@@ -141,6 +143,22 @@ let runState: ServerRun | undefined;
 const runStates = new Map<string, ServerRun>();
 /** A run's key: a run id names a folder under one project's .sdlc/runs, so the project is part of it. */
 const runKey = (projectRoot: string | undefined, runId: string) => `${resolvePath(resolveProjectRoot(projectRoot) ?? "")}|${runId}`;
+
+/**
+ * Each run's busy ledger (busyLedger.ts), by its pre-flight's record: every batch, stage and agent-door dispatch of a
+ * run reads one account of whether Google is serving its Gemini models. A call with no recorded run reads the server's.
+ */
+const ledgers = new WeakMap<ServerRun, BusyLedger>();
+const serverLedger = new BusyLedger();
+function ledgerFor(run: ServerRun | undefined): BusyLedger {
+  if (!run) return serverLedger;
+  let l = ledgers.get(run);
+  if (!l) { l = new BusyLedger(); ledgers.set(run, l); }
+  return l;
+}
+
+/** The leaves a policy can reach that call Gemini: the Antigravity doors' and the direct route's. */
+const GEMINI_ADAPTERS = new Set(["antigravity-worker", "mcp:model-dispatch", "mcp:gemini-flash-server"]);
 let activePolicyKey = "";
 
 /** Slot choices, spelled `slot=option[,slot=option...]`. Property of the install. */
@@ -290,8 +308,11 @@ function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: str
   });
   if (cli.halt || cli.warning) log("warn", "preflight.claude_cli", { problem: cli.check.claude_cli, halts: !!cli.halt });
   const policyNotes = executorPolicyNotes(policy, overrides);
-  const haltReason = [assessment.halt_reason, cli.halt].filter((r): r is string => !!r).join(" ") || null;
-  const warnings = cli.warning ? [...assessment.warnings, cli.warning] : assessment.warnings;
+  // The Antigravity SDK the worker's Python has, against the pin, and a stray Vertex redirect (agsdkPreflight.ts).
+  const reachable = policy.models.filter((m) => !notSelected.has(m.id));
+  const sdk = checkAgsdk(reachable.filter((m) => m.adapter === "antigravity-worker"), process.env as Record<string, string | undefined>);
+  const haltReason = [assessment.halt_reason, cli.halt, sdk.halt].filter((r): r is string => !!r).join(" ") || null;
+  const warnings = [...assessment.warnings, ...(cli.warning ? [cli.warning] : []), ...sdk.warnings];
 
   // Resolved Gemini configuration — the project and region the run will bill.
   const adcPath = defaultAdcPath();
@@ -379,7 +400,17 @@ function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: str
     policy_notes: policyNotes,
     executor: cli.check,
     run_card: card,
+    // The Antigravity SDK that will run: its version, the interpreter, the pin and the usage reading applied.
+    ...(sdk.agsdk ? { agsdk: sdk.agsdk } : {}),
   };
+}
+
+/** The reachable Gemini leaves' locations, for the run's binding. */
+function geminiLeaves(policy: Policy): BoundLeaf[] {
+  const notSelected = unreachableModelIds(policy, selectOverrides());
+  return policy.models
+    .filter((m) => !notSelected.has(m.id) && GEMINI_ADAPTERS.has(m.adapter))
+    .map((m) => ({ id: m.id, model_name: m.model_name, adapter: m.adapter, locations: leafLocations(m, process.env as Record<string, string | undefined>) }));
 }
 
 interface DispatchOnce {
@@ -404,11 +435,13 @@ interface DispatchOptions {
   run?: ServerRun;
   /** The caller writes the events itself, with its own fields (execute_judgment). */
   noAppend?: boolean;
+  /** The request's own stop: a typist or agent worker the call runs is stopped with it. */
+  signal?: AbortSignal;
 }
 
 /** Route one packet, run it, log it; append its telemetry unless the apply loop records it (forApply). */
 async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, opts: DispatchOptions = {}): Promise<DispatchOnce> {
-  const { forApply = false, force, run = runState, noAppend = false } = opts;
+  const { forApply = false, force, run = runState, noAppend = false, signal } = opts;
   const decision = force ?? pickModel(routeContext(packet), policy, selectOverrides());
   log("info", "route.decide", {
     packet_id: packet.id,
@@ -451,6 +484,7 @@ async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, opts: Di
     project_root: a.project_root,
     work_dir: a.work_dir ?? a.project_root,
     telemetry_path: a.telemetry_path,
+    ...(signal ? { signal } : {}),
   });
   for (const att of result.attempts ?? []) {
     log("debug", "dispatch.attempt", {
@@ -571,12 +605,24 @@ async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, opts: Di
     // this share of an in-session worker, so its receipt-only side calls
     // and unlogged tokens stay in the true total (review finding M4).
     transcript_logged_cost_usd: att.transcript_logged_cost_usd,
+    // Gemini calls only (types.ts GeminiCallRecord): where each try ran, Google's codes, its own tokens and dollars.
+    gemini: att.gemini,
   }));
   if (a.telemetry_path && !forApply && !noAppend) {
     for (const ev of events) appendEvent(a.telemetry_path, ev);
     log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: events.length });
   }
   return { decision, result, events };
+}
+
+/** Whether an execute_with_model call's packet routes to an antigravity-worker leaf (the agent door); false when unknown. */
+function routesToAgentDoor(a: any): boolean {
+  try {
+    const { policy } = runFor(a);
+    return getModel(policy, pickModel(routeContext(a.packet as TaskPacket), policy, selectOverrides()).modelId).adapter === "antigravity-worker";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -704,19 +750,45 @@ async function runPacket(raw: unknown, a: any, signal?: AbortSignal): Promise<un
   }
 
   if (!apply) {
+    const routed = pickModel(routeContext(packet), policy, selectOverrides());
+    const leaf = getModel(policy, routed.modelId);
     // Outside the apply form an agent-door worker edits the project folder itself: while a brownfield run's write
     // contract is active nothing may write the project outside it and its snapshots, so such a packet is not sent.
     if (projectRoot && hasActiveWriteContract(projectRoot)) {
-      const d = pickModel(routeContext(packet), policy, selectOverrides());
-      if (getModel(policy, d.modelId).adapter === "antigravity-worker") {
+      if (leaf.adapter === "antigravity-worker") {
         throw new Error(
-          `${packet0.id}: routed to '${d.modelId}' (antigravity-worker), an agent that edits the project folder itself. While a brownfield run's ` +
+          `${packet0.id}: routed to '${routed.modelId}' (antigravity-worker), an agent that edits the project folder itself. While a brownfield run's ` +
             "write contract is active, nothing writes the project outside it and its per-file snapshots, so nothing was dispatched.",
         );
       }
     }
-    const one = await dispatchOnce(packet, policy, a, { run });
-    return { decision: one.decision, result: one.result, events: one.events, terminal_reason: one.result.terminal_reason };
+    // The agent door bills the Google project this server process resolves: a server restarted mid-run (another
+    // environment, another project) dispatches nothing until its own pre-flight has checked that project and the SDK.
+    if (leaf.adapter === "antigravity-worker" && !run) {
+      throw new Error(
+        `${packet0.id}: routed to '${routed.modelId}' (antigravity-worker). Call preflight_dispatch first: this server has not checked ` +
+          "the Google project and SDK it would use. Nothing was dispatched.",
+      );
+    }
+    const ledger = ledgerFor(run);
+    const sentAt = ledger.time();
+    const one = await dispatchOnce(packet, policy, a, { run, signal });
+    const out: Record<string, unknown> = { decision: one.decision, result: one.result, events: one.events, terminal_reason: one.result.terminal_reason };
+    if (leaf.adapter === "antigravity-worker") {
+      // The run's busy ledger: a dispatch Google could not serve is a failed dispatch, and once nothing of the model was
+      // served for the ledger's whole window, the run stops here (the orchestrator stops and tells the person).
+      const last = one.result.attempts?.[one.result.attempts.length - 1];
+      if (last?.unavailable) {
+        const stop = ledger.unavailable(leaf.model_name, last.unavailable, sentAt);
+        if (stop) {
+          const halt = `${stop}; the run stopped here. Run it again when Google serves again`;
+          log("warn", "dispatch.unavailable_halt", { packet_id: packet.id, model_id: routed.modelId });
+          one.result.halt = halt;
+          out.halt = halt;
+        }
+      } else if (one.result.success || one.result.tokens.output > 0) ledger.served(leaf.model_name);
+    }
+    return out;
   }
 
   // Each call's events are written as soon as the loop has judged it (its record hook), as greenfield's stage runner
@@ -737,9 +809,12 @@ async function runPacket(raw: unknown, a: any, signal?: AbortSignal): Promise<un
     },
     route: (p) => pickModel(routeContext(p), policy, selectOverrides()),
     dispatch: async (p, force) => {
-      const one = await dispatchOnce(p, policy, a, { forApply: true, force, run });
+      const one = await dispatchOnce(p, policy, a, { forApply: true, force, run, signal });
       return { decision: one.decision, result: one.result, events: one.events };
     },
+    // The run's busy ledger, keyed by the model Google serves (two leaves of one model share its account).
+    ledger: ledgerFor(run),
+    modelOf: (d) => getModel(policy, d.modelId).model_name,
     // A retry routed to a Claude leaf of a brownfield run is typed here by the lean typist (applyTypist.ts), so it
     // stays in the loop: greenfield's ladder ends in one lean Opus attempt inside the server.
     typesInServer: (d) => usesServerTypist(getModel(policy, d.modelId), packet, run),
@@ -1043,6 +1118,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       return await handleExecutorTool(name, a0, {
         run: () => runState,
         policy: (run) => ensurePolicy(run.policyName, run.projectRoot, run.policyPath),
+        ledger: (run) => ledgerFor(run as ServerRun),
         overrides: selectOverrides(),
         progress: { token, send: (params) => extra.sendNotification({ method: "notifications/progress", params } as any) },
       });
@@ -1062,11 +1138,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     switch (name) {
       case "execute_with_model": {
         const a = args as any;
-        // An apply packet's checks and typist calls can run long: it sends progress as execute_batch does (a message
-        // when it settles, a heartbeat between), so Claude Code does not cut the call off as idle. Any other packet is
-        // one model call, as before.
+        // An apply packet's checks and typist calls can run long, and so can an agent-door session: each sends progress
+        // as execute_batch does (a message when it settles, a heartbeat between), so Claude Code does not cut a call the
+        // server is still running off as idle. Any other packet is one model call, as before.
         const token = (req.params as any)._meta?.progressToken;
-        const progress = normalizeApply(a?.packet?.apply) !== null
+        const progress = normalizeApply(a?.packet?.apply) !== null || routesToAgentDoor(a)
           ? batchProgress({ token, send: (params) => extra.sendNotification({ method: "notifications/progress", params } as any) }, 1)
           : null;
         try {
@@ -1097,7 +1173,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             return { model: getModel(policy, d.modelId), reason: d.reason };
           },
           dispatch: async (packet, workDir) => {
-            const one = await dispatchOnce(packet, policy, { ...a, work_dir: workDir }, { run, noAppend: true });
+            const one = await dispatchOnce(packet, policy, { ...a, work_dir: workDir }, { run, noAppend: true, signal: extra.signal });
             return { result: one.result, events: one.events };
           },
           record: (evs) => { if (a.telemetry_path) for (const ev of evs) appendEvent(a.telemetry_path, ev); },
@@ -1211,10 +1287,24 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
         const executor = typeof a.executor === "boolean" ? a.executor : undefined;
         const out: any = preflightDispatch(policy, authMode, a.project_root, executor);
+        // The run's Google project: a later pre-flight of the same run that resolves another project stops (a server
+        // restarted under another environment must not bill another project). Bound once the pre-flight passes.
+        const telemetryPath = typeof a.telemetry_path === "string" && a.telemetry_path ? a.telemetry_path : undefined;
+        const gLeaves = geminiLeaves(policy);
+        const project = gLeaves.length ? resolveGcpProject(process.env, defaultAdcPath()) ?? null : null;
+        if (telemetryPath && gLeaves.length && out.ok) {
+          const conflict = bindingConflict(telemetryPath, runId, project);
+          if (conflict) {
+            out.ok = false;
+            out.halt_reason = [out.halt_reason, conflict].filter(Boolean).join(" ");
+            log("warn", "preflight.run_binding", { conflict: true, project });
+          }
+        }
         // The run's typists, tested only when asked and only once the free checks pass: a call costs cents, and a run
-        // the free checks already stop needs no call to know it (typistProbe.ts).
+        // the free checks already stop needs no call to know it (typistProbe.ts). Every Antigravity leaf the run only
+        // judges with is probed too (runProbeLeaves' set), and a failover leaf at each of its locations.
         if (a.probe_typists === true && out.ok) {
-          const probes = await probeTypists(runTypingLeaves(policy, selectOverrides(), intent), authMode);
+          const probes = await probeTypists(runTypingLeaves(policy, selectOverrides(), intent).concat(judgingAgentLeaves(policy, selectOverrides(), intent)), authMode);
           out.typist_probe = probes;
           if (typeof a.telemetry_path === "string" && a.telemetry_path) {
             for (const ev of probeEvents(probes, { pass: String(a.run_id ?? ""), policy: { name: policy.name, version: policy.version } })) appendEvent(a.telemetry_path, ev);
@@ -1223,9 +1313,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           const failed = probes.filter((p) => !p.ok);
           if (failed.length) {
             out.ok = false;
-            out.halt_reason = [out.halt_reason, ...failed.map((p) => `The ${p.door} typist (${p.model_id}, ${p.model_name}) could not answer a one-line test call: ${p.reason}. ${p.fix ?? ""}`.trim())].filter(Boolean).join(" ");
+            out.halt_reason = [out.halt_reason, ...failed.map((p) => `The ${p.door} typist (${p.model_id}, ${p.model_name}${p.location ? ` at ${p.location}` : ""}) could not answer a one-line test call: ${p.reason}. ${p.fix ?? ""}`.trim())].filter(Boolean).join(" ");
           }
-          for (const p of probes.filter((x) => x.busy)) out.warnings.push(`The ${p.door} typist (${p.model_id}) was busy at the test call (${p.reason}); the run waits a busy vendor out as usual.`);
+          for (const p of probes.filter((x) => x.busy)) out.warnings.push(`The ${p.door} typist (${p.model_id}${p.location ? ` at ${p.location}` : ""}) was busy at the test call (${p.reason}); the run waits a busy vendor out as usual.`);
+        }
+        if (telemetryPath && gLeaves.length && out.ok) {
+          writeBinding(telemetryPath, {
+            run_id: runId ?? null, project, policy: { name: policy.name, version: policy.version }, auth_mode: authMode,
+            plugin_version: pluginVersion(), sdk_version: out.agsdk?.version ?? null, leaves: gLeaves,
+          });
         }
         runState = next;
         if (runId) runStates.set(runKey(a.project_root, runId), next);

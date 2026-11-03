@@ -74,12 +74,14 @@ The mechanical tier can be reached either as a model (one completion call per pa
 | Variable | Type | Default | Required when | Description |
 |---|---|---|---|---|
 | `MMO_SELECT` | `slot=option,...` | unset (→ `flash-completion`, the model path) | selecting the agent | Written by `verify-setup.mjs --enable-agent` as `gemini-flash=flash-agsdk-worker`. Do not set by hand — writing just the option (`flash-agsdk-worker`) passes offline checks and throws at policy load, after premium phases are billed. |
-| `GEMINI_WORKER_PYTHON` | path | plugin-built venv at `plugin/mcp/model-dispatch/worker/.venv/bin/python` | using your own interpreter | Python ≥ 3.10 with `google-antigravity` installed. Skips the built-in venv. |
+| `GEMINI_WORKER_PYTHON` | path | plugin-built venv at `plugin/mcp/model-dispatch/worker/.venv/bin/python` | using your own interpreter | Python ≥ 3.10 with `google-antigravity` 0.1.22 installed (the version `worker/requirements.txt` pins; setup and pre-flight stop on another). Skips the built-in venv, which setup then never rebuilds. |
 
 **Constraints.**
 
 - **ADC only.** The Antigravity SDK signs with Application Default Credentials and has no API-key door. `GEMINI_API_KEY` cannot reach this path.
 - **Python 3.10+.** `google-antigravity` declares that minimum. macOS ships 3.9 as `/usr/bin/python3`, so the default interpreter is the one that will not work. `verify-setup.mjs --enable-agent` searches by explicit version name (`python3.13`, `python3.12`, …) rather than trusting the bare `python3`.
+- **One SDK version, locked.** `worker/requirements.txt` pins `google-antigravity` 0.1.22 and every package it installs, each with its file hashes, and setup installs exactly those (`pip install --require-hashes --no-deps -r requirements.txt` into a fresh `worker/.venv`). Python 3.10 and Intel Macs get the nearest versions that install there, on lines of their own. Setup checks the installed version, not only that it imports: another version is a blocking finding, which `--fix` repairs by rebuilding the environment; with `GEMINI_WORKER_PYTHON` the finding says to unset it or point it at a 0.1.22 environment. Each run's pre-flight asks the worker's Python again and stops a run on another version.
+- **Which installs get it.** Setup builds and checks the environment when `MMO_SELECT` selects the agent, or when the project's policy (its `routing-policy.yaml`, else the `default_policy` in `.sdlc/project.json`) reaches an `antigravity-worker` leaf without a selection: a rule names the leaf, or a slot whose default it is, as in `flash-agsdk-only-v38` or `argon4-agsdk-only`. A policy whose agent leaf is only a slot's other option (`opus-plus-flash`) stays on the model path and is never asked about Python.
 - **Cost.** Several times more per packet than the model path. The SDK re-sends the full conversation on every tool call plus a ~11.5k-token identity preamble every turn. Same rates, many more tokens.
 
 **Choosing it.** Both installation routes ask, and only when the setup check finds real Google Cloud credentials — offering it otherwise would offer something that cannot work.

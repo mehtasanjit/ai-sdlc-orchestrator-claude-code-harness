@@ -127,8 +127,9 @@ Rules for executor mode:
   change goes through the typist, the same in every policy — and the executor guard refuses a write
   outside this run's own record folder (the folder of spec.json).
 - **A stopped stage:** if `execute_stage` returns an error whose receipt has `stopped` (a model
-  door refused its login or permission), stop the run and report that reason to the user. Do not
-  write the stage's files yourself: the run would no longer be the policy it names.
+  door refused its login or permission, or Google could not serve the model: none of its calls was
+  served for 300 s while they kept being refused or held), stop the run and report that reason to
+  the user. Do not write the stage's files yourself: the run would no longer be the policy it names.
 - The receipts are all you read about the typed files; do not open the files to check them —
   the senior reviewer does that, and reading them into your conversation is the cost this mode
   exists to remove.
@@ -303,7 +304,7 @@ For each packet, in dependency order:
 
 **Direct-tier work (subagent handles it, no MCP dispatch):** the orchestrator (Opus) writes the file directly. Estimate tokens via `chars/3.8` heuristic for both inputs and outputs; take pricing constants from this model's `effective_price.rates` in the `load_policy` result (the dated price list's card for the day, or the policy's block only under `pricing_override: true`: the price the server and the post-run collector bill at; see orchestrator rule 6); log a TelemetryEvent via `log_telemetry`.
 
-**Mechanical-tier work (routed to another model):** call `execute_with_model` with the packet, `policy_name`, `project_root: $(pwd)`, and `cache_context`. The server routes per policy. Pass `project_root` on every dispatch, exactly as pre-flight received it: it is what lets the loader prefer a repo-local `routing-policy.yaml` over the shipped preset, and omitting it is the historical bug — the preview named the user's policy while the billed calls quietly routed under a different one. Validate the returned structured output against the schema; if invalid, construct a *refined* packet (new id, `retry_count+1`, with the validation error appended to instruction) and re-dispatch. After 2 mechanical-tier retries fail, the policy escalates to the subagent's own tier automatically (rule with `retry_count: { gte: 2 }`).
+**Mechanical-tier work (routed to another model):** call `execute_with_model` with the packet, `policy_name`, `project_root: $(pwd)`, and `cache_context`. The server routes per policy. Pass `project_root` on every dispatch, exactly as pre-flight received it: it is what lets the loader prefer a repo-local `routing-policy.yaml` over the shipped preset, and omitting it is the historical bug — the preview named the user's policy while the billed calls quietly routed under a different one. Validate the returned structured output against the schema; if invalid, construct a *refined* packet (new id, `retry_count+1`, with the validation error appended to instruction) and re-dispatch. After 2 mechanical-tier retries fail, the policy escalates to the subagent's own tier automatically (rule with `retry_count: { gte: 2 }`). A result with `halt` is not a failed attempt: Google could not serve the model (none of its calls was served for 300 s while they kept being refused or held). Do not re-dispatch or refine the packet; stop the run and tell the user the reason as given.
 
 Write the returned file content to disk at the packet's stated `artifact_path`.
 

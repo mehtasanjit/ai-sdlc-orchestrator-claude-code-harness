@@ -18,7 +18,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AttemptRecord, ExecutionResult, FileSlice, ModelConfig, TaskPacket } from "./types.js";
+import type { AttemptRecord, ExecutionResult, FileSlice, ModelConfig, RunContext, TaskPacket } from "./types.js";
 import type { ModelAdapter } from "./adapters/ModelAdapter.js";
 import type { Contract, Typist, TypistResult } from "./executor/typists.js";
 import { typistDoorFor } from "./executor/tools.js";
@@ -99,7 +99,8 @@ export class TypistApplyAdapter implements ModelAdapter {
     }
   }
 
-  async execute(packet: TaskPacket): Promise<ExecutionResult> {
+  /** `runContext.signal`: the request's own stop, which ends the typist's process (TypeRequest.signal). */
+  async execute(packet: TaskPacket, _cacheContext?: string, runContext?: RunContext): Promise<ExecutionResult> {
     const contract = contractFor(packet);
     const { shared, packet: own } = splitShared(packet);
     const typed: TaskPacket = { ...own, outputSchema: contract === "edit" ? EDIT_ANSWER_SCHEMA : FILE_ANSWER_SCHEMA };
@@ -112,7 +113,7 @@ export class TypistApplyAdapter implements ModelAdapter {
       writeFileSync(sharedFile, shared);
       const t0 = Date.now();
       try {
-        r = await this.typist.type({ unit: { id: packet.id, path: packet.artifact_path ?? "" }, packet: typed, framed: framedPacket(typed), shared, sharedFile, contract, passId: packet.pass_id });
+        r = await this.typist.type({ unit: { id: packet.id, path: packet.artifact_path ?? "" }, packet: typed, framed: framedPacket(typed), shared, sharedFile, contract, passId: packet.pass_id, ...(runContext?.signal ? { signal: runContext.signal } : {}) });
       } catch (e: any) {
         // A typist that throws (a spawn failure, an unreadable receipt, a constructor's missing CLI flag) fails this
         // attempt and nothing else, as in greenfield's stage runner (executor/run.ts call): no answer, its reason, and
@@ -151,7 +152,7 @@ export function typistResult(packet: TaskPacket, r: TypistResult): ExecutionResu
     ...(r.tokens.input_cache_write_1h !== undefined ? { input_cache_write_1h: r.tokens.input_cache_write_1h } : {}),
     ...(r.tokens.output_reasoning !== undefined ? { output_reasoning: r.tokens.output_reasoning } : {}),
   };
-  const vendor = !r.answer && (r.transport || r.error_status !== undefined || r.cut_off === true);
+  const vendor = !r.answer && (r.transport || r.error_status !== undefined || r.cut_off === true || r.unavailable !== undefined);
   const ok = Boolean(r.answer);
   const attempt: AttemptRecord = {
     attempt_number: (packet.retry_count ?? 0) + 1,
@@ -170,6 +171,10 @@ export function typistResult(packet: TaskPacket, r: TypistResult): ExecutionResu
     transient: r.transport === true,
     ...(r.transport ? { retry_reason: "transport" as const } : packet.retry_reason ? { retry_reason: packet.retry_reason } : {}),
     ...(r.price_basis ? { price_basis: r.price_basis as any } : {}),
+    // Google could not serve the call: the apply loop asks the run's busy ledger whether that is a wait or the stop.
+    ...(r.unavailable !== undefined ? { unavailable: r.unavailable } : {}),
+    ...(r.unpriced_models?.length ? { unpriced_models: r.unpriced_models } : {}),
+    ...(r.gemini ? { gemini: r.gemini } : {}),
   };
   return {
     result: r.answer,

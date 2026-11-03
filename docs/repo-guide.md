@@ -45,9 +45,10 @@ into the other two.
 ### The optional Python worker
 
 `plugin/mcp/model-dispatch/worker/gemini_worker.py` is a fourth, optional piece: the agent behind
-the `antigravity-worker` adapter. It needs Python 3.10 or newer and the `google-antigravity`
-package, pinned to `==0.1.16`, both recorded in `worker/requirements.txt`. The pin is exact because the SDK has changed what its usage totals mean between releases (0.1.9 counts cached input inside `prompt_token_count`, 0.1.16 counts it on top), and the plugin bills each sidecar by the reading its recorded version is known to use — see `AGY_USAGE_SEMANTICS` in `src/delegation/workerProcess.ts`. Raise the pin only after checking a new version's token counts against Google's own counter and adding it there. Its virtualenv is
-built on demand by `plugin/scripts/verify-setup.mjs --enable-agent` and is git-ignored.
+the `antigravity-worker` adapter, with `typist_worker.py` (the Antigravity typist) beside it, both run under the call
+supervisor `agy_supervisor.py`. They need Python 3.10 or newer and the `google-antigravity`
+package, pinned to `==0.1.22` with every package it installs and their hashes, all recorded in `worker/requirements.txt`. The pin is exact because the SDK has changed what its usage totals mean between releases (0.1.9 counts cached input inside `prompt_token_count`, 0.1.16 counts it on top, 0.1.22 inside again), and the plugin bills each sidecar by the reading its recorded version is known to use — see `AGY_USAGE_SEMANTICS` in `src/delegation/workerProcess.ts`; a version not listed there is billed on the larger reading. Add a version there only after checking its token counts against Google's own counter. Its virtualenv is
+built on demand by `plugin/scripts/verify-setup.mjs` (with `--fix` or `--enable-agent`, for an install whose selection or policy uses the agent) and is git-ignored.
 
 You need it only for the agent path, where the cheap tier — the mechanical phases the policy routes
 away from Claude — runs as a full agent session with tools and a working directory. On the model

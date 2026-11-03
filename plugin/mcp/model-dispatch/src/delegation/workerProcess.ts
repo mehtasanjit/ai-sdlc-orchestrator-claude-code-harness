@@ -8,19 +8,21 @@
 
 import { join } from "node:path";
 import type { ReasoningConfig, TaskPacket } from "../types.js";
+import { AGENT_API_RETRY, BUSY_BUDGET_SEC, HEARTBEAT_SEC, STALL_TRIES, stallSecFor } from "../executor/stall.js";
 
 /**
- * Worker's own asyncio deadline; matches the Python `--timeout` default so
- * the two halves agree. 9 minutes — an agent explores, runs commands, and
- * only returns at the end of the whole session. Override with policy
- * leaf's `worker_timeout_sec:`.
+ * The worker's own limit on the session's work time; matches the Python `--timeout` default so the two halves agree.
+ * 9 minutes — an agent explores, runs commands, and only returns at the end of the whole session. Calls Google held
+ * until they were cut, refused requests and their waits are not counted. Override with the policy leaf's
+ * `worker_timeout_sec:`.
  */
 export const DEFAULT_WORKER_TIMEOUT_SEC = 540;
 
 /**
- * Extra seconds the adapter waits before SIGKILL. Deliberately non-zero so
- * the worker's own timeout — which exits cleanly with a diagnosable message —
- * always fires first, even on a loaded machine.
+ * Seconds past the worker's own limit before the engine's kill, as a fixed timer once counted them. The engine no
+ * longer times a worker: its kill rule reads the worker's heartbeat (executor/stall.ts HeartbeatBackstop), whose
+ * margin past the limit is BACKSTOP.overrunS. Non-zero either way, so the worker's own limit — which ends the session
+ * cleanly with a diagnosable message — always fires first.
  */
 export const WORKER_KILL_GRACE_SEC = 30;
 
@@ -83,14 +85,25 @@ export interface WorkerArgsInput {
   usageFile: string;
   thinking: string;
   timeoutSec: number;
+  /** The call's locations in order, the leaf's own first (default: `region` alone). */
+  locations?: string[];
+  stallSec?: number;
+  stallTries?: number;
+  busyBudgetSec?: number;
+  heartbeatSec?: number;
+  apiRetries?: number;
+  apiRetryInitialMs?: number;
 }
 
 /**
  * `--region` is passed on every invocation. The worker has its own env
  * fallback for hand runs, but here we want the region in the manifest and
- * the region on the endpoint to match by construction.
+ * the region on the endpoint to match by construction. Every flag the worker
+ * declares is passed on every call, the call supervisor's included, with the
+ * model's and the executor's defaults when the input omits them.
  */
 export function buildWorkerArgs(i: WorkerArgsInput): string[] {
+  const locations = i.locations?.length ? i.locations : [i.region];
   return [
     i.script,
     "--task-file", i.taskFile,
@@ -101,6 +114,13 @@ export function buildWorkerArgs(i: WorkerArgsInput): string[] {
     "--usage-file", i.usageFile,
     "--thinking", i.thinking,
     "--timeout", String(i.timeoutSec),
+    "--locations", locations.join(","),
+    "--stall-sec", String(i.stallSec ?? stallSecFor({ model_name: i.model })),
+    "--stall-tries", String(i.stallTries ?? STALL_TRIES),
+    "--busy-budget-sec", String(i.busyBudgetSec ?? BUSY_BUDGET_SEC),
+    "--heartbeat-sec", String(i.heartbeatSec ?? HEARTBEAT_SEC),
+    "--api-retries", String(i.apiRetries ?? AGENT_API_RETRY.retries),
+    "--api-retry-initial-ms", String(i.apiRetryInitialMs ?? AGENT_API_RETRY.initialMs),
   ];
 }
 
@@ -219,12 +239,14 @@ export function workerTaskMarkdown(
  * Only versions checked against Google's own token counter are listed (Cloud
  * Monitoring, aiplatform.googleapis.com/publisher/online_serving/token_count,
  * for a real job whose per-call records were summed too): 0.1.9 counted
- * prompt_token_count exactly; 0.1.16 counted prompt + cached exactly. Add a
- * version here only after the same check.
+ * prompt_token_count exactly; 0.1.16 counted prompt + cached exactly; 0.1.22
+ * counted prompt_token_count exactly. Add a version here only after the same
+ * check.
  */
 export const AGY_USAGE_SEMANTICS: Readonly<Record<string, "inclusive" | "disjoint">> = Object.freeze({
   "0.1.9": "inclusive",
   "0.1.16": "disjoint",
+  "0.1.22": "inclusive",
 });
 
 export type AgyUsageSemantics = "inclusive" | "disjoint" | "unverified";
