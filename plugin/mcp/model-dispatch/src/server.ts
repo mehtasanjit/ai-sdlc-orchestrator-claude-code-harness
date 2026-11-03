@@ -1197,8 +1197,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           record: (evs) => { if (a.telemetry_path) for (const ev of evs) appendEvent(a.telemetry_path, ev); },
           log: (level, event, fields) => log(level, event, fields),
         };
-        const out = await runThinkingStep(a, deps);
-        return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+        // A thinking step can run for hours (thinking_timeout_sec), so it sends progress as an agent-door dispatch does
+        // (a heartbeat between, a message when it settles): Claude Code aborts a local server's call that sends no reply
+        // and no progress for 30 minutes, and the step's worker would be stopped with it.
+        const token = (req.params as any)._meta?.progressToken;
+        const progress = batchProgress({ token, send: (params) => extra.sendNotification({ method: "notifications/progress", params } as any) }, 1, undefined, () => `still thinking: the ${String(a?.role)} step`);
+        try {
+          const out = await runThinkingStep(a, deps);
+          progress.settled({ id: `the ${String(a?.role)} step`, status: String((out as any)?.route) }, 1);
+          return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+        } finally {
+          await progress.stop();
+        }
       }
       case "execute_batch": {
         const a = args as any;
