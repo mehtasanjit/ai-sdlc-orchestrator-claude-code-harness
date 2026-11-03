@@ -14,7 +14,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 import type {
@@ -349,12 +350,17 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     const failover = (this.modelConfig.failover_locations ?? []).length > 0;
     const stallSec = stallSecFor(this.modelConfig);
     const retry = failover ? FAILOVER_API_RETRY : AGENT_API_RETRY;
+    // A thinking step's Gemini session works in an empty folder of its own, as the typist door's does: it reads the
+    // project only through the step's own tools (project_root in their config), and the inventory below still covers
+    // the real project. Review: with the project as its workspace under the SDK's allow-all policy, switching the SDK's
+    // own tools off (enabled_tools: finish) was all that kept them off the project.
+    const sdkWorkdir = thinking ? mkdtempSync(join(tmpdir(), "mmo-agy-thinking-")) : workdir;
     const args = buildWorkerArgs({
       script: thinking ? THINKING_SCRIPT : WORKER_SCRIPT,
       taskFile,
       model: this.modelConfig.model_name,
       region: this.location,
-      workdir,
+      workdir: sdkWorkdir,
       outDir,
       usageFile,
       thinking: workerThinkingLevel(this.modelConfig.reasoning),
@@ -406,7 +412,11 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
 
     // The kill rule's bound for one call: the worker's own stall tries, harness retry rule and busy budget.
     const waitBoundS = callWaitBoundSec(stallSec, { tries: STALL_TRIES, retry, busyBudgetSec: BUSY_BUDGET_SEC });
-    const run = await this.spawnWorker(args, workdir, timeoutSec, waitBoundS, packet.id, runContext?.signal);
+    const run = await this.spawnWorker(args, sdkWorkdir, timeoutSec, waitBoundS, packet.id, runContext?.signal);
+    // The empty folder is the step's alone, and nothing in it is the step's work: removed whatever the outcome.
+    if (sdkWorkdir !== workdir) {
+      try { rmSync(sdkWorkdir, { recursive: true, force: true }); } catch { /* a folder left behind never fails the step */ }
+    }
 
     const after = takeInventory(workdir, { exclude: [outDir] });
 

@@ -37,6 +37,11 @@ log("start", { n, args });
 const outPath = flag("--out") || flag("--usage-file");
 const finish = (which) => {
   const body = which === "term" ? plan.onTerm : plan;
+  // A thinking run that changes project files (touchProject: paths relative to the tools config's project_root).
+  if (body && Array.isArray(body.touchProject) && flag("--tools-config")) {
+    const root = JSON.parse(readFileSync(flag("--tools-config"), "utf8")).project_root;
+    for (const f of body.touchProject) writeFileSync(root + "/" + f, "changed by the run\n");
+  }
   if (body && body.receipt !== undefined && outPath && body.receipt !== null) writeFileSync(outPath, JSON.stringify(body.receipt));
   if (body && body.sidecar !== undefined && outPath && body.sidecar !== null) writeFileSync(outPath, JSON.stringify(body.sidecar));
   if (body && body.summary !== undefined && body.summary !== null && flag("--summary-file")) writeFileSync(flag("--summary-file"), JSON.stringify(body.summary));
@@ -58,7 +63,8 @@ else setTimeout(() => finish("done"), plan.holdMs || 0);
 
 /**
  * Makes the stand-in. `runs[i]` is the i-th run's plan: {beats: [{atMs, hb}], holdMs (number or "forever"),
- * receipt, sidecar, summary (a thinking worker's --summary-file), stdout, stderr, exitCode, ignoreTerm,
+ * receipt, sidecar, summary (a thinking worker's --summary-file), touchProject (project files a thinking run changes),
+ * stdout, stderr, exitCode, ignoreTerm,
  * onTerm: {receipt|sidecar, exitCode}}; the last plan
  * repeats. `version` is what the version query prints (null: the SDK is not installed).
  */

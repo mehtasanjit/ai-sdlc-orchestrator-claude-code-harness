@@ -6,8 +6,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join, resolve, sep } from "node:path";
 import { cleanup, project, receipt, standInClaude, withServer } from "./serverHarness.mjs";
 import { fakeWorkerPython, flagValue } from "./agyFakes.mjs";
 
@@ -89,6 +89,43 @@ test("a Gemini architect's step carries its run's spec token, the one submit_spe
       assert.equal((await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r3" })).json?.ok, true);
       assert.equal((await call("run_thinking_step", step)).json?.route, "done");
       assert.notEqual(tokenOfStep(), first);
+    });
+  } finally {
+    fake.cleanup();
+    cleanup(bin, root);
+  }
+});
+
+// E-thinking-workspace. Review: the SDK session had the real project as its workspace under an allow-all policy, so
+// switching its own tools off was all that kept them off the project.
+test("a thinking step's Gemini session works in an empty folder of its own; a project file changed while it runs still stops it", { timeout: 60_000 }, async () => {
+  const summary = { done: true, missing: [], accepted: ["requirements"], conversation_id: "c1", text: "" };
+  const one = { holdMs: 50, sidecar: { sdk_version: "0.1.22", usage: { prompt_token_count: 10 } }, stdout: JSON.stringify(summary), summary };
+  const fake = fakeWorkerPython({ runs: [one, { ...one, touchProject: ["src/sneaky.ts"] }] });
+  const bin = standInClaude([receipt({})]);
+  const root = project({ contract: false });
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "policy.yaml"), [
+    "version: 1", "name: think-flash", "models:",
+    "  - id: opus", "    adapter: builtin-anthropic", "    model_name: claude-opus-5",
+    "  - id: flash", "    adapter: antigravity-worker", "    model_name: gemini-3.8-flash",
+    "rules:", "  - when: { phase: requirements_analysis }", "    use: flash", "  - default: opus", "",
+  ].join("\n"));
+  const policy_path = join(root, "policy.yaml");
+  const step = { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, run_id: "r5", output_dir: "out", policy_path };
+  try {
+    await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
+      assert.equal((await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r5" })).json?.ok, true);
+      const done = await call("run_thinking_step", step);
+      assert.equal(done.json?.route, "done", done.text);
+      const workdir = resolve(flagValue(fake.runs()[0].args, "--workdir"));
+      assert.notEqual(workdir, resolve(root), "not the project");
+      assert.ok(!workdir.startsWith(resolve(root) + sep), `not inside the project: ${workdir}`);
+      assert.match(basename(workdir), /^mmo-agy-thinking-/, "a folder of its own");
+      assert.equal(existsSync(workdir), false, "removed once the step is done");
+      const touched = await call("run_thinking_step", step);
+      assert.equal(touched.json?.route, "stopped", touched.text);
+      assert.match(touched.json?.reason ?? "", /src\/sneaky\.ts/, "the real project is still the one checked");
     });
   } finally {
     fake.cleanup();
