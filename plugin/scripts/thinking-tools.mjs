@@ -20,6 +20,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { deniedBy } from "./ambient/lib/bash-rules.mjs";
 import { readRefusal, runFileCheck } from "./lib/change-spec.mjs";
 import { holdsPrivateKey } from "./lib/off-limits.mjs";
 import { loadServerLib } from "./lib/server-lib.mjs";
@@ -47,7 +48,7 @@ export const ROLE_TOOLS = {
   "senior-reviewer": ["env_keys", "write_review"],
   "brownfield-senior-reviewer": ["git_diff", "read_provenance", "run_file_check", "env_keys", "write_review"],
   "security-reviewer": ["run_dependency_audit", "env_keys", "write_review"],
-  "brownfield-security-reviewer": ["git_diff", "read_provenance", "run_dependency_audit", "env_keys", "write_review"],
+  "brownfield-security-reviewer": ["git_diff", "read_provenance", "run_file_check", "run_dependency_audit", "env_keys", "write_review"],
   discovery: ["baseline_status", "write_discovery"],
 };
 export const READ_TOOLS = ["read_file", "list_files", "search_files"];
@@ -376,9 +377,14 @@ export class ThinkingTools {
         if (refusal) return { error: refusal };
         files = [rel];
       } else if (statSync(r.abs).isDirectory()) {
+        const shown = `git diff --name-only ${head} -- ${r.rel || "."}`;
+        const rule = deniedBy(shown, this.root);
+        if (rule) return { error: `\`${shown}\` was not run: the person's Claude settings deny it (${rule})` };
         const names = spawnSync("git", [...git, "diff", "--name-only", "--relative", "-z", head, "--", r.rel || "."], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, maxBuffer: 20_000_000 });
         if (names.status !== 0) return { error: `git could not list the changes under ${path}: ${(names.stderr ?? "").trim()}` };
-        files = names.stdout.split("\0").filter(Boolean).filter(allowed);
+        // A folder's files the run created are its changes too, and git diff lists none of them (they are not tracked).
+        const created = touched.filter((f) => f.startsWith(r.rel ? `${r.rel.split(sep).join("/")}/` : ""));
+        files = [...new Set([...names.stdout.split("\0").filter(Boolean), ...created])].filter(allowed);
       } else {
         files = [r.rel.split(sep).join("/")];
       }
@@ -386,7 +392,34 @@ export class ThinkingTools {
       files = touched.filter(allowed);
     }
     if (!files.length) return { result: "nothing to show: no changed file here is one the read rule lets you see" };
-    return this.fixed("git", [...git, "diff", head, "--", ...files], this.root);
+    // As the reviewers' own command runs it (git diff --ignore-cr-at-eol <git_head_before> -- <files>). A file the run
+    // created is not tracked, and git diff shows nothing for it (review: a new endpoint's code never reached the
+    // reviewer), so each such file is shown whole, as a diff from nothing.
+    const tracked = new Set(this.gitLines(["ls-files", "-z", "--", ...files]));
+    const created = files.filter((f) => !tracked.has(f) && existsSync(join(this.root, f)));
+    const old = files.filter((f) => !created.includes(f));
+    const parts = [];
+    if (old.length) {
+      const d = this.fixed("git", [...git, "diff", "--ignore-cr-at-eol", head, "--", ...old], this.root, `git diff --ignore-cr-at-eol ${head} -- ${old.join(" ")}`);
+      if (d.error) return d;
+      parts.push(d.result);
+    }
+    for (const f of created) {
+      const shown = `git diff --no-index --ignore-cr-at-eol -- /dev/null ${f}`;
+      const rule = deniedBy(shown, this.root);
+      if (rule) return { error: `\`${shown}\` was not run: the person's Claude settings deny it (${rule})` };
+      // --no-index answers 1 when the two differ, which a new file always does.
+      const res = spawnSync("git", [...git, "diff", "--no-index", "--ignore-cr-at-eol", "--", "/dev/null", f], { cwd: this.root, encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, maxBuffer: 20_000_000 });
+      if (res.error || (res.status !== 0 && res.status !== 1)) return { error: `git could not show the new file ${f}: ${(res.stderr ?? res.error?.message ?? "").trim()}` };
+      parts.push(`(created by the run)\n${res.stdout}`);
+    }
+    return { result: cut(parts.join("\n")) };
+  }
+
+  /** The NUL-separated lines a read-only git command prints in the project, or none when it cannot answer. */
+  gitLines(args) {
+    const r = spawnSync("git", ["-C", this.root, "--literal-pathspecs", ...args], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, maxBuffer: 20_000_000 });
+    return r.status === 0 ? (r.stdout ?? "").split("\0").filter(Boolean) : [];
   }
 
   /**
@@ -414,7 +447,15 @@ export class ThinkingTools {
     return this.fixed(c[0], c[1], cwd);
   }
 
-  fixed(cmd, args, cwd) {
+  /**
+   * One of the step's fixed commands, run only if the person's own Claude settings allow it: their Bash deny rules
+   * refuse it here as plan-lint and the hooks refuse a command (lib/bash-rules.mjs), matched against `shown`, the
+   * command as a person types it. Review: only run_file_check honoured the rules, and zero-touch approves a thinking
+   * step's call without seeing any command, so the others ran whatever the person had denied.
+   */
+  fixed(cmd, args, cwd, shown = [cmd, ...args].join(" ")) {
+    const rule = deniedBy(shown, this.root);
+    if (rule) return { error: `\`${shown}\` was not run: the person's Claude settings deny it (${rule})` };
     const res = spawnSync(cmd, args, { cwd, encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, maxBuffer: 20_000_000 });
     if (res.error) return { error: `${cmd} could not run: ${res.error.message}` };
     return { result: cut(`exit ${res.status}\n${res.stdout ?? ""}${res.stderr ? `\n${res.stderr}` : ""}`) };

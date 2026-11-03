@@ -191,7 +191,7 @@ ROLE_TOOLS = {
     "senior-reviewer": ["env_keys", "write_review"],
     "brownfield-senior-reviewer": ["git_diff", "read_provenance", "run_file_check", "env_keys", "write_review"],
     "security-reviewer": ["run_dependency_audit", "env_keys", "write_review"],
-    "brownfield-security-reviewer": ["git_diff", "read_provenance", "run_dependency_audit", "env_keys", "write_review"],
+    "brownfield-security-reviewer": ["git_diff", "read_provenance", "run_file_check", "run_dependency_audit", "env_keys", "write_review"],
     "discovery": ["baseline_status", "write_discovery"],
 }
 

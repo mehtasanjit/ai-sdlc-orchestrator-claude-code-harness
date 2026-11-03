@@ -273,3 +273,41 @@ test("a named pipe is refused at once, through the tool process itself", { timeo
   assert.ok(r, "the tool answered within 3 s");
   assert.match(r.error, /not a regular file/);
 });
+
+// A brownfield run's project: one commit, then the run's own changes, with its provenance.
+async function reviewedProject() {
+  const { execFileSync } = await import("node:child_process");
+  const root = project();
+  const git = (...a) => execFileSync("git", ["-C", root, ...a], { encoding: "utf8" });
+  git("init", "-q"); git("config", "user.email", "t@t"); git("config", "user.name", "t");
+  writeFileSync(join(root, "src", "crlf.ts"), "export const x = 1;\r\n");
+  git("add", "src"); git("commit", "-q", "-m", "base");
+  const head = git("rev-parse", "HEAD").trim();
+  writeFileSync(join(root, "src", "a.ts"), "export const a = 2;\n");
+  writeFileSync(join(root, "src", "crlf.ts"), "export const x = 1;\n");
+  writeFileSync(join(root, "src", "new-endpoint.js"), "app.get('/x', (req) => eval(req.query.code));\n");
+  writeFileSync(join(root, ".sdlc", "runs", "r1", "provenance.json"), JSON.stringify({ git_head_before: head, files_touched: ["src/a.ts", "src/crlf.ts", "src/new-endpoint.js"] }));
+  return root;
+}
+
+test("git_diff shows the files the run created, ignores line-ending changes, and runs only what the person allows", async () => {
+  const root = await reviewedProject();
+  const t = tools(root, "brownfield-senior-reviewer");
+  const all = (await t.call("git_diff", {})).result;
+  assert.match(all, /export const a = 2/);
+  assert.match(all, /eval\(req\.query\.code\)/, "a file the run created reaches the reviewer");
+  assert.doesNotMatch(all, /crlf\.ts/, "a line-ending change alone is no change, as the reviewers' own command shows it");
+  assert.match((await t.call("git_diff", { path: "src" })).result, /eval\(req\.query\.code\)/, "a folder's new files too");
+  // The person denies git diff: the tool runs nothing.
+  mkdirSync(join(root, ".claude"), { recursive: true });
+  writeFileSync(join(root, ".claude", "settings.json"), JSON.stringify({ permissions: { deny: ["Bash(git diff:*)", "Bash(npm audit:*)"] } }));
+  assert.match((await t.call("git_diff", {})).error, /not run: the person's Claude settings deny it \(Bash\(git diff:\*\)\)/);
+  assert.match((await t.call("git_diff", { path: "src" })).error, /deny it/);
+  const sec = tools(root, "brownfield-security-reviewer");
+  assert.match((await sec.call("run_dependency_audit", { kind: "npm-audit" })).error, /not run: the person's Claude settings deny it \(Bash\(npm audit:\*\)\)/);
+});
+
+test("the brownfield security reviewer has the file check its instructions allow", async () => {
+  const { ROLE_TOOLS } = await import(pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "thinking-tools.mjs")).href);
+  assert.ok(ROLE_TOOLS["brownfield-security-reviewer"].includes("run_file_check"));
+});
