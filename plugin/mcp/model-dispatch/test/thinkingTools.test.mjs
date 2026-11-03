@@ -472,16 +472,25 @@ test("another name for a refused file is found wherever that file sits, a build 
 // killed would owe every piece again, whatever its conversation said it had handed in.
 test("the tools keep their state in the step's state file: a carried-on step holds what was accepted and refused; any other starts empty", async () => {
   const root = project();
-  const stateFile = join(root, ".sdlc", "runs", "r1", "thinking", "discovery.state.json");
+  mkdirSync(join(root, "out"), { recursive: true });
+  const header = {
+    stack: ["Python 3.13", "FastAPI", "pytest"],
+    commands: [{ name: "backend tests", run: "pytest -q", cwd: "backend", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }],
+    no_audit_reason: "a test", decisions: [{ topic: "ids", choice: "integer", rejected: ["uuid"], reason: "simplest" }],
+    shared: { conventions: ["snake_case"], data_model: [], api: [] },
+  };
+  const stateFile = join(root, ".sdlc", "runs", "r1", "thinking", "architect.state.json");
   const status = async (t) => JSON.parse((await t.call("status", {})).result);
-  const first = tools(root, "discovery", { state_file: stateFile });
-  assert.match((await first.call("write_discovery", { name: "discovery.md", content: "# Discovery\n" })).result, /wrote/);
+  // A greenfield architect with no run token: what it starts from is its state file alone, never the spec store.
+  const architect = (over) => tools(root, "architect", { output_dir: "out", outputs: { sections_dir: "out/spec.sections" }, spec_dir: "out", ...over });
+  const first = architect({ state_file: stateFile });
+  assert.match((await first.call("submit_section", { name: "header.json", json: JSON.stringify(header) })).result, /accepted header\.json/);
   assert.ok(existsSync(stateFile), "the state is kept on disk at once");
   // The worker was killed; the step is carried on with a new tools process.
-  const again = await status(tools(root, "discovery", { state_file: stateFile, carry_on: true }));
-  assert.deepEqual(again.accepted, ["discovery:discovery.md"], "what was accepted before the kill is still accepted");
-  assert.deepEqual(again.missing, ["the run's baseline.json (write_discovery)"], "only the rest is owed");
-  assert.deepEqual(again.written, [".sdlc/runs/r1/discovery.md"]);
+  const again = await status(architect({ state_file: stateFile, carry_on: true }));
+  assert.deepEqual(again.accepted, ["header.json"], "what was accepted before the kill is still accepted");
+  assert.deepEqual(again.missing, ["at least one units file, accepted", "finalize, after every section is accepted"], "only the rest is owed");
+  assert.deepEqual(again.written, ["out/spec.sections/header.json"]);
   // A refused piece is still owed with its problems.
   const archState = join(root, ".sdlc", "runs", "r1", "thinking", "brownfield-architect.state.json");
   const arch = tools(root, "brownfield-architect", { state_file: archState });
@@ -489,11 +498,11 @@ test("the tools keep their state in the step's state file: a carried-on step hol
   const archAgain = await status(tools(root, "brownfield-architect", { state_file: archState, carry_on: true }));
   assert.ok(archAgain.missing.some((m) => /^header\.json was refused: header\.json \/: is missing required field/.test(m)), archAgain.missing.join("; "));
   // A step that is not carried on (a first call, a revise) starts empty, and the file then holds its state.
-  const fresh = tools(root, "discovery", { state_file: stateFile });
+  const fresh = architect({ state_file: stateFile });
   assert.deepEqual((await status(fresh)).accepted, []);
   assert.deepEqual(JSON.parse(readFileSync(stateFile, "utf8")).accepted, [], "an earlier step's state is overwritten");
   // A carried-on step whose tools never kept a state starts empty; one whose state cannot be read is not started.
-  assert.deepEqual((await status(tools(root, "discovery", { state_file: join(root, "no-such.state.json"), carry_on: true }))).accepted, []);
+  assert.deepEqual((await status(architect({ state_file: join(root, "no-such.state.json"), carry_on: true }))).accepted, []);
   writeFileSync(stateFile, "{not json");
-  assert.throws(() => tools(root, "discovery", { state_file: stateFile, carry_on: true }), /state .*cannot be read/);
+  assert.throws(() => architect({ state_file: stateFile, carry_on: true }), /state .*cannot be read/);
 });

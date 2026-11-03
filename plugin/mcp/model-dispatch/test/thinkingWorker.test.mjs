@@ -468,18 +468,18 @@ test("a held call is cut at its stall limit and the step's own session continued
 // tools started from the killed worker's state, so its summary says so from its start: the step's reply names what is
 // accepted and owed, and which conversation to carry on.
 test("a carried-on worker keeps its summary from its tools' first status, before any session of its own ends", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
-  const state = join(mkdtempSync(join(tmpdir(), "carry-on-state-")), "discovery.state.json");
-  const handIn = { sessions: [{ turns: [[{ at: 0, step: step.tool("write_discovery", "ACTIVE", { name: "discovery.md", content: "# Discovery\n" }, "d1") }, ...textAnswer(0, "Wrote discovery.md.", { prompt_token_count: 10 })]] }] };
-  const outputs = { discovery: "out/discovery.md" };
-  const first = await runWorker("thinking", { script: handIn, timeout: 30, limitMs: 45_000, role: "discovery", outputs, config: { state_file: state } });
-  assert.notEqual(first.summary?.done, true, "baseline.json is still owed");
+  const state = join(mkdtempSync(join(tmpdir(), "carry-on-state-")), "architect.state.json");
+  const handIn = { sessions: [{ turns: [[{ at: 0, step: step.tool("submit_section", "ACTIVE", { name: "header.json", section_json: JSON.stringify(header) }, "h1") }, ...textAnswer(0, "Handed the header in.", { prompt_token_count: 10 })]] }] };
+  const opts = { timeout: 30, limitMs: 45_000, role: "architect", outputs: { sections_dir: "out/spec.sections" } };
+  const first = await runWorker("thinking", { ...opts, script: handIn, config: { spec_dir: "out", state_file: state } });
+  assert.notEqual(first.summary?.done, true, "the units and finalize are still owed");
   // Carried on, its call is held, and the worker is killed outright before that session ends.
   const held = { sessions: [{ turns: [[{ at: 0, step: step.user("continue") }, { at: 0, hold: true }]] }] };
-  const r = await runWorker("thinking", { script: held, timeout: 30, limitMs: 45_000, role: "discovery", outputs, args: ["--resume-id", "standin-earlier", "--carry-on"], config: { state_file: state, carry_on: true }, killAfterMs: 2_000, killSignal: "SIGKILL" });
+  const r = await runWorker("thinking", { ...opts, script: held, args: ["--resume-id", "standin-earlier", "--carry-on"], config: { spec_dir: "out", state_file: state, carry_on: true }, killAfterMs: 2_000, killSignal: "SIGKILL" });
   assert.equal(r.signal, "SIGKILL", tail(r));
   assert.ok(r.summary, "a summary was kept before the kill");
-  assert.deepEqual(r.summary.accepted, ["discovery:discovery.md"], JSON.stringify(r.summary));
-  assert.deepEqual(r.summary.missing, ["the run's baseline.json (write_discovery)"]);
+  assert.deepEqual(r.summary.accepted, ["header.json"], JSON.stringify(r.summary));
+  assert.deepEqual(r.summary.missing, ["at least one units file, accepted", "finalize, after every section is accepted"]);
   assert.equal(r.summary.done, false);
   assert.equal(r.summary.conversation_id, "standin-earlier");
 });

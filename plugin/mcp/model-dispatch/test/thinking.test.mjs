@@ -700,13 +700,20 @@ test("through the agent door: a frozen worker is killed by the kill rule, and th
 // tools and the SDK stand-in, under the agent door's own kill rule.
 test("a frozen thinking worker is killed, and the step goes on from its saved conversation with what its tools accepted", { skip: NO_PYTHON, timeout: 90_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "frozen-thinking-"));
-  // The first worker hands in discovery.md, is told baseline.json is still owed, and freezes in its next session; the
-  // second worker, carried on, hands in baseline.json. Each worker the engine starts reads its own script.
+  // A greenfield architect: the first worker hands its header in, is told the units and finalize are still owed, and
+  // freezes in its next session; the second worker, carried on, hands in the units and finalizes. Each worker the
+  // engine starts reads its own script.
+  const header = { stack: ["Python 3.13"], commands: [{ name: "tests", run: "pytest -q", cwd: ".", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }], no_audit_reason: "a test", decisions: [{ topic: "ids", choice: "integer", reason: "simplest" }], shared: { conventions: [], data_model: [], api: [] } };
+  const unit = { id: "U01", path: "src/app.py", phase: "codegen", import_line: "", exports: [], behaviour: "answers ping", depends_on: [], style_from: { reason: "first file" }, covers: ["FR-1"], tests: [], approx_lines: 20 };
   const first = { sessions: [
-    { turns: [[{ at: 0, step: standinStep.tool("write_discovery", "ACTIVE", { name: "discovery.md", content: "# Discovery\n" }, "d1") }, ...textAnswer(0, "Wrote discovery.md.", { prompt_token_count: 10 })]] },
+    { turns: [[{ at: 0, step: standinStep.tool("submit_section", "ACTIVE", { name: "header.json", section_json: JSON.stringify(header) }, "h1") }, ...textAnswer(0, "Handed the header in.", { prompt_token_count: 10 })]] },
     { turns: [[{ at: 0.1, freeze: true }]] },
   ] };
-  const second = { sessions: [{ turns: [[{ at: 0, step: standinStep.tool("write_discovery", "ACTIVE", { name: "baseline.json", content: "{}" }, "d2") }, ...textAnswer(0, "Wrote baseline.json.", { prompt_token_count: 10 })]] }] };
+  const second = { sessions: [{ turns: [[
+    { at: 0, step: standinStep.tool("submit_section", "ACTIVE", { name: "units-001.json", section_json: JSON.stringify([unit]) }, "u1") },
+    { at: 0, step: standinStep.tool("finalize", "ACTIVE", {}, "f1") },
+    ...textAnswer(0, "Finalized.", { prompt_token_count: 10 }),
+  ]] }] };
   writeFileSync(join(dir, "script-1.json"), JSON.stringify(first));
   writeFileSync(join(dir, "script-2.json"), JSON.stringify(second));
   const log = join(dir, "standin.jsonl");
@@ -714,6 +721,8 @@ test("a frozen thinking worker is killed, and the step goes on from its saved co
   writeFileSync(python, `#!/bin/sh\nn=$(cat ${JSON.stringify(join(dir, "count"))} 2>/dev/null || echo 0); n=$((n + 1)); echo $n > ${JSON.stringify(join(dir, "count"))}\nexport PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${JSON.stringify(STANDIN)} AGY_STANDIN_SCRIPT=${JSON.stringify(dir)}/script-$n.json AGY_STANDIN_LOG=${JSON.stringify(log)}\nexec ${JSON.stringify(PYTHON)} "$@"\n`);
   chmodSync(python, 0o755);
   const root = project();
+  mkdirSync(join(root, "out"), { recursive: true });
+  writeFileSync(join(root, "out", "requirements.md"), "# R\n- FR-1: answer ping.\n");
   const events = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
   try {
     const reply = await withEnv({ GEMINI_WORKER_PYTHON: python, GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global" }, async () => {
@@ -722,11 +731,11 @@ test("a frozen thinking worker is killed, and the step goes on from its saved co
       const { d } = deps(AGENT, () => assert.fail("dispatched through the agent door"), {
         dispatch: async (packet, thinking) => ({ result: await door.execute(packet, undefined, { project_root: root, work_dir: root, telemetry_path: join(root, "t.jsonl"), thinking }), events: [] }),
       });
-      return runThinkingStep(args(root, { role: "discovery", intent: undefined }), d);
+      return runThinkingStep(args(root, { role: "architect", intent: undefined, output_dir: "out" }), d);
     });
     assert.equal(reply.route, "done", JSON.stringify(reply));
     assert.equal(reply.resumed, true);
-    assert.deepEqual(reply.accepted, ["discovery:discovery.md", "discovery:baseline.json"]);
+    assert.deepEqual(reply.accepted, ["header.json", "units-001.json", "finalize"]);
     const seen = events();
     const pids = [...new Set(seen.filter((e) => e.ev === "agent").map((e) => e.pid))];
     assert.equal(pids.length, 2, "two workers: the frozen one and the one carried on");
@@ -735,8 +744,9 @@ test("a frozen thinking worker is killed, and the step goes on from its saved co
     const later = seen.filter((e) => e.pid === pids[1]);
     assert.equal(later.find((e) => e.ev === "agent").conversation_id, "standin-1", "the conversation the frozen worker kept");
     assert.equal(later.find((e) => e.ev === "chat").message, "Please continue the task you were working on.");
-    assert.deepEqual(later.filter((e) => e.ev === "tool_run").map((e) => e.result), ["wrote .sdlc/runs/r1/baseline.json"], "only what was still owed is handed in again");
-    assert.equal(readFileSync(join(root, ".sdlc", "runs", "r1", "discovery.md"), "utf8"), "# Discovery\n");
+    assert.deepEqual(later.filter((e) => e.ev === "tool_run").map((e) => e.name), ["submit_section", "finalize"], "only what was still owed is handed in again");
+    assert.match(later.find((e) => e.ev === "tool_run").result, /accepted units-001\.json/);
+    assert.ok(existsSync(join(root, "out", "spec.json")), "the spec was finalized");
   } finally {
     for (const e of events()) if (alive(e.pid)) { try { process.kill(e.pid, "SIGKILL"); } catch { /* gone */ } }
   }
