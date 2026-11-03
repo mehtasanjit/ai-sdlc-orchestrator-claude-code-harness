@@ -1,11 +1,11 @@
 /**
  * The run's route table: for every phase, the model the policy names and who runs it, computed once at pre-flight by
  * the routing the steps themselves use, so the person sees which model does what before anything is spent and the
- * run follows it. A thinking phase nothing can run as a thinking step fails closed here; one no rule names is the
- * session's, as it was before thinking steps followed the policy (routing.ts routeThinking). A phase no rule can route is
- * listed with who runs it and "a rule for it has no effect", so a policy's rule for it is shown, never silently
- * ignored and never refused: change_plan and plan_task_packets, which code renders (the brownfield architect is routed
- * by architecture_design), and discovery, the session's Claude helper before Gate 0.
+ * run follows it. A thinking phase nothing can run as a thinking step fails closed here; one whose rule says
+ * `use: session_model`, and one no rule names, is the session's, on the session's own model (routing.ts routeThinking).
+ * A phase no rule can route is listed with who runs it and "a rule for it has no effect", so a policy's rule for it is
+ * shown, never silently ignored and never refused: change_plan and plan_task_packets, which code renders (the
+ * brownfield architect is routed by architecture_design), and discovery, the session's Claude helper before Gate 0.
  */
 
 import { executorView } from "./executor/run.js";

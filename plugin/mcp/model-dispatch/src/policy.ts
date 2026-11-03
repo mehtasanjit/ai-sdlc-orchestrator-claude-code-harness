@@ -18,6 +18,7 @@ import type { Policy, ModelConfig } from "./types.js";
 import { KNOWN_ADAPTER_IDS } from "./adapters/index.js";
 import { log } from "./log.js";
 import { PLUGIN_ROOT } from "./paths.js";
+import { SESSION_MODEL_TARGET, THINKING_PHASES } from "./routing.js";
 
 // The shipped presets, found from the package root so the compiled files and the single-file bundle agree (see
 // paths.ts). It is built from a file path, not a URL's pathname, so a space in a folder name stays a space.
@@ -107,6 +108,7 @@ function validatePolicy(raw: any): Policy {
     refusePolicyLevelSettings(`Policy rule ${i}`, r?.when);
     const used = r.use ?? r.default;
     if (!used) throw new Error(`Policy rule ${i}: needs 'use' or 'default'`);
+    if (used === SESSION_MODEL_TARGET) return validateSessionTarget(r, i);
     if (!modelIds.has(used) && !slotNames.has(used)) {
       const known = [...modelIds, ...slotNames].join(", ");
       throw new Error(
@@ -130,6 +132,34 @@ function validateSessionSettings(raw: any): void {
   }
   if (raw.thinking_timeout_sec !== undefined && (!Number.isInteger(raw.thinking_timeout_sec) || raw.thinking_timeout_sec <= 0)) {
     throw new Error("Policy: 'thinking_timeout_sec' must be a whole number of seconds above 0");
+  }
+}
+
+/**
+ * A rule that gives a thinking phase to the session (`use: session_model`, routing.ts SESSION_MODEL_TARGET): it may
+ * name only the four thinking phases, which run in the session or as a thinking step. Anywhere else it would reach a
+ * phase the session never runs (typing goes to the policy's typists), so a default rule, a rule that names no phase
+ * (it matches every phase) and a rule that names any other phase are refused, each saying which phases can take it.
+ */
+function validateSessionTarget(r: any, i: number): void {
+  const thinking = THINKING_PHASES.join(", ");
+  if (r.default !== undefined) {
+    throw new Error(
+      `Policy rule ${i}: 'default: session_model' is refused: a default reaches every phase, typing included, and ` +
+        `session_model can take only a thinking phase (${thinking}). Give those phases a rule of their own, e.g. ` +
+        `- when: { phase: architecture_design } use: session_model.`
+    );
+  }
+  const phase = r.when?.phase;
+  const phases: unknown[] = phase === undefined ? [] : Array.isArray(phase) ? phase : [phase];
+  const others = phases.filter((p) => !THINKING_PHASES.includes(p as any));
+  if (!phases.length || others.length) {
+    throw new Error(
+      `Policy rule ${i}: use: session_model gives a phase to the session's own Claude model, which only a thinking ` +
+        `phase can take (${thinking}); this rule ` +
+        (phases.length ? `names ${others.join(", ")}` : "names no phase, so it would match every phase, typing included") +
+        `. Name only thinking phases in its when: { phase: ... }.`
+    );
   }
 }
 
@@ -162,6 +192,9 @@ function validateSelect(raw: any, modelIds: Set<string>): Set<string> {
     throw new Error("Policy: 'select' must be a map of slot name → { default, options }");
   }
   for (const [name, slot] of Object.entries<any>(raw.select)) {
+    if (name === SESSION_MODEL_TARGET) {
+      throw new Error(`Policy select '${name}': the name ${SESSION_MODEL_TARGET} is the rule target for the session's own model (use: session_model), so a rule naming it would be ambiguous; rename the slot.`);
+    }
     if (modelIds.has(name)) {
       throw new Error(
         `Policy select '${name}': collides with a model id — a rule naming it would be ` +
@@ -205,6 +238,9 @@ function validateModel(m: any) {
     if (!(key in m)) throw new Error(`Policy model: missing '${key}'`);
   }
   refusePolicyLevelSettings(`Policy model '${m.id}'`, m);
+  if (m.id === SESSION_MODEL_TARGET) {
+    throw new Error(`Policy model '${m.id}': the id ${SESSION_MODEL_TARGET} is the rule target for the session's own model (use: session_model), so a rule naming it would be ambiguous; give the model another id.`);
+  }
   // The adapter id must be one the registry can actually construct. Without
   // this check a typo'd `adapter:` passed validation and only failed when
   // createAdapter ran mid-run — after the premium phases were already billed.

@@ -16,7 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -482,5 +482,24 @@ test("a thinking phase no rule names is the session's: the check passes, pinned 
   withPolicy(TYPING_ONLY.replace("name: typing-only\n", "name: typing-only\nsession_model: claude-opus-5-5\n"), (root) => {
     assert.equal(run(["--project-root", root, "--print-only"]).stdout.trim(), "claude-opus-5-5");
     assert.equal(run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" }).code, 0);
+  });
+});
+
+// Review: in argon4-plus-sonnet55 the one way to send a thinking phase back to Claude was a rule naming its Sonnet leaf,
+// which clashes with session_model ("2 Claude models"). `use: session_model` gives the phase to the session's own
+// model instead: the check treats it as the session's, pinned by session_model.
+test("a thinking phase its rule gives to session_model is the session's: pinned by session_model, no clash with a Claude typist", () => {
+  const dir = join(HERE, "..", "..", "..", "config", "policies");
+  const shipped = readFileSync(join(dir, "argon4-plus-sonnet55.yaml"), "utf8");
+  withPolicy(shipped.replace(/^rules:\n/m, "rules:\n  - when: { phase: architecture_design }\n    use: session_model\n"), (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /\(its session_model\)/);
+  });
+  // The rule this replaces: naming the Claude typist's leaf splits the session across two Claude models.
+  withPolicy(shipped.replace(/^rules:\n/m, "rules:\n  - when: { phase: architecture_design }\n    use: sonnet\n"), (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /2 Claude models/);
   });
 });

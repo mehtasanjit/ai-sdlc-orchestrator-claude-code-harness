@@ -27,6 +27,9 @@
 # session_model, which the driver check pins (CLAUDE_CODE_SUBAGENT_MODEL) in both auth modes. Versions up to 3 of
 # this policy ran under plugins before 0.10.0, where the session's own model planned and
 # reviewed whatever the rules said; version 4 keeps those runs apart in telemetry.
+# A thinking step goes back to Claude by changing one line, its phase's rule to
+# `use: session_model` (for example `- when: { phase: architecture_design }` with
+# `use: session_model`): the step then runs in the session on session_model, and typing is unchanged.
 version: 4
 name: argon4-plus-sonnet55
 

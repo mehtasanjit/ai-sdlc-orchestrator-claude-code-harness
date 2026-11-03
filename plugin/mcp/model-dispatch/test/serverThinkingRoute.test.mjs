@@ -273,3 +273,33 @@ test("a policy with no rule for a thinking phase passes pre-flight, and its tabl
     cleanup(bin, root);
   }
 });
+
+// E-thinking-session-model. A rule `use: session_model` gives a thinking phase back to the session's own Claude model,
+// in one line: pre-flight's table and the step both say "session", and nothing is sent to Gemini.
+test("a thinking phase its rule gives to session_model: pre-flight's table and the step give it to the session", { timeout: 60_000 }, async () => {
+  const fake = fakeWorkerPython({ runs: [{}] });
+  const bin = standInClaude([receipt({})]);
+  const root = project({ contract: false });
+  writeFileSync(join(root, "policy.yaml"), [
+    "version: 1", "name: argon-but-requirements", "session_model: claude-opus-5-5", "models:",
+    "  - id: argon", "    adapter: antigravity-worker", "    model_name: gemini-4-argon",
+    "rules:", "  - when: { phase: requirements_analysis }", "    use: session_model", "  - default: argon", "",
+  ].join("\n"));
+  const policy_path = join(root, "policy.yaml");
+  try {
+    await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
+      const pf = await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r9" });
+      assert.equal(pf.json?.ok, true, pf.text);
+      const rows = Object.fromEntries(pf.json.route_table.map((r) => [r.phase, r]));
+      assert.deepEqual([rows.requirements_analysis.who, rows.requirements_analysis.model, rows.requirements_analysis.reason], ["session", "claude-opus-5-5", "the policy's rule"]);
+      assert.equal(rows.architecture_design.who, "engine, thinking");
+      const step = await call("run_thinking_step", { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, run_id: "r9", output_dir: "out", policy_path, telemetry_path: "out/telemetry.jsonl" });
+      assert.equal(step.json?.route, "session", step.text);
+      assert.equal(step.json?.model, "claude-opus-5-5");
+      assert.equal(fake.runs().length, 0, "nothing was sent");
+    });
+  } finally {
+    fake.cleanup();
+    cleanup(bin, root);
+  }
+});
