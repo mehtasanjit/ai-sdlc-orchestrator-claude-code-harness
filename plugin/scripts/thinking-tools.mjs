@@ -77,8 +77,10 @@ export class ThinkingTools {
     this.accepted = new Map();
     this.refused = new Map();
     this.written = new Set();
-    // What the step starts from, read once before its first tool runs (loadAccepted).
+    // What the step starts from, read once before its first tool runs (loadAccepted); on a revise, the id of the spec
+    // it answers.
     this.loading = null;
+    this.revised = undefined;
   }
 
   /**
@@ -93,11 +95,13 @@ export class ThinkingTools {
    */
   async loadAccepted() {
     if (this.cfg.role !== "architect" || this.cfg.acceptance_fix) return;
+    const { specStore } = await loadServerLib();
+    const specDir = join(this.root, this.cfg.spec_dir);
+    // A revise answers the finalized spec in the folder as it starts, and hands in a new one: that spec is never resumed.
+    if (this.cfg.revise && existsSync(join(specDir, "spec.json"))) this.revised = specStore.openedSpec(specDir)?.id;
     const held = await this.runSpec();
     if (!held) return;
     this.accepted.set("header.json", true);
-    const { specStore } = await loadServerLib();
-    const specDir = join(this.root, this.cfg.spec_dir);
     const sections = join(this.root, this.cfg.outputs.sections_dir);
     for (const name of existsSync(sections) ? readdirSync(sections).filter((f) => /^units-\d{3}\.json$/.test(f)).sort() : []) {
       const loaded = specStore.readSectionFile(specDir, relative(specDir, join(sections, name)), "units");
@@ -107,16 +111,16 @@ export class ThinkingTools {
 
   /**
    * The spec this run is writing in spec_dir, as the store holds it, or null when there is none of this run's: none yet,
-   * another run's (its pre-flight's token differs), no run token to tell, or, on a revise, the finalized spec the revise
-   * answers (a revise hands in a new spec; the approved one counts only through approvedUnits). `holds(units)`: whether
-   * every one of these units is in it exactly as given.
+   * another run's (its pre-flight's token differs), no run token to tell, or, on a revise, the spec the revise answers
+   * (it hands in a new spec; the approved one counts only through approvedUnits), until its header opens that new one.
+   * `holds(units)`: whether every one of these units is in it exactly as given.
    */
   async runSpec() {
     if (!this.cfg.run_token) return null;
     const { specStore } = await loadServerLib();
     const specDir = join(this.root, this.cfg.spec_dir);
-    if (specStore.openedSpec(specDir)?.run !== this.cfg.run_token) return null;
-    if (this.cfg.revise && existsSync(join(specDir, "spec.json"))) return null;
+    const opened = specStore.openedSpec(specDir);
+    if (opened?.run !== this.cfg.run_token || (this.revised !== undefined && opened.id === this.revised)) return null;
     const stored = new Map(specStore.storedUnits(specDir).map((u) => [u.id, canonical(u)]));
     return { holds: (units) => Array.isArray(units) && units.length > 0 && units.every((u) => u && typeof u === "object" && stored.get(u.id) === canonical(u)) };
   }

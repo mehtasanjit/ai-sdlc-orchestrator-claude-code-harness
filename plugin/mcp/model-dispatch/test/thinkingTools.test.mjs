@@ -234,7 +234,14 @@ test("an architect called again in the same run resumes from the spec the store 
   assert.deepEqual((await status(architect({ run_token: "run-2" }))).missing, ["header.json, accepted", "at least one units file, accepted", "finalize, after every section is accepted"]);
   await hand(third, "units-001.json", [U01]);
   assert.match((await third.call("finalize", {})).result, /finalized: 1 unit/);
-  assert.deepEqual((await status(architect({ revise: true }))).accepted, [], "a revise hands in a new spec");
+  const revise = architect({ revise: true });
+  assert.deepEqual((await status(revise)).accepted, [], "a revise hands in a new spec");
+  // The revise's own spec, once it is finalized, is the step's: a file handed in again unchanged is still accepted.
+  assert.match((await hand(revise, "header.json", header)).result, /accepted header\.json: 0 unit/);
+  assert.match((await hand(revise, "units-001.json")).result, /accepted units-001\.json: 1 unit/);
+  assert.match((await revise.call("finalize", {})).result, /finalized: 1 unit/);
+  assert.match(JSON.stringify(await hand(revise, "units-001.json")), /"result":"accepted units-001\.json: unchanged/);
+  assert.equal((await status(revise)).done, true);
 });
 
 test("a refused finalize lists every problem in one answer: the coverage gap and each of the store's errors", async () => {
