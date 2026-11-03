@@ -160,6 +160,40 @@ test("a greenfield architect's revise hands the whole spec in again, as its inst
   assert.match(b.calls.dispatch[1].packet.instruction, /hand each changed one in again/);
 });
 
+test("an acceptance fix is the architect's: it carries on the architect's conversation, and its reply carries the answer", async () => {
+  const root = project();
+  const fix = { failures: [{ path: "package.json", problem: "set overrides.semver to 7.6.3: the audit's high advisory" }] };
+  const { d, calls } = deps(AGENT, (n) => {
+    // The step's tools write the answer when it is accepted; the second call is the acceptance fix.
+    if (n === 2) writeFileSync(join(root, "out", "acceptance-fix.json"), JSON.stringify(fix));
+    return result({ result: { done: true, missing: [], accepted: n === 2 ? ["acceptance_fix"] : ["header.json", "units-001.json", "finalize"], conversation_id: "c1" } });
+  });
+  const architect = (over) => args(root, { role: "architect", intent: undefined, output_dir: "out", ...over });
+  await runThinkingStep(architect({}), d);
+  const failure = "audit (npm audit --audit-level=high) failed: exit 1; its log: out/acceptance/logs/2-audit.log";
+  const r = await runThinkingStep(architect({ acceptance_fix: failure }), d);
+  assert.equal(r.route, "done");
+  assert.equal(r.resumed, true);
+  assert.deepEqual(r.acceptance_fix, fix, "the entries for execute_stage repair, as the helper replies them");
+  const sent = calls.dispatch[1];
+  assert.equal(sent.thinking.resumeId, "c1");
+  assert.match(sent.packet.instruction, /^Acceptance fix/);
+  assert.ok(sent.packet.instruction.includes(failure));
+  assert.match(sent.packet.instruction, /write_acceptance_fix/);
+  const config = JSON.parse(readFileSync(join(root, "out", "thinking", "architect.tools.json"), "utf8"));
+  assert.equal(config.acceptance_fix, true);
+  assert.deepEqual(config.outputs, { acceptance_fix: "out/acceptance-fix.json" });
+  // Only the architect answers one, and never together with a revise.
+  await assert.rejects(runThinkingStep(args(root, { role: "senior-reviewer", output_dir: "out", acceptance_fix: failure }), d), /architect/);
+  await assert.rejects(runThinkingStep(architect({ acceptance_fix: failure, revise: "and this" }), d), /not both/);
+  // A step that is done with no readable answer is stopped, not passed on empty.
+  const empty = project();
+  const e = deps(AGENT, () => result({ result: { done: true, missing: [], accepted: ["acceptance_fix"], conversation_id: "c2" } }));
+  const lost = await runThinkingStep(args(empty, { role: "architect", intent: undefined, output_dir: "out", acceptance_fix: failure }), e.d);
+  assert.equal(lost.route, "stopped");
+  assert.match(lost.reason, /acceptance-fix\.json/);
+});
+
 test("a brownfield step writes only in the run's folder under .sdlc", () => {
   assert.match(outputDirProblem("/p", "src", true), /outside \.sdlc/);
   assert.equal(outputDirProblem("/p", ".sdlc/runs/r1", true), null);

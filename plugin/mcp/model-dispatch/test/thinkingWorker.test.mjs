@@ -84,3 +84,18 @@ test("a revise through the worker: an unchanged section goes by its name alone, 
   assert.match(ran[2].result, /finalized: 1 unit.*removed from the approved spec: U02/);
   assert.equal(r.summary.done, true, JSON.stringify(r.summary));
 });
+
+test("an acceptance fix through the worker: the failures entries go in as one hand-in, and the step is done", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const entries = [{ path: "package.json", problem: "set overrides.semver to 7.6.3: the audit's high advisory" }];
+  const script = { sessions: [{ turns: [[
+    { at: 0, step: step.tool("write_acceptance_fix", "ACTIVE", { failures_json: JSON.stringify(entries) }, "a1") },
+    ...textAnswer(0, "Handed in.", { prompt_token_count: 10 }),
+  ]] }] };
+  const r = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, role: "architect", outputs: { acceptance_fix: "out/acceptance-fix.json" }, config: { spec_dir: "out", run_token: "run-1", acceptance_fix: true } });
+  assert.equal(r.code, 0, tail(r));
+  const ran = r.log.filter((e) => e.ev === "tool_run");
+  assert.deepEqual(ran.map((e) => e.name), ["write_acceptance_fix"]);
+  assert.match(ran[0].result, /accepted: 1 failures entr/);
+  assert.equal(r.summary.done, true, JSON.stringify(r.summary));
+  assert.deepEqual(r.summary.accepted, ["acceptance_fix"]);
+});

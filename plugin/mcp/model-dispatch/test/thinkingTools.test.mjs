@@ -182,3 +182,45 @@ test("a revise keeps every unit of the approved spec, or removes one only by nam
   await hand(again, "units-002.json", [unit("U02", "backend/app/api.py", "the routes")]);
   assert.match((await again.call("finalize", {})).result, /finalized: 1 unit/);
 });
+
+test("an acceptance fix hands in its failures entries, or the one line why it cannot pass, and changes no spec section", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-fix-"));
+  mkdirSync(join(root, "out"));
+  const { loadServerLib } = await import(pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "lib", "server-lib.mjs")).href);
+  const { specStore } = await loadServerLib();
+  const header = {
+    stack: ["Node 22", "Express"], commands: [{ name: "audit", run: "npm audit --audit-level=high", cwd: ".", role: "audit", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }],
+    decisions: [{ topic: "ids", choice: "integer", reason: "simplest" }], shared: { conventions: [], data_model: [], api: [] },
+  };
+  const unit = { id: "U01", path: "src/app.js", phase: "codegen", import_line: "", exports: [], behaviour: "the app", depends_on: [], style_from: { reason: "first file" }, covers: ["FR-1"], tests: [], approx_lines: 20 };
+  assert.equal(specStore.submitSpecSection(join(root, "out"), { section: "header", header }, { run: "run-1" }).ok, true);
+  assert.equal(specStore.submitSpecSection(join(root, "out"), { section: "units", units: [unit] }, { run: "run-1" }).ok, true);
+  assert.equal(specStore.finalizeSpec(join(root, "out")).ok, true);
+  const approved = readFileSync(join(root, "out", "spec.json"), "utf8");
+  const fixer = () => new ThinkingTools({ role: "architect", project_root: root, run_id: "r1", output_dir: "out", outputs: { acceptance_fix: "out/acceptance-fix.json" }, spec_dir: "out", run_token: "run-1", acceptance_fix: true });
+
+  const t = fixer();
+  assert.match((await t.call("submit_section", { name: "header.json", json: JSON.stringify(header) })).error, /acceptance fix/);
+  assert.match((await t.call("finalize", {})).error, /acceptance fix/);
+  assert.deepEqual(JSON.parse((await t.call("status", {})).result).missing, ["the acceptance fix: its failures entries, or the one line why it cannot pass (write_acceptance_fix)"]);
+  assert.match((await t.call("write_acceptance_fix", { failures_json: "[{nope" })).error, /not valid JSON/);
+  assert.match((await t.call("write_acceptance_fix", { failures_json: "[]" })).error, /at least 1/);
+  assert.match((await t.call("write_acceptance_fix", { failures_json: JSON.stringify([{ problem: "pin it" }]) })).error, /missing required field 'path'/);
+  assert.match((await t.call("write_acceptance_fix", { failures_json: JSON.stringify([{ path: "package.json", problem: "pin it", new_file: "yes" }]) })).error, /new_file must be true or false/);
+  assert.match((await t.call("write_acceptance_fix", { failures_json: "[]", cannot_pass: "no" })).error, /one of failures_json or cannot_pass/);
+  assert.match((await t.call("write_acceptance_fix", {})).error, /one of failures_json or cannot_pass/);
+  const entries = [{ path: "package.json", problem: "set overrides.semver to 7.6.3: the audit's high advisory GHSA-c2qf (line 12)" }, { path: ".npmrc", problem: "audit-level=high", new_file: true }];
+  assert.match((await t.call("write_acceptance_fix", { failures_json: JSON.stringify(entries) })).result, /accepted: 2 failures entries/);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "out", "acceptance-fix.json"), "utf8")), { failures: entries });
+  assert.equal(JSON.parse((await t.call("status", {})).result).done, true);
+  assert.equal(readFileSync(join(root, "out", "spec.json"), "utf8"), approved, "the approved spec is untouched");
+
+  const stuck = fixer();
+  assert.match((await stuck.call("write_acceptance_fix", { cannot_pass: "two lines\nare not one" })).error, /one line/);
+  assert.match((await stuck.call("write_acceptance_fix", { cannot_pass: "the brief fixes Node 16, and no release of the audited package supports it" })).result, /accepted/);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, "out", "acceptance-fix.json"), "utf8")), { cannot_pass: "the brief fixes Node 16, and no release of the audited package supports it" });
+
+  // A design step hands in no acceptance fix.
+  const design = new ThinkingTools({ role: "architect", project_root: root, run_id: "r1", output_dir: "out", outputs: { sections_dir: "out/spec.sections" }, spec_dir: "out", run_token: "run-1" });
+  assert.match((await design.call("write_acceptance_fix", { failures_json: JSON.stringify(entries) })).error, /only an acceptance fix/);
+});

@@ -103,6 +103,12 @@ def tools_for(host: ToolHost, role: str) -> list:
         drop names the approved spec's unit ids the changes remove; every other approved unit must be handed in again."""
         return host.text("finalize", drop=drop or [])
 
+    def write_acceptance_fix(failures_json: str = "", cannot_pass: str = "") -> str:
+        """Hand in an acceptance fix's answer: failures_json, the JSON array of failures entries for a repair round (each
+        with path and problem, and new_file true for a file that does not exist yet); or cannot_pass, the one line why
+        the brief's fixed stack cannot pass. Only when the step is an acceptance fix; checked at once."""
+        return host.text("write_acceptance_fix", failures_json=failures_json, cannot_pass=cannot_pass)
+
     def registry_versions(ecosystem: str, name: str) -> str:
         """The published versions of a package: ecosystem 'npm' or 'pypi'."""
         return host.text("registry_versions", ecosystem=ecosystem, name=name)
@@ -143,15 +149,16 @@ def tools_for(host: ToolHost, role: str) -> list:
         return host.text("write_discovery", name=name, content=content)
 
     every = {f.__name__: f for f in [read_file, list_files, search_files, write_requirements, write_section, submit_section,
-                                     finalize, registry_versions, git_diff, read_provenance, run_file_check,
-                                     run_dependency_audit, env_keys, write_review, baseline_status, write_discovery]}
+                                     finalize, write_acceptance_fix, registry_versions, git_diff, read_provenance,
+                                     run_file_check, run_dependency_audit, env_keys, write_review, baseline_status,
+                                     write_discovery]}
     names = ["read_file", "list_files", "search_files"] + ROLE_TOOLS[role]
     return [every[n] for n in names]
 
 
 ROLE_TOOLS = {
     "requirements": ["write_requirements"],
-    "architect": ["submit_section", "finalize", "registry_versions"],
+    "architect": ["submit_section", "finalize", "registry_versions", "write_acceptance_fix"],
     "brownfield-architect": ["write_section"],
     "senior-reviewer": ["env_keys", "write_review"],
     "brownfield-senior-reviewer": ["git_diff", "read_provenance", "run_file_check", "env_keys", "write_review"],

@@ -1075,7 +1075,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "the reply is route 'done'. A step that cannot finish replies 'stopped' with the reason and what is still owed, " +
         "and Google serving nothing for the run's busy window replies 'halt': stop the run in both cases; no other " +
         "model takes the step over. Pass `revise` (a gate's comments, or a check's lines to fix) to carry on the step's " +
-        "saved conversation.",
+        "saved conversation. Pass `acceptance_fix` (role 'architect') for the acceptance stage's install or audit failure: " +
+        "the reply's `acceptance_fix` holds the `failures` entries for execute_stage repair, or `cannot_pass`, the one " +
+        "line why the brief's fixed stack cannot pass.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1090,6 +1092,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           review_path: { type: "string", description: "Senior reviewer: where review.json goes, relative to project_root and inside output_dir (default <output_dir>/review.json)." },
           inputs: { type: "array", items: { type: "string" }, description: "Files the step reads that may lie outside the project (for 'requirements' and 'architect': the brief's path): copied into <output_dir>/inputs/ through the read rule, and named to the step." },
           revise: { type: "string", description: "A gate's revise comments, or a check's printed lines to fix: carries on the step's saved conversation." },
+          acceptance_fix: { type: "string", description: "Architect only: the acceptance receipt's failure routed to the architect and its log_path. Carries on the architect's conversation; changes no spec section; not with revise." },
           policy_name: { type: "string" },
           policy_path: { type: "string" },
           telemetry_path: { type: "string" },

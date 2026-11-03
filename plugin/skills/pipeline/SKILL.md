@@ -141,7 +141,9 @@ Rules for executor mode:
   `not_run`, leaves its criteria not checked with that reason, and is routed nowhere). Each failure
   in the receipt names its route. `architect` means an install or audit failed (a version choice):
   invoke the `architect` subagent with the words "acceptance fix", the receipt's failure and its
-  `log_path`, then send the entries it replies with to `execute_stage` repair as `failures`.
+  `log_path`, then send the entries it replies with to `execute_stage` repair as `failures` (when the
+  route table gives the architect to `engine, thinking`, call `run_thinking_step` with `role: "architect"`
+  and that failure and `log_path` as `acceptance_fix`: the entries are its reply's `acceptance_fix.failures`).
   `repair` means a check failed (code): send it to `execute_stage` repair as a `failures` entry (the
   file the failing check names, the receipt's lines as the problem). Then call the acceptance stage
   again. After three re-checks its receipt is final and a further call runs nothing; report what is

@@ -66,13 +66,22 @@ export interface ThinkingArgs {
   inputs?: string[];
   /** A gate's revise, or a check's lines to fix: the step carries on its saved conversation with this. */
   revise?: string;
+  /**
+   * The architect only: the acceptance stage's failure routed to the architect (an install or audit command) and its
+   * log_path. The step carries on the architect's conversation and answers as the helper replies: the failures entries
+   * for a repair round, or the one line why the brief's fixed stack cannot pass. It changes no spec section.
+   */
+  acceptance_fix?: string;
 }
 
 export type ThinkingReply =
   | { route: "session"; role: string; phase: Phase; model: string; reason: string }
-  | { route: "done"; role: string; phase: Phase; model: string; accepted: string[]; cost_usd: number; tokens: ExecutionResult["tokens"]; resumed: boolean }
+  | { route: "done"; role: string; phase: Phase; model: string; accepted: string[]; cost_usd: number; tokens: ExecutionResult["tokens"]; resumed: boolean; acceptance_fix?: AcceptanceFixAnswer }
   | { route: "stopped"; role: string; phase: Phase; model: string; reason: string; missing?: string[]; accepted?: string[]; cost_usd: number }
   | { route: "halt"; role: string; phase: Phase; model: string; reason: string; cost_usd: number };
+
+/** An acceptance fix's answer: the entries execute_stage repair takes as `failures`, or why no change can pass. */
+export type AcceptanceFixAnswer = { failures: unknown[] } | { cannot_pass: string };
 
 export interface ThinkingDeps {
   pluginRoot: string;
@@ -184,7 +193,7 @@ export function roleOutputs(role: string, args: ThinkingArgs): Record<string, st
   const d = posix(args.output_dir).replace(/\/+$/, "");
   switch (role) {
     case "requirements": return { requirements: `${d}/requirements.md` };
-    case "architect": return { sections_dir: `${d}/spec.sections` };
+    case "architect": return args.acceptance_fix ? { acceptance_fix: `${d}/acceptance-fix.json` } : { sections_dir: `${d}/spec.sections` };
     case "brownfield-architect": return { sections_dir: `${d}/change.sections` };
     case "senior-reviewer":
     case "brownfield-senior-reviewer": return { review: args.review_path ? posix(args.review_path) : `${d}/review.json` };
@@ -216,6 +225,14 @@ export function roleInstructions(pluginRoot: string, role: ThinkingRole): string
  * the revised spec to every approved unit (review: a revise told to hand in only what changed finalized the spec with
  * an approved unit gone). Every other step's pieces stay where they were handed in.
  */
+/** How an acceptance fix's answer goes in: as the architect's instructions say, through its own hand-in. */
+export const ACCEPTANCE_FIX_HAND_IN =
+  "Read that command's whole output (its log file) with read_file, and look up what you need with registry_versions. " +
+  "Then hand in your answer with write_acceptance_fix, as your instructions' acceptance fix says: failures_json, the " +
+  "JSON array of failures entries for a repair round ({path, problem, and new_file: true for a file that does not exist " +
+  "yet}); or, if the only way to pass is to change what the brief fixes, that one line as cannot_pass. This step " +
+  "changes no spec section.";
+
 export function reviseHandIn(role: string): string {
   return role === "architect"
     ? "Hand in header.json again first, then every units file in order, changed or not: a changed one with its new JSON, an unchanged one by its name alone (its file goes as it stands). Then finalize. A unit of the approved spec that the changes remove: name it in finalize's drop."
@@ -226,7 +243,7 @@ export function reviseHandIn(role: string): string {
 export function preface(role: string): string {
   const handIn: Record<string, string> = {
     requirements: "Hand in requirements.md with write_requirements (the whole document).",
-    architect: "Hand in each spec section with submit_section (header.json first, then units-001.json, …): where the instructions say to write a section file and call submit_spec_section, call submit_section with the file's JSON; where they say to submit a file again as it stands, call submit_section with its name alone; then call finalize where they say finalize_spec. For a package version, use registry_versions.",
+    architect: "Hand in each spec section with submit_section (header.json first, then units-001.json, …): where the instructions say to write a section file and call submit_spec_section, call submit_section with the file's JSON; where they say to submit a file again as it stands, call submit_section with its name alone; then call finalize where they say finalize_spec. For a package version, use registry_versions. An acceptance fix's answer goes in with write_acceptance_fix.",
     "brownfield-architect": "Hand in each change-spec section with write_section (header.json first, then units-001.json, …): where the instructions say to write a section file and check it with plan-lint, call write_section with the file's JSON; it writes and checks it in one step.",
     "senior-reviewer": "Hand in the review JSON with write_review.",
     "brownfield-senior-reviewer": "Read the change with git_diff and read_provenance; run a file check only with run_file_check; hand in review.json with write_review.",
@@ -259,6 +276,11 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const brownfield = args.role.startsWith("brownfield-") || args.role === "discovery" || deps.contractActive(args.project_root);
   const dirProblem = outputDirProblem(args.project_root, args.output_dir, brownfield) ?? reviewPathProblem(args.project_root, args.output_dir, args.review_path);
   if (dirProblem) throw new Error(`run_thinking_step: ${dirProblem}`);
+  if (args.acceptance_fix !== undefined) {
+    if (args.role !== "architect") throw new Error(`run_thinking_step: an acceptance fix is the architect's (role 'architect'), not the ${args.role}'s`);
+    if (args.revise) throw new Error("run_thinking_step: pass acceptance_fix or revise, not both: an acceptance fix answers the acceptance stage and changes no spec section");
+    if (typeof args.acceptance_fix !== "string" || !args.acceptance_fix.trim()) throw new Error("run_thinking_step: acceptance_fix holds the acceptance receipt's failure and its log_path");
+  }
   // The step's inputs, through the read rule, before anything is routed or spent.
   const inputCopies = stepInputsCopied(args.project_root, args.output_dir, args.inputs);
 
@@ -286,14 +308,16 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   writeFileSync(toolsConfig, JSON.stringify({
     role: args.role, project_root: resolve(args.project_root), run_id: args.run_id, intent: args.intent,
     output_dir: posix(args.output_dir), outputs, spec_dir: posix(args.output_dir), requirements_path: args.requirements_path, code_dir: args.code_dir,
-    run_token: deps.runToken, revise: !!args.revise,
+    run_token: deps.runToken, revise: !!args.revise, acceptance_fix: !!args.acceptance_fix,
   }, null, 2));
 
   const prior = readRecord(recordPath).conversation_id;
-  const resumeId = args.revise && prior ? prior : undefined;
+  // A revise and an acceptance fix carry on the step's saved conversation: the model keeps what it read and decided.
+  const resumeId = (args.revise || args.acceptance_fix) && prior ? prior : undefined;
+  const fix = args.acceptance_fix ? `An install or audit command of the acceptance list failed.\n\n${args.acceptance_fix}\n\n${ACCEPTANCE_FIX_HAND_IN}` : "";
   const instruction = resumeId
-    ? `Changes asked for this step:\n\n${args.revise}\n\n${reviseHandIn(args.role)}`
-    : `${preface(args.role)}\n\n## The helper's instructions\n\n${roleInstructions(deps.pluginRoot, role)}\n\n## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}\n\n${reviseHandIn(args.role)}` : ""}`;
+    ? (fix ? `Acceptance fix: ${fix}` : `Changes asked for this step:\n\n${args.revise}\n\n${reviseHandIn(args.role)}`)
+    : `${preface(args.role)}\n\n## The helper's instructions\n\n${roleInstructions(deps.pluginRoot, role)}\n\n## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}\n\n${reviseHandIn(args.role)}` : ""}${fix ? `\n\n## Acceptance fix\n\n${fix}` : ""}`;
   const packet: TaskPacket = {
     id: `${args.run_id ?? "run"}-${key}`,
     phase: role.phase,
@@ -335,6 +359,13 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   // Every piece is handed in and accepted by the checks a Claude helper's hand-over runs: the step is done, even when
   // its last turn ended with an error (review: a fully accepted step was reported stopped and its work thrown away).
   if (!result.success) deps.log("warn", "thinking.done_after_error", { role: args.role, phase: role.phase, model: model.model_name, reason: result.error });
+  // An acceptance fix's answer goes back in the reply, as the helper's reply does: the run's repair round takes it.
+  let answer: AcceptanceFixAnswer | undefined;
+  if (outputs.acceptance_fix) {
+    try { answer = JSON.parse(readFileSync(join(args.project_root, outputs.acceptance_fix), "utf8")); } catch (e: any) {
+      return stop(`the acceptance fix was accepted, but ${outputs.acceptance_fix} cannot be read: ${e?.message ?? e}`);
+    }
+  }
   deps.log("info", "thinking.end", { role: args.role, phase: role.phase, model: model.model_name, accepted: (summary.accepted ?? []).length, cost_usd: result.cost_usd });
-  return { ...base, route: "done", accepted: summary.accepted ?? [], cost_usd: result.cost_usd, tokens: result.tokens, resumed: !!resumeId };
+  return { ...base, route: "done", accepted: summary.accepted ?? [], cost_usd: result.cost_usd, tokens: result.tokens, resumed: !!resumeId, ...(answer ? { acceptance_fix: answer } : {}) };
 }

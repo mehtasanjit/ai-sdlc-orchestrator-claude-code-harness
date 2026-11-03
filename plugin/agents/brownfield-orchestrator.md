@@ -105,8 +105,11 @@ Act on the reply's `route`:
   do the step in this session.
 
 Going back to a step passes `revise` with the text you would give the helper: a gate's `revise` comments,
-the acceptance stage's "goes back to the architect" failures, a reviewer re-run. The step carries on its
-saved conversation and edits the pieces it handed in. Tell the user at each gate which model did each
+a reviewer re-run. The step carries on its saved conversation and edits the pieces it handed in. The
+acceptance stage's "goes back to the architect" failure goes back as `acceptance_fix` instead (role
+`architect`), with the receipt's failure and its `log_path`: on `done`, send the reply's
+`acceptance_fix.failures` to `execute_stage` repair as `failures`, as you would the helper's reply; when it
+holds `cannot_pass`, that one line is the helper's "cannot pass" reply. Tell the user at each gate which model did each
 thinking step so far.
 
 # Executor mode — greenfield (`/mmo:greenfield` and `/mmo:pass`)

@@ -37,7 +37,7 @@ const COMMAND_TIMEOUT_MS = 300_000;
 /** What each role must hand in before its step is done, and the hand-in tools it gets. */
 export const ROLE_TOOLS = {
   requirements: ["write_requirements"],
-  architect: ["submit_section", "finalize", "registry_versions"],
+  architect: ["submit_section", "finalize", "registry_versions", "write_acceptance_fix"],
   "brownfield-architect": ["write_section"],
   "senior-reviewer": ["env_keys", "write_review"],
   "brownfield-senior-reviewer": ["git_diff", "read_provenance", "run_file_check", "env_keys", "write_review"],
@@ -47,13 +47,18 @@ export const ROLE_TOOLS = {
 };
 export const READ_TOOLS = ["read_file", "list_files", "search_files"];
 
+// An acceptance fix answers the acceptance stage; the approved spec stays as the code was typed from it. The architect's
+// tools are the same in every call (a conversation carried on keeps its tools), and refuse what the call is not for.
+const ACCEPTANCE_FIX_ONLY = "this step is an acceptance fix: hand in its answer with write_acceptance_fix; it changes no spec section";
+
 const cut = (s) => (s.length > MAX_RESULT_CHARS ? `${s.slice(0, MAX_RESULT_CHARS)}\n[cut at ${MAX_RESULT_CHARS} characters: read the rest by line range]` : s);
 
 export class ThinkingTools {
   /**
    * cfg: {role, project_root, run_id, intent, output_dir (relative to project_root), outputs: {requirements,
    * sections_dir, review, security_review, discovery}, spec_dir, requirements_path, code_dir, run_token (the token the
-   * spec store knows the run's pre-flight by), revise (the step answers a gate's changes)}
+   * spec store knows the run's pre-flight by), revise (the step answers a gate's changes), acceptance_fix (the
+   * architect answers the acceptance stage)}
    */
   constructor(cfg) {
     this.cfg = cfg;
@@ -214,6 +219,7 @@ export class ThinkingTools {
    * and an unchanged one need not be typed out again.
    */
   async submit_section({ name, json }) {
+    if (this.cfg.acceptance_fix) return { error: ACCEPTANCE_FIX_ONLY };
     const n = this.sectionName(name);
     if (n.error) return { error: n.error };
     if (json === undefined || json === "") {
@@ -264,6 +270,7 @@ export class ThinkingTools {
 
   /** `drop`: on a revise, the approved spec's units the changes remove, by id; every other approved unit must be in. */
   async finalize({ drop } = {}) {
+    if (this.cfg.acceptance_fix) return { error: ACCEPTANCE_FIX_ONLY };
     const { specStore } = await loadServerLib();
     const gone = this.unaccounted(specStore);
     const dropped = Array.isArray(drop) ? drop.map(String) : [];
@@ -276,6 +283,33 @@ export class ThinkingTools {
     const r = specStore.finalizeSpec(join(this.root, this.cfg.spec_dir), this.cfg.requirements_path ? join(this.root, this.cfg.requirements_path) : undefined);
     if (r.ok) { this.accepted.set("finalize", true); return { result: `finalized: ${r.units} unit(s); design.md rendered${dropped.length ? `; removed from the approved spec: ${dropped.join(", ")}` : ""}` }; }
     return { error: r.missing_coverage?.length ? `no unit covers ${r.missing_coverage.join(", ")}: add a new units file that covers them, then finalize again` : JSON.stringify(r.errors ?? r) };
+  }
+
+  /**
+   * An acceptance fix's answer, as the architect's instructions say to reply it: the failures entries for a repair
+   * round, checked against the entry execute_stage repair declares (REPAIR_FAILURE_SCHEMA), or the one line why the
+   * brief's fixed stack cannot pass.
+   */
+  async write_acceptance_fix({ failures_json, cannot_pass }) {
+    if (!this.cfg.acceptance_fix) return { error: "only an acceptance fix hands in write_acceptance_fix: this step hands in the spec's sections" };
+    const given = (v) => typeof v === "string" && v !== "";
+    if (given(failures_json) === given(cannot_pass)) return { error: "hand in exactly one of failures_json or cannot_pass" };
+    let answer;
+    if (given(cannot_pass)) {
+      if (/[\r\n]/.test(cannot_pass) || !cannot_pass.trim()) return { error: "cannot_pass is one line: why the brief's fixed stack cannot pass" };
+      answer = { cannot_pass: cannot_pass.trim() };
+    } else {
+      let entries;
+      try { entries = JSON.parse(failures_json); } catch (e) { return { error: `failures_json is not valid JSON: ${e.message}` }; }
+      const { specSchema } = await loadServerLib();
+      const errors = specSchema.validate({ type: "array", minItems: 1, items: specSchema.REPAIR_FAILURE_SCHEMA }, entries);
+      if (errors.length) return { error: `refused:\n${errors.map((e) => `${e.path} ${e.message}`).join("\n")}` };
+      answer = { failures: entries };
+    }
+    this.own(this.cfg.outputs.acceptance_fix, JSON.stringify(answer, null, 2));
+    this.accepted.set("acceptance_fix", true);
+    const n = answer.failures?.length;
+    return { result: answer.failures ? `accepted: ${n} failures ${n === 1 ? "entry" : "entries"} for a repair round` : "accepted: the criterion is reported as failed, with that line" };
   }
 
   registry_versions({ ecosystem, name }) {
@@ -398,6 +432,7 @@ export class ThinkingTools {
     if (role === "requirements") return this.accepted.has("requirements") ? [] : ["requirements.md (write_requirements)"];
     if (role === "discovery") return ["discovery.md", "baseline.json"].filter((n) => !this.accepted.has(`discovery:${n}`)).map((n) => `the run's ${n} (write_discovery)`);
     if (role.endsWith("reviewer")) return this.accepted.has("review") ? [] : ["the review (write_review)"];
+    if (role === "architect" && this.cfg.acceptance_fix) return this.accepted.has("acceptance_fix") ? [] : ["the acceptance fix: its failures entries, or the one line why it cannot pass (write_acceptance_fix)"];
     const out = [];
     if (!this.accepted.has("header.json")) out.push("header.json, accepted");
     if (![...this.accepted.keys()].some((k) => k.startsWith("units-"))) out.push("at least one units file, accepted");
