@@ -19,6 +19,7 @@ Script:
    "max_history": 10000}                       the SDK's history size cap
   SESSION = {"aenter_delay": s,                start-up time before the session is ready
              "aexit": {"raise": NAME, "message": "..."} | {"block": s},   teardown raises, or blocks the event loop
+             "no_conversation_id": true,       the session reports no conversation id (conversation_id is None)
              "turns": [TURN, ...]}             the n-th chat() of the session gets the n-th (the last one repeats)
   TURN = [EVENT, ...], each at `at` seconds after its chat():
     {"at": s, "step": {type, source, status, target, content, content_delta, thinking_delta, tool_calls, error,
@@ -162,8 +163,9 @@ class Conversation:
         return ""
 
     @property
-    def conversation_id(self) -> str:
-        return f"standin-{self._session}"
+    def conversation_id(self) -> str | None:
+        # A session scripted with "no_conversation_id" reports none, as an SDK that gives no id after a turn.
+        return None if self._script.get("no_conversation_id") else f"standin-{self._session}"
 
     @property
     def is_idle(self) -> bool:

@@ -61,6 +61,12 @@ STOP_WORDS = {
 }
 
 
+def reminder(status: dict) -> str:
+    """What the step still owes, as a turn's message."""
+    return ("Not done yet. Still owed: " + "; ".join(status.get("missing") or []) +
+            ". Hand each piece in with your tools; a refused piece answers with every problem to fix.")
+
+
 def progressed(before: dict, after: dict) -> bool:
     """Whether a turn moved the step on, between two of the tools' status answers: a piece accepted that was not
     before, or a change in what the step still owes (a refused piece's problems included)."""
@@ -280,6 +286,12 @@ async def run(args):
             json.dump(summary, f)
         os.replace(tmp, args.summary_file)
 
+    def next_turn(said: str, status: dict) -> str:
+        # The message of a turn after the first: `said`, in the step's own conversation, resumed by the SDK's id.
+        # Without an id the next session is a new conversation that never saw the task, so it gets the task, then what
+        # is still owed (review: a reminder there held only "Not done yet. Still owed: ...", with no task).
+        return said if resume else f"{task}\n\n{reminder(status)}"
+
     s = None
     busy_waits = 0
     # What the step owed after the last turn (before the first, the tools' start-up answer), and how many reminders in
@@ -336,14 +348,13 @@ async def run(args):
                 if sup.stopped:
                     summary["reason"] = "stopped"
                     break
-                message = sv.CONTINUE_MESSAGE if resume else task
+                message = next_turn(sv.CONTINUE_MESSAGE, status)
                 continue
             if idle >= NO_PROGRESS_TURNS:
                 summary["reason"] = "no_progress"
                 break
             reminded = True
-            message = ("Not done yet. Still owed: " + "; ".join(status.get("missing") or []) +
-                       ". Hand each piece in with your tools; a refused piece answers with every problem to fix.")
+            message = next_turn(reminder(status), status)
     finally:
         host.close()
         await sup.close()

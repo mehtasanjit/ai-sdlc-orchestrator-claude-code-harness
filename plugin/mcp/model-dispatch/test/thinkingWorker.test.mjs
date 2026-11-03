@@ -202,6 +202,33 @@ test("past the run's busy window the step ends unavailable, naming when its unse
   assert.equal(once.summary.reason, "busy");
 });
 
+// E-thinking-no-conversation-id. Review: when the SDK reports no conversation id after a turn, the next session opens a
+// new conversation, and a reminder sent there held only "Not done yet. Still owed: …", with no task.
+test("without the SDK's conversation id a later turn opens a new conversation, so it carries the task, then what is owed", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const brief = "Write requirements.md for a ping service.";
+  const handIn = [{ at: 0, step: step.tool("write_requirements", "ACTIVE", REQUIREMENTS, "w3") }, ...textAnswer(0, "Handed in.", { prompt_token_count: 10 })];
+  // A reminder after a turn that handed nothing in.
+  const reminded = await runWorker("thinking", { brief, timeout: 30, limitMs: 45_000, script: { sessions: [
+    { no_conversation_id: true, turns: [textAnswer(0, "I have read the brief.", { prompt_token_count: 10 })] },
+    { no_conversation_id: true, turns: [handIn] },
+  ] } });
+  assert.equal(reminded.code, 0, tail(reminded));
+  assert.equal(reminded.summary.done, true, JSON.stringify(reminded.summary));
+  assert.equal(reminded.sessions.length, 2);
+  assert.equal(reminded.sessions[1].conversation_id, null, "no id to carry on: a new conversation");
+  assert.ok(reminded.chats[1].message.startsWith(`${brief}\n\n`), `the task first: ${reminded.chats[1].message}`);
+  assert.match(reminded.chats[1].message, /Not done yet\. Still owed: requirements\.md \(write_requirements\)/);
+  // A carry-on after Google could not serve a turn: the same, never "continue" in a conversation that has no task.
+  const waited = await runWorker("thinking", { brief, timeout: 30, limitMs: 45_000, args: [...BUSY, "--busy-window-sec", "30"], script: { sessions: [
+    { no_conversation_id: true, turns: [READ_THEN_REFUSED] },
+    { no_conversation_id: true, turns: [handIn] },
+  ] } });
+  assert.equal(waited.code, 0, tail(waited));
+  assert.equal(waited.sessions.length, 2);
+  assert.ok(waited.chats[1].message.startsWith(`${brief}\n\n`), `the task first: ${waited.chats[1].message}`);
+  assert.match(waited.chats[1].message, /Still owed: requirements\.md \(write_requirements\)/);
+});
+
 // E-thinking-tool-limits. Review: no tool call had a time limit, and a tool process that died at start was found only
 // after Gemini had been paid.
 test("a tool call that never answers ends the step with its reason, at the call's limit", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
