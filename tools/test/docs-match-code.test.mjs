@@ -824,13 +824,13 @@ test("each shipped brownfield example's documented scope passes plan-lint", () =
   }
 });
 
-test("the v0.10.0 note says how thinking steps are routed, as judgment.ts does it", () => {
-  const judgment = read("plugin", "mcp", "model-dispatch", "src", "judgment.ts");
+test("the v0.10.0 note says how thinking steps are routed, as thinking.ts does it", () => {
+  const thinking = read("plugin", "mcp", "model-dispatch", "src", "thinking.ts");
   const row = noteRow("Thinking-step routing", "0.10.0");
-  assert.match(row, /`execute_judgment`/);
-  assert.match(row, /one fix round/);
-  assert.match(judgment, /export const JUDGMENT_FIX_ROUNDS = 1;/);
-  assert.match(row, /installed dependencies left out/);
-  assert.match(judgment, /CLONE_SKIP_DIRS = new Set\(\["node_modules"/);
-  assert.match(noteRow("Driver model", "0.10.0"), /`driver:`/);
+  assert.match(row, /`run_thinking_step`/);
+  assert.match(row, /No other model takes a step over/);
+  assert.doesNotMatch(thinking, /fallback/i, "no Claude fallback in the thinking step");
+  assert.match(row, /default 14,400 s/);
+  assert.match(thinking, /export const DEFAULT_THINKING_TIMEOUT_SEC = 14_400;/);
+  assert.match(noteRow("Session model", "0.10.0"), /`session_model`/);
 });

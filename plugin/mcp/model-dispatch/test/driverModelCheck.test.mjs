@@ -141,11 +141,21 @@ test("a policy that splits the judgment tier across models is an error, not a vo
   });
 });
 
-test("a judgment tier routed entirely to another vendor, with no driver: block, is an error naming the block", () => {
+test("a policy that names no Claude model for the session leaves it on its own model", () => {
   withPolicy(NON_ANTHROPIC_POLICY, (root) => {
-    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "gemini-3.5-flash" });
+    const r = run(["--project-root", root], {});
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /names no Claude model for this session/);
+  });
+});
+
+test("a thinking phase routed to a model that cannot read the project fails closed", () => {
+  const yaml = UNIFIED_POLICY.replace("rules:\n", "rules:\n  - when: { phase: architecture_design }\n    use: worker\n");
+  withPolicy(yaml, (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-4-8" });
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /no driver: block/);
+    assert.match(r.stderr, /cannot read the project/);
+    assert.match(r.stderr, /architecture_design → gemini-3.5-flash/);
   });
 });
 
@@ -313,11 +323,11 @@ test("no stranded-value note appears when the project has no settings file", () 
 });
 
 
-// Thinking steps routed to another vendor run on the server (execute_judgment) in both auth modes; the session is
-// checked against the policy's Claude-routed thinking steps or its driver: block.
-const AGENT_WITH_DRIVER = NON_ANTHROPIC_POLICY.replace("name: check-agentic\n", "name: check-agentic\ndriver:\n  model_name: claude-opus-5-5\n");
+// Thinking steps routed to an agent leaf run on the server (run_thinking_step) in both auth modes; the session is
+// checked against the policy's Claude-routed thinking steps or its session_model.
+const AGENT_WITH_DRIVER = NON_ANTHROPIC_POLICY.replace("name: check-agentic\n", "name: check-agentic\nsession_model: claude-opus-5-5\n");
 
-test("a policy whose thinking steps all name an agent is checked against its driver: block", () => {
+test("a policy whose thinking steps all name an agent is checked against its session_model", () => {
   withPolicy(AGENT_WITH_DRIVER, (root) => {
     const ok = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
     assert.equal(ok.code, 0, ok.stderr);
@@ -327,13 +337,6 @@ test("a policy whose thinking steps all name an agent is checked against its dri
   });
 });
 
-test("an agent-only policy with no driver: block is refused, naming the block to add", () => {
-  withPolicy(NON_ANTHROPIC_POLICY, (root) => {
-    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
-    assert.equal(r.code, 1);
-    assert.match(r.stderr, /no driver: block/);
-  });
-});
 
 test("a Claude-routed policy pins the session to that model, as estimated does", () => {
   withPolicy(UNIFIED_POLICY, (root) => {
@@ -342,8 +345,8 @@ test("a Claude-routed policy pins the session to that model, as estimated does",
   });
 });
 
-test("a driver: block that disagrees with the Claude-routed thinking steps is refused", () => {
-  const yaml = UNIFIED_POLICY.replace("name: check-unified\n", "name: check-unified\ndriver:\n  model_name: claude-opus-5-5\n");
+test("a session_model that disagrees with the Claude-routed thinking steps is refused", () => {
+  const yaml = UNIFIED_POLICY.replace("name: check-unified\n", "name: check-unified\nsession_model: claude-opus-5-5\n");
   withPolicy(yaml, (root) => {
     const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-4-8" });
     assert.equal(r.code, 1);
@@ -359,7 +362,7 @@ test("the old --auth flag is refused: the check is the same in both modes", () =
   });
 });
 
-test("every shipped policy whose thinking steps name Gemini carries a driver: block the check accepts", () => {
+test("every shipped policy whose thinking steps name Gemini carries a session_model the check accepts", () => {
   const dir = join(HERE, "..", "..", "..", "config", "policies");
   for (const name of ["flash-agsdk-only", "flash-agsdk-only-v38", "argon4-agsdk-only", "argon4-plus-flash38", "argon4-plus-sonnet55"]) {
     const r = run(["--policy-path", join(dir, `${name}.yaml`)], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
@@ -376,10 +379,10 @@ test("a failure ends by saying not to print a settings file, and names the sessi
   });
 });
 
-test("a pass on the driver: block says so instead of a placeholder model id", () => {
+test("a pass on session_model says so instead of a placeholder model id", () => {
   withPolicy(AGENT_WITH_DRIVER, (root) => {
     const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
     assert.equal(r.code, 0, r.stderr);
-    assert.match(r.stdout, /\(its driver: block\)/);
+    assert.match(r.stdout, /\(its session_model\)/);
   });
 });

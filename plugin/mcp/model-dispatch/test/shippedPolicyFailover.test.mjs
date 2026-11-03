@@ -37,7 +37,7 @@ const FAILOVER_VERSIONS = {
 };
 /**
  * The policies whose thinking steps name Gemini went one version higher again in 0.10.0, when those steps started to
- * follow the policy (their driver: block): telemetry keeps 0.9.4's runs, where Claude planned, apart from them.
+ * follow the policy (their session_model): telemetry keeps 0.9.4's runs, where Claude planned, apart from them.
  */
 const ROUTED_THINKING_VERSIONS = {
   "argon4-agsdk-only": 3,

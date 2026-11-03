@@ -4,7 +4,7 @@
 # isolates the executer.
 #
 # Runs under either auth mode: the thinking steps go to Argon through the server in
-# both, and the session runs on the driver: model. No Claude model belongs in this file: the ladder's last
+# both, and the session runs on session_model. No Claude model belongs in this file: the ladder's last
 # attempt goes to a policy's first Claude leaf (executor/tools.ts fallbackLeaf), so
 # one here would type files. With none, the last attempt follows the rules below.
 # Version 2: the greenfield passes on runs/argon4-pairings (ai-sdlc-multi-model-orchestration)
@@ -13,21 +13,20 @@
 # (version 3 turns failover on).
 #
 # Thinking steps follow the rules below (plugin 0.10.0). Requirements, the architect
-# and both reviewers run on Argon as an agent through execute_judgment, in a scratch
-# copy of the project; only each step's own outputs come back. A step that still fails
-# its checks after one fix round is handed back to the session's Claude helper, and its
-# telemetry events carry judgment_fallback. Discovery, the orchestrator's own turns and
-# the gates run on the driver: model, which the driver check pins
-# (CLAUDE_CODE_SUBAGENT_MODEL) under both auth modes; estimated and vendor alike. Versions up to 3 of this policy ran
-# under plugins before 0.10.0, where the session's own model planned and reviewed
-# whatever the rules said; version 4 keeps those runs apart in telemetry.
+# and both reviewers run on Argon through run_thinking_step: the helper's own
+# instructions, read-only tools that apply the engine's read rule, and hand-in tools that
+# run the Claude helper's own checks piece by piece. A step that cannot finish within
+# thinking_timeout_sec (default four hours of its own work) stops the run; no other model
+# takes it over. Discovery (before Gate 0), the orchestrator's own turns and the gates run on
+# session_model, which the driver check pins (CLAUDE_CODE_SUBAGENT_MODEL) in both auth modes. Versions up to 3 of
+# this policy ran under plugins before 0.10.0, where the session's own model planned and
+# reviewed whatever the rules said; version 4 keeps those runs apart in telemetry.
 version: 4
 name: argon4-plus-flash38
 
-# The session's model: the orchestrator, discovery, the gates, and any thinking step
-# handed back from the agent. Outside models: so no rule or typist ladder reaches it.
-driver:
-  model_name: claude-opus-5-5
+# The Claude model the session runs on: the orchestrator and the gates. Outside models:
+# so no rule or typist ladder reaches it.
+session_model: claude-opus-5-5
 
 models:
   - id: argon

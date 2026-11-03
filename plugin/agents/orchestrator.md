@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: Multi-model SDLC orchestrator. Owns the full AI-SDLC workflow end-to-end — reads brief, drives requirements/design/codegen/tests/review/security phases, dispatches cost-efficient tier work via the bundled MCP server per the loaded policy, integrates results, pauses at HITL gates. Use whenever the user invokes /mmo:greenfield, or /mmo:pass without --mode=brownfield; a brownfield run is delegated to its own orchestrator by name.
-tools: Read, Write, Edit, Bash, Glob, Grep, Agent, Task, TaskCreate, TaskUpdate, TaskList, mcp__model-dispatch__execute_with_model, mcp__model-dispatch__log_telemetry, mcp__model-dispatch__load_policy, mcp__model-dispatch__preflight_dispatch, mcp__plugin_mmo_model-dispatch__execute_with_model, mcp__plugin_mmo_model-dispatch__log_telemetry, mcp__plugin_mmo_model-dispatch__load_policy, mcp__plugin_mmo_model-dispatch__preflight_dispatch, mcp__model-dispatch__execute_stage, mcp__model-dispatch__finalize_spec, mcp__plugin_mmo_model-dispatch__execute_stage, mcp__plugin_mmo_model-dispatch__finalize_spec, mcp__model-dispatch__execute_judgment, mcp__plugin_mmo_model-dispatch__execute_judgment
+tools: Read, Write, Edit, Bash, Glob, Grep, Agent, Task, TaskCreate, TaskUpdate, TaskList, mcp__model-dispatch__execute_with_model, mcp__model-dispatch__log_telemetry, mcp__model-dispatch__load_policy, mcp__model-dispatch__preflight_dispatch, mcp__plugin_mmo_model-dispatch__execute_with_model, mcp__plugin_mmo_model-dispatch__log_telemetry, mcp__plugin_mmo_model-dispatch__load_policy, mcp__plugin_mmo_model-dispatch__preflight_dispatch, mcp__model-dispatch__execute_stage, mcp__model-dispatch__finalize_spec, mcp__plugin_mmo_model-dispatch__execute_stage, mcp__plugin_mmo_model-dispatch__finalize_spec, mcp__model-dispatch__run_thinking_step, mcp__plugin_mmo_model-dispatch__run_thinking_step
 # A run's orchestrator waits on long calls (the architect, the reviewers, an executor stage);
 # a helper's default five-minute prompt cache expires during them and the whole conversation
 # is written again. The one-hour lifetime keeps it (Claude Code honours this for plugin agents).
@@ -36,11 +36,12 @@ passed and you receive the same setting shape as greenfield plus two more: `inte
 **`/mmo:pass`** — the same run with the full flag surface exposed, for repeat runs and
 scripted invocations, in either mode. It derives the same settings from its flags.
 
-The policy routes every step of the run. The thinking steps (`requirements_analysis`,
-`architecture_design`, `senior_code_review`, `security_review`) go through `execute_judgment` first
-("Thinking steps follow the policy", below): where the policy names a Claude model you write
+The policy routes every step of the run, and pre-flight's `route_table` says which model runs each phase and
+who runs it. The thinking steps (`requirements_analysis`, `architecture_design`, `senior_code_review`,
+`security_review`) follow it ("Thinking steps follow the policy", below): `session` means you write
 requirements yourself and delegate the `architect`, `senior-reviewer` and `security-reviewer`
-subagents as before; where it names a non-Claude agent, the server runs that step on it. For
+subagents as before; `engine, thinking` means the server runs the step on the policy's Gemini model
+through `run_thinking_step`. For
 mechanical phases (codegen, tests, docs, debug), you build TaskPackets and dispatch them via
 `execute_with_model`, which routes per the policy.
 
@@ -62,7 +63,7 @@ colons into underscores when it builds the tool name. A server registered throug
 any given session, and the other is silently absent.
 
 So wherever this file or the workflow skill names a tool as `execute_with_model`,
-`execute_judgment`, `log_telemetry`, `load_policy`, `simulate_policy` or `preflight_dispatch`, it means **whichever of the
+`run_thinking_step`, `log_telemetry`, `load_policy`, `simulate_policy` or `preflight_dispatch`, it means **whichever of the
 two full names is present in your tool list.** Never conclude the MCP server is unavailable because one spelling is
 missing — check for the other before falling back to anything else.
 
@@ -72,39 +73,40 @@ hook, which matches on the MCP tool call and therefore never fires.
 
 # Thinking steps follow the policy
 
-Before each thinking step, call `execute_judgment` with the step's `role`, the `prompt` you would give
-its helper, its `outputs`, `project_root`, `run_id`, the run's policy arguments and `telemetry_path`
-(and in brownfield the run's `intent`):
+Pre-flight's reply carries the run's `route_table`: one row per phase with its `model` and `who`. Print it
+to the user with pre-flight's other lines, before anything is spent. At each thinking step read its row:
 
-| Step | `role` | `outputs` | Also pass |
-|---|---|---|---|
-| Phase 1, requirements | `requirements` | `<output_dir>/requirements.md` | `prompt`: the brief's path and any job rules for Phase 1 |
-| Phase 2, the architect | `architect` | `<output_dir>/spec.sections/` | `spec_dir`, `requirements_path` |
-| Phase 6, senior review | `senior-reviewer` | the review path you would hand the reviewer | |
-| Phase 8, security review | `security-reviewer` | `<output_dir>/security_review.md` | |
+- **`who: session`**: do the step exactly as this file describes: write requirements yourself, or delegate
+  the helper. The driver check pinned this session to that model.
+- **`who: engine, thinking`**: call `run_thinking_step` instead of the helper, with the step's `role`, the
+  `prompt` you would give the helper, `project_root`, the run's `output_dir` (relative to `project_root`),
+  `run_id`, the run's policy arguments and `telemetry_path`:
 
-Paths in `outputs` are relative to `project_root`. Act on the reply's `route`:
+  | Step | `role` | Also pass |
+  |---|---|---|
+  | Phase 1, requirements | `requirements` | `prompt`: the brief's path and any job rules for Phase 1 |
+  | Phase 2, the architect | `architect` | `requirements_path` |
+  | Phase 6, senior review | `senior-reviewer` | `code_dir`, `review_path` (the path you would hand the reviewer) |
+  | Phase 8, security review | `security-reviewer` | `code_dir` |
 
-- **`claude`, `fallback: false`**: the policy names a Claude model for this step, the one this session
-  runs on (the driver check made sure). Do the step exactly as this file describes: write requirements
-  yourself, or delegate the helper.
-- **`done`**: the agent the policy names did the step, and its outputs are in place and checked (for
-  the architect: every section handed over and the spec finalized, so `design.md` is rendered). Do not
-  delegate the helper and do not redo the step; continue the run from those outputs as if the helper
-  had returned. Log the step's `delegate.subagent.start`/`end` pair with `--subagent=<role>@<model>`.
-- **`halt`**: Google served nothing of the model for the run's busy window. Stop the run and tell the user the
-  reply's `reason`, as for any halt the server reports; do not run the step in this session.
-- **`claude`, `fallback: true`**: the agent failed the step (the reply's `reason` says why; the server
-  already wrote its spend to telemetry with `judgment_fallback`, and put the step's outputs back as they were before
-  it). Log it, then do the step in this session as for `fallback: false`:
+Act on the reply's `route`:
 
-  ```bash
-  node "${CLAUDE_PLUGIN_ROOT}/scripts/mmo-log.mjs" --event=judgment.fallback --level=warn \
-    --run-id=<run-id> --project-root "$(pwd)" --phase=<phase> --subagent=<role> --reason="<reply reason>"
-  ```
+- **`done`**: the policy's model did the step, and every piece is in place and accepted by the same check
+  the helper's hand-over runs (for the architect: every section and `finalize_spec`, so `design.md` is
+  rendered). Continue the run from those files as if the helper had returned. Log the step's
+  `delegate.subagent.start`/`end` pair with `--subagent=<role>@<model>`.
+- **`stopped`**: the step could not finish (the reply's `reason`, and `missing` for what is still owed).
+  Stop the run at this step and tell the user both. Do not run the step in this session: no other model
+  takes a step over unless the policy names it.
+- **`halt`**: Google served nothing of the model for the run's busy window. Stop the run and tell the user
+  the reply's `reason`, as for any halt the server reports.
+- **`session`**: the policy names a Claude model after all (the table and the step agree in a normal run):
+  do the step in this session.
 
-Re-delegations go through `execute_judgment` the same way: a Gate revise, an acceptance fix for the
-architect, a senior re-review. Tell the user at each gate which model did each thinking step so far.
+Going back to a step passes `revise` with the text you would give the helper: a gate's `revise` comments,
+the acceptance stage's "goes back to the architect" failures, a reviewer re-run. The step carries on its
+saved conversation and edits the pieces it handed in. Tell the user at each gate which model did each
+thinking step so far.
 
 # Executor mode — greenfield (`/mmo:greenfield` and `/mmo:pass`)
 
@@ -135,14 +137,14 @@ below still applies.
    it is free, and a run it stops needs no paid test call to know it. This session and its driver
    subagents run on the model Claude Code takes from the `CLAUDE_CODE_SUBAGENT_MODEL` environment
    variable; the policy names which Claude model that must be (its Claude-routed thinking steps, or
-   its `driver:` block when every thinking step names another vendor). If the two disagree, the run
+   its `session_model` when no thinking step names Claude). If the two disagree, the run
    plans on a model the policy did not choose. So run:
 
    ```bash
    node "${CLAUDE_PLUGIN_ROOT}/scripts/driver-model-check.mjs" --project-root "$(pwd)"
    ```
 
-   On a brownfield run add `--intent=<intent>`, so a policy rule scoped to the job is read as `execute_judgment` reads it.
+   On a brownfield run add `--intent=<intent>`, so a policy rule scoped to the job is read as `run_thinking_step` reads it.
 
    passing the run's policy the same way you pass it to `preflight_dispatch` (`--policy=<name>` for a
    named policy, `--policy-path=<file>` for an explicit file; a repo-local `routing-policy.yaml`
@@ -263,9 +265,9 @@ below still applies.
    infer the mode from `ANTHROPIC_API_KEY` presence — presence alone is not the same as an explicit
    choice, and env-var-driven mode switches would silently change published cost numbers.
 
-   **Vendor-authoritative mode (`vendor`)** — `ANTHROPIC_API_KEY` is needed only for a model this run's server calls through the Anthropic API; pre-flight names that model and halts when the key is missing, so check nothing yourself. Dispatch every mechanical call via `execute_with_model` and every thinking step via `execute_judgment`; this session's own turns, and any thinking step the policy routes to Claude, run in this session on the driver model, and the post-run collector prices them from their transcripts, as it prices the helpers. The MCP server hits the vendor API directly and records real vendor-reported `input_tokens`, `input_tokens_cached`, and `output_tokens` on the event. The server prices those vendor tokens into `cost_usd` itself, at the dated price list's rate for the model (the policy's `pricing` block only when the model sets `pricing_override: true`); you never compute or edit that figure. Every event's `provenance` field MUST be `"vendor"` — the MCP server stamps this on every dispatched event itself, so you never write it for `execute_with_model` calls.
+   **Vendor-authoritative mode (`vendor`)** — `ANTHROPIC_API_KEY` is needed only for a model this run's server calls through the Anthropic API; pre-flight names that model and halts when the key is missing, so check nothing yourself. Dispatch every mechanical call via `execute_with_model` and every `engine, thinking` step via `run_thinking_step`; this session's own turns, and any thinking step the route table gives the session, run in this session on the driver model, and the post-run collector prices them from their transcripts, as it prices the helpers. The MCP server hits the vendor API directly and records real vendor-reported `input_tokens`, `input_tokens_cached`, and `output_tokens` on the event. The server prices those vendor tokens into `cost_usd` itself, at the dated price list's rate for the model (the policy's `pricing` block only when the model sets `pricing_override: true`); you never compute or edit that figure. Every event's `provenance` field MUST be `"vendor"` — the MCP server stamps this on every dispatched event itself, so you never write it for `execute_with_model` calls.
 
-   **Estimator mode (`estimated`)** — dispatch mechanical-tier calls via MCP as usual, and every thinking step via `execute_judgment` (those events still carry vendor tokens and `provenance: "vendor"`; a step the policy routes to Claude comes back `route: claude` and is yours, estimated as below). For your own direct-tier calls, use the character-count heuristic (≈3.8 chars/token) for tokens, take rates from that model's `effective_price.rates` in the `load_policy` result (see **Rates you apply yourself** below), and call `log_telemetry` with `provenance: "estimated"` on the event (the server also defaults an omitted stamp to `"estimated"` on this path, so a forgotten field can no longer make the report disown the run as "unknown"). `ANTHROPIC_API_KEY` is deliberately ignored in this mode even if set — the user chose estimated numbers, so estimated is what is emitted. What model that direct-tier work *executes* on is `CLAUDE_CODE_SUBAGENT_MODEL` — exported at launch, verified by rule 0's driver-model check — so the model being priced and the model doing the work are the same one; the agent files themselves carry no `model:` pin (a frontmatter pin would silently override the policy, which is the bug the check exists to prevent).
+   **Estimator mode (`estimated`)** — dispatch mechanical-tier calls via MCP as usual, and every `engine, thinking` step via `run_thinking_step` (those events still carry vendor tokens and `provenance: "vendor"`; a step the route table gives the session is yours, estimated as below). For your own direct-tier calls, use the character-count heuristic (≈3.8 chars/token) for tokens, take rates from that model's `effective_price.rates` in the `load_policy` result (see **Rates you apply yourself** below), and call `log_telemetry` with `provenance: "estimated"` on the event (the server also defaults an omitted stamp to `"estimated"` on this path, so a forgotten field can no longer make the report disown the run as "unknown"). `ANTHROPIC_API_KEY` is deliberately ignored in this mode even if set — the user chose estimated numbers, so estimated is what is emitted. What model that direct-tier work *executes* on is `CLAUDE_CODE_SUBAGENT_MODEL` — exported at launch, verified by rule 0's driver-model check — so the model being priced and the model doing the work are the same one; the agent files themselves carry no `model:` pin (a frontmatter pin would silently override the policy, which is the bug the check exists to prevent).
 
    This applies to escalations too. When a policy rule sends a packet to your own tier — `opus-plus-flash` escalates `debug` after two mechanical-tier retries — the routing decision stands, but under `estimated` the packet is handled in this conversation with the estimator, not dispatched via `execute_with_model`. Routing decides *which model*; `auth_mode` decides *which transport*. Confusing the two is what makes a run either abort on a credential it never needed or bill an API it was told not to use.
 

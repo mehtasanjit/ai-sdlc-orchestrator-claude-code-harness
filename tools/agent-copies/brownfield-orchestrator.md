@@ -91,21 +91,19 @@ against them; the server does not check them.
      prompt.
 
    **Thinking steps in this run.** Instead of the table in "Thinking steps follow the policy": every
-   `execute_judgment` call in this run passes the run's `intent`, and its `outputs` are under `<output_dir>`
-   (`.sdlc/runs/<run_id>`), the only place a thinking step writes:
+   `run_thinking_step` call in this run passes `output_dir: .sdlc/runs/<run_id>` and the run's `intent`, and
+   the prompt the input contracts below give:
 
-   | Step | `role` | `outputs` |
+   | Step | `role` | Hands in |
    |---|---|---|
-   | Phase 1, requirements | `requirements` | `<output_dir>/requirements.md` |
-   | Phase 2, the architect | `brownfield-architect` | `<output_dir>/change.sections/` |
-   | Phase 6, senior review | `brownfield-senior-reviewer` | `<output_dir>/review.json` |
-   | Phase 8, security review | `brownfield-security-reviewer` | `<output_dir>/security_review.md` |
+   | Phase 1, requirements | `requirements` | `requirements.md` |
+   | Phase 2, the architect | `brownfield-architect` | `change.sections/`, each section checked by `plan-lint --section` as it arrives |
+   | Phase 6, senior review | `brownfield-senior-reviewer` | `review.json` |
+   | Phase 8, security review | `brownfield-security-reviewer` | `security_review.md` |
 
-   The `prompt` is the delegation prompt the input contracts below give. On `done` for the architect, its
-   sections are in place and each passed `plan-lint --section`: run `plan-to-packets.mjs --spec` as when the
-   architect returns (brownfield-runs.md, Phase 2), and an exit 1 there re-runs `execute_judgment` with the
-   printed lines in the `prompt`. Discovery is not a thinking step here: it runs before Gate 0 confirms the
-   policy, on the driver model.
+   On `done` for the architect, run `plan-to-packets.mjs --spec` as when the architect returns
+   (brownfield-runs.md, Phase 2); an exit 1 there calls `run_thinking_step` again with the printed lines as
+   `revise`, which carries on the architect's conversation. Discovery runs before Gate 0, on the session.
 
    **Architect input contract (brownfield).** Delegate `brownfield-architect`, never `architect` (the same
    instructions with this run's planning rules, and Glob and Grep for finding files). The delegation prompt carries `mode: brownfield`,

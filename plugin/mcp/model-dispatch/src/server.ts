@@ -38,7 +38,7 @@ import {
   resolveGcpProject,
   resolveGcpLocation,
 } from "./adapters/geminiTransports.js";
-import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides, ApplySpec, ModelConfig } from "./types.js";
+import type { TaskPacket, TelemetryEvent, Policy, SelectOverrides, ApplySpec, ModelConfig, RunContext } from "./types.js";
 import {
   FILE_OUTPUT_SCHEMA,
   applyContent,
@@ -65,8 +65,8 @@ import { leanOpusCliProblem } from "./executor/typists.js";
 import { judgingAgentLeaves, probeEvents, probeTypists, runTypingLeaves } from "./typistProbe.js";
 import { runCard } from "./runCard.js";
 import { PLUGIN_ROOT } from "./paths.js";
-import { JUDGMENT_MODULE, JUDGMENT_ROLES, JUDGMENT_TASK_TYPE, executeJudgment, type JudgmentDeps } from "./judgment.js";
-import { moveAside, SPEC_RECORDS } from "./spec/store.js";
+import { routeTable } from "./routeTable.js";
+import { DEFAULT_THINKING_TIMEOUT_SEC, THINKING_MODULE, THINKING_ROLES, THINKING_TASK_TYPE, runThinkingStep, type ThinkingDeps } from "./thinking.js";
 import { BusyLedger } from "./busyLedger.js";
 import { bindingConflict, checkAgsdk, leafLocations, writeBinding, type BoundLeaf } from "./agsdkPreflight.js";
 
@@ -268,7 +268,7 @@ function pluginVersion(): string {
  * constructs `builtin-anthropic`, so an unset ANTHROPIC_API_KEY is inert.
  * Classification lives in preflight.ts.
  */
-function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: string, executor?: boolean) {
+function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: string, executor?: boolean, intent?: string) {
   const overrides = selectOverrides();
   // Losing options of `select:` slots are excluded: their prerequisites
   // (Python venv, worker script) are not this run's problem.
@@ -312,7 +312,9 @@ function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: str
   // The Antigravity SDK the worker's Python has, against the pin, and a stray Vertex redirect (agsdkPreflight.ts).
   const reachable = policy.models.filter((m) => !notSelected.has(m.id));
   const sdk = checkAgsdk(reachable.filter((m) => m.adapter === "antigravity-worker"), process.env as Record<string, string | undefined>);
-  const haltReason = [assessment.halt_reason, cli.halt, sdk.halt].filter((r): r is string => !!r).join(" ") || null;
+  // Which model runs each phase, and who: a thinking phase nothing can run as a thinking step stops the run here.
+  const routes = routeTable(policy, overrides, intent);
+  const haltReason = [assessment.halt_reason, cli.halt, sdk.halt, ...routes.problems].filter((r): r is string => !!r).join(" ") || null;
   const warnings = [...assessment.warnings, ...(cli.warning ? [cli.warning] : []), ...sdk.warnings];
 
   // Resolved Gemini configuration — the project and region the run will bill.
@@ -401,6 +403,7 @@ function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: str
     policy_notes: policyNotes,
     executor: cli.check,
     run_card: card,
+    route_table: routes.rows,
     // The Antigravity SDK that will run: its version, the interpreter, the pin and the usage reading applied.
     ...(sdk.agsdk ? { agsdk: sdk.agsdk } : {}),
   };
@@ -434,15 +437,17 @@ interface DispatchOptions {
   force?: { modelId: string; reason: string; ruleIndex: number; selection?: any };
   /** The run the call belongs to (runFor): how it is billed, for the typist. */
   run?: ServerRun;
-  /** The caller writes the events itself, with its own fields (execute_judgment). */
+  /** The caller writes the events itself, with its own fields (run_thinking_step). */
   noAppend?: boolean;
   /** The request's own stop: a typist or agent worker the call runs is stopped with it. */
   signal?: AbortSignal;
+  /** A thinking step's worker settings (thinking.ts), passed to the agent door. */
+  thinking?: RunContext["thinking"];
 }
 
 /** Route one packet, run it, log it; append its telemetry unless the apply loop records it (forApply). */
 async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, opts: DispatchOptions = {}): Promise<DispatchOnce> {
-  const { forApply = false, force, run = runState, noAppend = false, signal } = opts;
+  const { forApply = false, force, run = runState, noAppend = false, signal, thinking } = opts;
   const decision = force ?? pickModel(routeContext(packet), policy, selectOverrides());
   log("info", "route.decide", {
     packet_id: packet.id,
@@ -486,6 +491,7 @@ async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, opts: Di
     work_dir: a.work_dir ?? a.project_root,
     telemetry_path: a.telemetry_path,
     ...(signal ? { signal } : {}),
+    ...(thinking ? { thinking } : {}),
   });
   for (const att of result.attempts ?? []) {
     log("debug", "dispatch.attempt", {
@@ -1057,31 +1063,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: "execute_judgment",
+      name: "run_thinking_step",
       description:
-        "Run one thinking step (requirements, the architect, the senior or security reviewer) where the run's policy " +
-        "routes its phase. A Claude model: the reply is route 'claude' and nothing is spent; run the step in this " +
-        "session as before. An agent leaf (antigravity-worker): the agent runs the helper's own instructions in a " +
-        "scratch clone of the project, code checks its outputs (each exists, each JSON file parses, the architect's " +
-        "sections are handed over and checked), sends back problems for one fix round, and copies only `outputs` " +
-        "into the project; the reply is route 'done'. A step that still fails, or a leaf that cannot run as an agent, " +
-        "replies route 'claude' with fallback: true and the reason: run the step in this session.",
+        "Run one thinking step (requirements, the architect, the senior or security reviewer, discovery) where the " +
+        "run's policy routes its phase. A Claude model: the reply is route 'session' and nothing is spent; delegate the " +
+        "helper (or write requirements yourself) as before. An antigravity-worker leaf: Gemini runs the helper's own " +
+        "instructions with read-only tools (the engine's read rule) and hands each piece in through the same check the " +
+        "Claude helper's hand-over runs, until every piece is accepted or the policy's thinking_timeout_sec is spent; " +
+        "the reply is route 'done'. A step that cannot finish replies 'stopped' with the reason and what is still owed, " +
+        "and Google serving nothing for the run's busy window replies 'halt': stop the run in both cases; no other " +
+        "model takes the step over. Pass `revise` (a gate's comments, or a check's lines to fix) to carry on the step's " +
+        "saved conversation.",
       inputSchema: {
         type: "object",
         properties: {
-          role: { type: "string", enum: Object.keys(JUDGMENT_ROLES), description: "The helper: 'requirements' for Phase 1, else the subagent you would delegate." },
+          role: { type: "string", enum: Object.keys(THINKING_ROLES), description: "The helper: 'requirements' for Phase 1, else the subagent you would delegate." },
           prompt: { type: "string", description: "Exactly what you would put in the helper's delegation prompt (for 'requirements': the brief's path and the job's Phase 1 rules)." },
-          outputs: { type: "array", items: { type: "string" }, description: "Paths relative to project_root the step writes: a file, or a folder ending in '/' (the architect's spec.sections/ or change.sections/). In a brownfield run each must be under .sdlc/." },
           project_root: { type: "string" },
+          output_dir: { type: "string", description: "The run's own folder, relative to project_root: .sdlc/runs/<run_id> in brownfield, the run's output_dir in greenfield." },
           run_id: { type: "string" },
           intent: { type: "string", description: "Brownfield: the run's job, as Gate 0 recorded it." },
-          spec_dir: { type: "string", description: "Greenfield architect: the run's output directory, where the spec is assembled." },
-          requirements_path: { type: "string", description: "Greenfield architect: requirements.md, for finalize_spec's coverage check." },
+          code_dir: { type: "string", description: "Greenfield: the generated app's folder, relative to project_root." },
+          requirements_path: { type: "string", description: "The run's requirements.md, relative to project_root (the greenfield architect's coverage check)." },
+          review_path: { type: "string", description: "Senior reviewer: where review.json goes, relative to project_root (default <output_dir>/review.json)." },
+          revise: { type: "string", description: "A gate's revise comments, or a check's printed lines to fix: carries on the step's saved conversation." },
           policy_name: { type: "string" },
           policy_path: { type: "string" },
           telemetry_path: { type: "string" },
         },
-        required: ["role", "prompt", "outputs", "project_root"],
+        required: ["role", "prompt", "project_root", "output_dir"],
       },
     },
     ...EXECUTOR_TOOLS,
@@ -1155,32 +1165,27 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           await progress?.stop();
         }
       }
-      case "execute_judgment": {
-        // The agent runs in a scratch clone, so a telemetry_path relative to the project (where its brief and evidence
-        // are staged) would not resolve from the worker's folder.
+      case "run_thinking_step": {
+        // The worker's brief and evidence are staged beside telemetry_path; the worker runs from another folder, so a
+        // path relative to the project is made absolute first.
         const a0j = args as any;
         const a = a0j?.telemetry_path && a0j.project_root ? { ...a0j, telemetry_path: resolvePath(a0j.project_root, a0j.telemetry_path) } : a0j;
         const { policy, run } = runFor(a);
-        const executorCtx = {
-          run: () => runState,
-          policy: (r: any) => ensurePolicy(r.policyName, r.projectRoot, r.policyPath),
-          overrides: selectOverrides(),
-        };
-        const replyOf = (r: any) => { try { return JSON.parse(r.content[0].text); } catch { return {}; } };
-        const deps: JudgmentDeps = {
+        const deps: ThinkingDeps = {
           pluginRoot: PLUGIN_ROOT,
           route: (phase) => {
-            const d = pickModel({ phase, task_type: JUDGMENT_TASK_TYPE, module: JUDGMENT_MODULE, retry_count: 0, intent: a.intent }, policy, selectOverrides());
+            const d = pickModel({ phase, task_type: THINKING_TASK_TYPE, module: THINKING_MODULE, retry_count: 0, intent: a.intent }, policy, selectOverrides());
             return { model: getModel(policy, d.modelId), reason: d.reason };
           },
           // The agent door's own guards, as runPacket applies them: a pre-flight in this server process, and the run's
-          // busy ledger (Google serving nothing for its window halts the run rather than falling back to Claude).
+          // busy ledger (Google serving nothing for its window halts the run).
           agentDoorProblem: () => (run ? null : "this server has not checked the Google project and SDK it would use. Call preflight_dispatch first; nothing was dispatched."),
           contractActive: (root) => hasActiveWriteContract(root),
-          dispatch: async (packet, workDir) => {
+          thinkingTimeoutSec: policy.thinking_timeout_sec ?? DEFAULT_THINKING_TIMEOUT_SEC,
+          dispatch: async (packet, thinking) => {
             const ledger = ledgerFor(run);
             const sentAt = ledger.time();
-            const one = await dispatchOnce(packet, policy, { ...a, work_dir: workDir }, { run, noAppend: true, signal: extra.signal });
+            const one = await dispatchOnce(packet, policy, { ...a, work_dir: a.project_root }, { run, noAppend: true, signal: extra.signal, thinking });
             const leafName = getModel(policy, one.decision.modelId).model_name;
             const lastAttempt = one.result.attempts?.[one.result.attempts.length - 1];
             if (lastAttempt?.unavailable) {
@@ -1190,24 +1195,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             return { result: one.result, events: one.events };
           },
           record: (evs) => { if (a.telemetry_path) for (const ev of evs) appendEvent(a.telemetry_path, ev); },
-          submitSection: async (specDir, section, file) => {
-            const r = replyOf(await handleExecutorTool("submit_spec_section", { spec_dir: specDir, section, file }, executorCtx));
-            return { ok: !!r.ok, problems: (r.errors ?? []).map((e: any) => `${e.path ?? "/"} ${e.message ?? e}`) };
-          },
-          resetSpec: (specDir) => { moveAside(specDir, SPEC_RECORDS); },
-          finalizeSpec: async (specDir, requirementsPath) => {
-            const r = replyOf(await handleExecutorTool("finalize_spec", { spec_dir: specDir, requirements_path: requirementsPath }, executorCtx));
-            const missing: string[] = r.missing_coverage ?? [];
-            return { ok: !!r.ok, problems: missing.length ? [`no unit covers ${missing.join(", ")}`] : r.ok ? [] : [JSON.stringify(r.errors ?? r)] };
-          },
-          lintSection: (file, runId, projectRoot) => {
-            const lint = spawnSync(process.execPath, [join(PLUGIN_ROOT, "scripts", "plan-lint.mjs"), "--section", file, "--run-id", runId, "--project-root", projectRoot, ...(a.intent ? ["--intent", String(a.intent)] : [])], { cwd: projectRoot, encoding: "utf8" });
-            const lines = `${lint.stdout ?? ""}\n${lint.stderr ?? ""}`.split("\n").map((l) => l.trim()).filter(Boolean);
-            return { ok: lint.status === 0, problems: lint.status === 0 ? [] : lines };
-          },
           log: (level, event, fields) => log(level, event, fields),
         };
-        const out = await executeJudgment(a, deps);
+        const out = await runThinkingStep(a, deps);
         return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
       }
       case "execute_batch": {
@@ -1300,7 +1290,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const next: ServerRun = { authMode, policyName: a.policy_name, projectRoot: a.project_root, policyPath: a.policy_path, ...(runId ? { runId } : {}), ...(intent ? { intent } : {}) };
         const policy = ensurePolicy(a.policy_name, a.project_root, a.policy_path);
         const executor = typeof a.executor === "boolean" ? a.executor : undefined;
-        const out: any = preflightDispatch(policy, authMode, a.project_root, executor);
+        const out: any = preflightDispatch(policy, authMode, a.project_root, executor, intent);
         // The run's Google project: a later pre-flight of the same run that resolves another project stops (a server
         // restarted under another environment must not bill another project). Bound once the pre-flight passes.
         const telemetryPath = typeof a.telemetry_path === "string" && a.telemetry_path ? a.telemetry_path : undefined;
@@ -1335,6 +1325,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
           writeBinding(telemetryPath, {
             run_id: runId ?? null, project, policy: { name: policy.name, version: policy.version }, auth_mode: authMode,
             plugin_version: pluginVersion(), sdk_version: out.agsdk?.version ?? null, leaves: gLeaves,
+            route_table: out.route_table,
           });
         }
         runState = next;

@@ -600,6 +600,11 @@ export interface RunContext {
    * program kills its process group, so a stopped run stops billing.
    */
   signal?: AbortSignal;
+  /**
+   * A thinking step (thinking.ts): the agent door runs worker/thinking_worker.py instead of the agent worker, with the
+   * step's own tools, its saved conversation and its own work budget.
+   */
+  thinking?: { role: string; toolsConfig: string; saveDir: string; resumeId?: string; timeoutSec: number };
 }
 
 export type RuleMatcher = {
@@ -638,8 +643,10 @@ export interface Policy {
   rules: Rule[];
   /** Optional; absent from policies written before slots existed. */
   select?: Record<string, SelectSlot>;
-  /** The Claude model the session drives the run on, for a policy whose thinking steps name no Claude model. */
-  driver?: { model_name: string; reason?: string };
+  /** The Claude model the session runs on (the orchestrator, and any thinking step the policy gives Claude) when no thinking phase names one. */
+  session_model?: string;
+  /** A Gemini thinking step's own work budget, in seconds (thinking.ts DEFAULT_THINKING_TIMEOUT_SEC when absent). */
+  thinking_timeout_sec?: number;
 }
 
 export interface RoutingDecision {
@@ -671,6 +678,8 @@ export interface ExecutionResult {
   attempts?: AttemptRecord[];
   /** Set when the run stops here: Google could not serve the model for the busy ledger's whole window. */
   halt?: string;
+  /** Agent door: the project files that changed while the worker ran (added, modified or removed). */
+  workspace_changes?: string[];
   /**
    * Why the doubling loop stopped. `_budget_exhausted` means "retries used but
    * model still had headroom" (raise the cap); `_at_model_absolute` means "hit
