@@ -183,6 +183,52 @@ test("a revise keeps every unit of the approved spec, or removes one only by nam
   assert.match((await again.call("finalize", {})).result, /finalized: 1 unit/);
 });
 
+test("a refused section is owed until a hand-in of the same name is accepted, in greenfield as in brownfield", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-refused-"));
+  mkdirSync(join(root, "out"));
+  const header = {
+    stack: ["Python 3.13", "FastAPI", "pytest"],
+    commands: [{ name: "backend tests", run: "pytest -q", cwd: "backend", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }],
+    no_audit_reason: "a test", decisions: [{ topic: "ids", choice: "integer", rejected: ["uuid"], reason: "simplest" }],
+    shared: { conventions: ["snake_case"], data_model: [{ name: "Todo", fields: [{ name: "id", type: "int", constraints: "primary key" }] }], api: [{ method: "POST", path: "/todos", access: "any", request: "TodoCreate", response: "Todo", success_status: 201, error_statuses: [422] }] },
+  };
+  const unit = (id, path, depends_on = []) => ({ id, path, phase: "codegen", import_line: "", exports: [{ name: "Todo", kind: "class", params: [], returns: "Todo" }], behaviour: `writes ${path}`, depends_on, style_from: { reason: "first file of its kind" }, covers: ["FR-1.1"], tests: [{ name: "valid", given: "a title", expect: "a Todo" }], approx_lines: 20 });
+  const t = new ThinkingTools({ role: "architect", project_root: root, run_id: "r1", output_dir: "out", outputs: { sections_dir: "out/spec.sections" }, spec_dir: "out", run_token: "run-1" });
+  const hand = (name, value) => t.call("submit_section", { name, json: typeof value === "string" ? value : JSON.stringify(value) });
+  const status = async (tools = t) => JSON.parse((await tools.call("status", {})).result);
+
+  // A refused header is owed with its problems; the same name accepted clears it.
+  assert.match((await hand("header.json", { ...header, commands: [{ ...header.commands[0], cwd: "../outside" }] })).error, /^refused:\n\/header\/commands\/0\/cwd/);
+  let s = await status();
+  assert.equal(s.done, false);
+  assert.ok(s.missing.some((m) => /^header\.json was refused: \/header\/commands\/0\/cwd \.\.\/outside is not a folder inside the code directory/.test(m)), s.missing.join("; "));
+  assert.match((await hand("header.json", header)).result, /accepted header\.json/);
+  assert.ok(!(await status()).missing.some((m) => /was refused/.test(m)), "accepted again, it is no longer owed");
+
+  // A units file refused after another was accepted: finalize assembles what was accepted, and the step is still not
+  // done (review: it was done, and spec.json held only the first file's units).
+  assert.match((await hand("units-001.json", [unit("U01", "backend/app/models.py")])).result, /accepted units-001\.json/);
+  assert.match((await hand("units-002.json", [unit("U02", "backend/tests/test_models.py", ["U09"])])).error, /U09 is not an earlier unit/);
+  assert.match((await t.call("finalize", {})).result, /finalized: 1 unit/);
+  s = await status();
+  assert.equal(s.done, false, `a refused section is owed though finalize assembled the rest: ${JSON.stringify(s)}`);
+  assert.ok(s.missing.some((m) => /^units-002\.json was refused: \/units\/0\/depends_on U09 is not an earlier unit/.test(m)), s.missing.join("; "));
+  // A piece whose JSON does not parse is a refused piece too.
+  assert.match((await hand("units-002.json", "[{nope")).error, /units-002\.json is not valid JSON/);
+  assert.ok((await status()).missing.some((m) => /^units-002\.json was refused: units-002\.json is not valid JSON/.test(m)));
+  assert.match((await hand("units-002.json", [unit("U02", "backend/tests/test_models.py", ["U01"])])).result, /accepted units-002\.json: 2 unit/);
+  assert.match((await t.call("finalize", {})).result, /finalized: 2 unit/);
+  assert.deepEqual(await status(), { done: true, missing: [], accepted: ["header.json", "units-001.json", "units-002.json", "finalize"], written: ["out/spec.sections/header.json", "out/spec.sections/units-001.json", "out/spec.sections/units-002.json"] });
+
+  // Brownfield keeps the same rule, a section whose JSON does not parse included.
+  const bf = project();
+  const b = tools(bf, "brownfield-architect");
+  assert.match((await b.call("write_section", { name: "header.json", json: "{nope" })).error, /header\.json is not valid JSON/);
+  assert.ok((await status(b)).missing.some((m) => /^header\.json was refused: header\.json is not valid JSON/.test(m)));
+  assert.match((await b.call("write_section", { name: "header.json", json: "{}" })).error, /^refused:\nheader\.json/);
+  assert.ok((await status(b)).missing.some((m) => /^header\.json was refused: header\.json \//.test(m)), "the check's own problems replace the parse error");
+});
+
 test("an acceptance fix hands in its failures entries, or the one line why it cannot pass, and changes no spec section", async () => {
   const root = mkdtempSync(join(tmpdir(), "mmo-fix-"));
   mkdirSync(join(root, "out"));

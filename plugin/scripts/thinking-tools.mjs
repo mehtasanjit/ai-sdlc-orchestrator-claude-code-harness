@@ -227,18 +227,35 @@ export class ThinkingTools {
     return { rel: join(this.cfg.outputs.sections_dir, name) };
   }
 
+  /**
+   * A section hand-in's verdict, as status reads it, the same for both architects: an accepted section clears an
+   * earlier refusal of that name, and a refused one (its check's problems, or JSON that does not parse) is owed until a
+   * hand-in of that name is accepted. Review: the greenfield architect's refusals were never kept, so a step whose
+   * units file was refused finalized without it and was done.
+   */
+  verdict(name, ok, lines = []) {
+    if (ok) { this.accepted.set(name, true); this.refused.delete(name); } else { this.accepted.delete(name); this.refused.set(name, lines); }
+  }
+
+  /** A refused section: kept as owed, and answered with `text` (its problems, one per line, by default). */
+  refuse(name, lines, text = `refused:\n${lines.join("\n")}`) {
+    this.verdict(name, false, lines);
+    return { error: text };
+  }
+
   /** Brownfield: the change spec's section, checked by plan-lint's own checkSection. */
   async write_section({ name, json }) {
     const n = this.sectionName(name);
     if (n.error) return { error: n.error };
-    try { JSON.parse(json); } catch (e) { return { error: `${name} is not valid JSON: ${e.message}` }; }
+    try { JSON.parse(json); } catch (e) { const why = `${name} is not valid JSON: ${e.message}`; return this.refuse(name, [why], why); }
     this.own(n.rel, json);
     const { checkSection } = await import(pathToFileURL(join(HERE, "plan-lint.mjs")).href);
     // No command the model wrote runs here, and none of its output comes back: the checks wait for dispatch, after
     // the person approves the plan at Gate 2 (lib/change-spec.mjs baselineErrors).
     const r = await checkSection(this.root, this.cfg.run_id, n.rel, { intent: this.cfg.intent, runCommands: false });
-    if (r.ok) { this.accepted.set(name, true); this.refused.delete(name); } else { this.accepted.delete(name); this.refused.set(name, r.lines); }
-    return r.ok ? { result: r.lines.join("\n") } : { error: `refused:\n${r.lines.join("\n")}` };
+    if (!r.ok) return this.refuse(name, r.lines);
+    this.verdict(name, true);
+    return { result: r.lines.join("\n") };
   }
 
   /**
@@ -253,19 +270,21 @@ export class ThinkingTools {
     if (json === undefined || json === "") {
       if (!existsSync(join(this.root, n.rel))) return { error: `no ${name} was handed in for this spec: hand it in with its JSON` };
     } else {
-      try { JSON.parse(json); } catch (e) { return { error: `${name} is not valid JSON: ${e.message}` }; }
+      try { JSON.parse(json); } catch (e) { const why = `${name} is not valid JSON: ${e.message}`; return this.refuse(name, [why], why); }
       this.own(n.rel, json);
     }
     const { specStore } = await loadServerLib();
     const specDir = join(this.root, this.cfg.spec_dir);
     const kind = name === "header.json" ? "header" : "units";
     const loaded = specStore.readSectionFile(specDir, relative(specDir, join(this.root, n.rel)), kind);
-    if (loaded.error) return { error: loaded.error };
+    if (loaded.error) return this.refuse(name, [loaded.error], loaded.error);
     // With the run's token, as submit_spec_section sends it: a new run's header opens a new spec, and units go only
     // into the spec this run opened.
     const r = specStore.submitSpecSection(specDir, kind === "header" ? { section: "header", header: loaded.value } : { section: "units", units: loaded.value }, this.cfg.run_token ? { run: this.cfg.run_token } : {});
-    if (r.ok) { this.accepted.set(name, true); this.accepted.delete("finalize"); return { result: `accepted ${name}: ${r.total_units} unit(s) in the spec` }; }
-    return { error: `refused:\n${r.errors.map((e) => `${e.path} ${e.message}`).join("\n")}` };
+    if (!r.ok) return this.refuse(name, r.errors.map((e) => `${e.path} ${e.message}`));
+    this.verdict(name, true);
+    this.accepted.delete("finalize");
+    return { result: `accepted ${name}: ${r.total_units} unit(s) in the spec` };
   }
 
   /**
