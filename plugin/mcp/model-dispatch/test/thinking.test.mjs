@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { THINKING_ROLES, outputDirProblem, roleInstructions, roleOutputs, runThinkingStep } from "../dist/thinking.js";
 
@@ -322,6 +322,32 @@ test("the folders a step is given are inside the project, and the architect chec
   await assert.rejects(runThinkingStep(architect({ requirements_path: "/etc/hosts" }), d), /requirements_path/);
   await assert.rejects(runThinkingStep(args(root, { role: "senior-reviewer", intent: undefined, output_dir: "out", code_dir: "../x" }), d), /code_dir/);
   assert.equal(calls.dispatch.length, 1, "nothing was sent for a refused call");
+});
+
+test("a Gemini architect called with no requirements_path still has its finalize refused for uncovered requirements", async () => {
+  const { ThinkingTools } = await import(pathToFileURL(join(PLUGIN_ROOT, "scripts", "thinking-tools.mjs")).href);
+  const root = project();
+  mkdirSync(join(root, "out"), { recursive: true });
+  writeFileSync(join(root, "out", "requirements.md"), "# R\n- FR-1: answer ping.\n- FR-2: answer pong.\n");
+  const header = { stack: ["Python 3.13"], commands: [{ name: "tests", run: "pytest -q", cwd: ".", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }], no_audit_reason: "a test", decisions: [{ topic: "ids", choice: "integer", reason: "simplest" }], shared: { conventions: [], data_model: [], api: [] } };
+  const unit = { id: "U01", path: "src/app.py", phase: "codegen", import_line: "", exports: [], behaviour: "answers ping", depends_on: [], style_from: { reason: "first file" }, covers: ["FR-1"], tests: [], approx_lines: 20 };
+  let finalized;
+  // The step's own tools, started from the config the server wrote, as its worker starts them.
+  const { d } = deps(AGENT, () => assert.fail("dispatch is replaced"), {
+    dispatch: async (packet, thinking) => {
+      const t = new ThinkingTools(JSON.parse(readFileSync(thinking.toolsConfig, "utf8")));
+      await t.call("submit_section", { name: "header.json", json: JSON.stringify(header) });
+      await t.call("submit_section", { name: "units-001.json", json: JSON.stringify([unit]) });
+      finalized = await t.call("finalize", {});
+      return { result: result({ result: { ...JSON.parse((await t.call("status", {})).result), conversation_id: "c1" } }), events: [] };
+    },
+  });
+  const r = await runThinkingStep(args(root, { role: "architect", intent: undefined, output_dir: "out" }), d);
+  assert.match(String(finalized.error), /no unit covers FR-2\b/, JSON.stringify(finalized));
+  assert.doesNotMatch(String(finalized.error), /FR-1\b/, "a covered requirement is not named");
+  assert.equal(existsSync(join(root, "out", "spec.json")), false, "nothing was finalized");
+  assert.equal(r.route, "stopped");
+  assert.ok(r.missing.some((m) => /^finalize/.test(m)), r.missing.join("; "));
 });
 
 test("per-module reviews are separate steps: each keeps its own files, conversation and packet", async () => {
