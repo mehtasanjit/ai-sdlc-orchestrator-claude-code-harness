@@ -143,8 +143,11 @@ export function deriveDriverModel(policy, routing, overrides = {}) {
   return { modelName: first.modelName, modelId: first.modelId, perPhase };
 }
 
-/** The phases run_thinking_step runs (src/thinking.ts THINKING_ROLES): on a Claude model in the session, or on an agent leaf. */
-export const THINKING_PHASES = new Set(["requirements_analysis", "architecture_design", "senior_code_review", "security_review", "discovery"]);
+/**
+ * The phases run_thinking_step runs (src/thinking.ts THINKING_ROLES): on a Claude model in the session, or on an agent
+ * leaf. Not discovery: it is the session's Claude helper in every run, before Gate 0, as the route table says.
+ */
+export const THINKING_PHASES = new Set(["requirements_analysis", "architecture_design", "senior_code_review", "security_review"]);
 const AGENT_ADAPTER = "antigravity-worker";
 
 /**

@@ -386,3 +386,31 @@ test("a pass on session_model says so instead of a placeholder model id", () => 
     assert.match(r.stdout, /\(its session_model\)/);
   });
 });
+
+// Review: the check counted discovery as a thinking phase, while the route table gives discovery to the session (a
+// Claude helper, before Gate 0): a Claude-thinking policy whose default rule is a Gemini completion leaf, so that its
+// discovery rule falls to it, passed pre-flight and was refused here.
+const OPUS_THINKS_FLASH_REST = `
+version: 1
+name: opus-thinks-flash-rest
+models:
+  - id: opus
+    adapter: builtin-anthropic
+    model_name: claude-opus-5
+  - id: flash
+    adapter: mcp:model-dispatch
+    model_name: gemini-3.8-flash
+rules:
+  - when: { phase: [requirements_analysis, architecture_design, senior_code_review, security_review] }
+    use: opus
+  - default: flash
+`;
+
+test("discovery is not a thinking phase of the check: a policy whose discovery rule names a completion leaf is pinned by its thinking phases", () => {
+  withPolicy(OPUS_THINKS_FLASH_REST, (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /driver-model-check ok/);
+    assert.equal(run(["--project-root", root, "--print-only"]).stdout.trim(), "claude-opus-5");
+  });
+});
