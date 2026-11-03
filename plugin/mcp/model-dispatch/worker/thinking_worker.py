@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -40,22 +41,47 @@ MAX_NUDGES = 8
 
 
 class ToolHost:
-    """The Node tool process, called one line at a time (the SDK may call tools from a worker thread)."""
+    """The Node tool process, called one line at a time (the SDK may call tools from a worker thread).
 
-    def __init__(self, node: str, script: str, config: str):
+    Every call has a time limit (--tool-call-timeout-sec): a tool that gives no answer in it ends the tool process, and
+    `dead` says why; every later call answers that reason at once (review: no tool call had a limit, so one stuck call
+    held the step until its whole work budget was spent)."""
+
+    def __init__(self, node: str, script: str, config: str, call_timeout_s: float):
         self.p = subprocess.Popen([node, script, "--config", config], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=sys.stderr, text=True, bufsize=1)
         self.lock = threading.Lock()
         self.n = 0
+        self.call_timeout_s = call_timeout_s
+        self.dead = None
+        self.lines = queue.Queue()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        for line in self.p.stdout:
+            self.lines.put(line)
+        self.lines.put(None)
 
     def call(self, op: str, **args) -> dict:
         with self.lock:
+            if self.dead:
+                return {"ok": False, "error": self.dead}
             self.n += 1
-            self.p.stdin.write(json.dumps({"id": self.n, "op": op, "args": args}) + "\n")
-            self.p.stdin.flush()
-            line = self.p.stdout.readline()
-        if not line:
-            return {"ok": False, "error": "the tool process ended"}
+            try:
+                self.p.stdin.write(json.dumps({"id": self.n, "op": op, "args": args}) + "\n")
+                self.p.stdin.flush()
+            except OSError:
+                self.dead = "the step's tools have stopped"
+                return {"ok": False, "error": self.dead}
+            try:
+                line = self.lines.get(timeout=self.call_timeout_s)
+            except queue.Empty:
+                self.dead = f"the step's tool {op} gave no answer in {self.call_timeout_s:g} s; the step stopped there"
+                self.p.kill()
+                return {"ok": False, "error": self.dead}
+            if line is None:
+                self.dead = "the step's tools have stopped"
+                return {"ok": False, "error": self.dead}
         return json.loads(line)
 
     def text(self, op: str, **args) -> str:
@@ -204,7 +230,13 @@ async def run(args):
         work_limit_reason=(f"the step's own work time reached the policy's limit (thinking_timeout_sec): {args.timeout} s, "
                            "the time Google held or refused its calls not counted"),
     )
-    host = ToolHost(args.node, args.tools_script, args.tools_config)
+    host = ToolHost(args.node, args.tools_script, args.tools_config, args.tool_call_timeout_sec)
+    # The tools answer before any model call: tools that cannot start (a missing project folder, a broken config) stop
+    # the step here, before Gemini is paid (review: such a step was found out only after its first session).
+    first = host.call("status")
+    if not first.get("ok"):
+        host.close()
+        raise SystemExit(f"thinking_worker failed: the step's tools could not start: {first.get('error')}")
     fn_tools = tools_for(host, args.role)
     resume = args.resume_id or None
     message = task
@@ -232,6 +264,11 @@ async def run(args):
             resume = s.conversation_id or resume
             summary["conversation_id"] = resume
             summary["text"] = s.text
+            if host.dead:
+                # A tool call gave no answer in its limit: the step ends here, saying why.
+                s.ok = False
+                s.error = host.dead
+                break
             status = json.loads(host.text("status"))
             summary.update({k: status.get(k) for k in ("done", "missing", "accepted")})
             keep()
@@ -288,6 +325,8 @@ def main():
     # 0: it does not wait, and its first unavailable call ends it.
     p.add_argument("--busy-window-sec", type=int, default=0)
     p.add_argument("--heartbeat-sec", type=int, default=10)
+    # One tool call's limit: a last guard above every tool's own limit (a command's 300 s, a declared check's timeout_s).
+    p.add_argument("--tool-call-timeout-sec", type=float, default=1800)
     args = p.parse_args()
     if args.role not in ROLE_TOOLS:
         print(f"thinking_worker failed: unknown role {args.role}", file=sys.stderr)

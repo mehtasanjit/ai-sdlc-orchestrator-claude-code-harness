@@ -94,7 +94,7 @@ const HEARTBEAT = /^@mmo-heartbeat (\{.*\})\s*$/;
  * worker wrote: `beats` (heartbeats as read here), `sent` (heartbeats as written, on the worker's clock: {mono, wall,
  * hb}), and the stand-in's `log`.
  */
-export async function runWorker(kind, { script, args = [], timeout = 30, env = {}, killAfterMs, killSignal = "SIGTERM", limitMs = 60_000, brief = "Write src/a.ts.", answerSchema, role = "requirements", outputs = { requirements: "out/requirements.md" }, config = {}, setup } = {}) {
+export async function runWorker(kind, { script, args = [], timeout = 30, env = {}, killAfterMs, killSignal = "SIGTERM", limitMs = 60_000, brief = "Write src/a.ts.", answerSchema, role = "requirements", outputs = { requirements: "out/requirements.md" }, config = {}, setup, toolsScript = THINKING_TOOLS } = {}) {
   const dir = mkdtempSync(join(tmpdir(), `agy-${kind}-`));
   try {
     const work = join(dir, "work");
@@ -122,7 +122,7 @@ export async function runWorker(kind, { script, args = [], timeout = 30, env = {
       writeFileSync(toolsConfig, JSON.stringify({ role, project_root: work, run_id: "r1", output_dir: "out", outputs, ...config }));
       argv = [THINKING_WORKER, "--task-file", join(dir, "task.md"), "--model", "gemini-3.8-flash", "--region", "global", "--workdir", work,
         "--out-dir", dir, "--usage-file", out, "--role", role, "--tools-config", toolsConfig, "--save-dir", join(dir, "save"),
-        "--summary-file", join(dir, "summary.json"), "--node", process.execPath, "--tools-script", THINKING_TOOLS,
+        "--summary-file", join(dir, "summary.json"), "--node", process.execPath, "--tools-script", toolsScript,
         "--thinking", "NONE", "--timeout", String(timeout), ...args];
     } else {
       writeFileSync(join(dir, "task.md"), brief);

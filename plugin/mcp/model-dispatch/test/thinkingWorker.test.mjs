@@ -7,7 +7,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { NO_PYTHON, RAISE_429_UNREACHABLE, TEXT_429_RETRY, TEXT_429_UNREACHABLE, runWorker, step, tail, textAnswer } from "./agyStandin.mjs";
@@ -140,4 +141,35 @@ test("past the run's busy window the step ends unavailable, naming when its unse
   const once = await runWorker("thinking", { script: refusedAgain, timeout: 30, limitMs: 45_000, args: BUSY });
   assert.notEqual(once.code, 0);
   assert.equal(once.sessions.length, 1, "no busy window given: the worker does not wait");
+});
+
+// E-thinking-tool-limits. Review: no tool call had a time limit, and a tool process that died at start was found only
+// after Gemini had been paid.
+test("a tool call that never answers ends the step with its reason, at the call's limit", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  // Tools that answer the start-up status, then never answer again.
+  const dir = mkdtempSync(join(tmpdir(), "stuck-tools-"));
+  const stuck = join(dir, "stuck-tools.mjs");
+  writeFileSync(stuck, `import { createInterface } from "node:readline";
+const rl = createInterface({ input: process.stdin });
+let n = 0;
+rl.on("line", (l) => { const m = JSON.parse(l); if (n++ === 0) process.stdout.write(JSON.stringify({ id: m.id, ok: true, result: JSON.stringify({ done: false, missing: ["requirements.md (write_requirements)"], accepted: [] }) }) + "\\n"); });
+`);
+  const script = { sessions: [{ turns: [[
+    { at: 0, step: step.tool("read_file", "ACTIVE", { path: "brief.md" }, "r1") },
+    ...textAnswer(0.1, "Read.", { prompt_token_count: 10 }),
+  ]] }] };
+  const started = Date.now();
+  const r = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, toolsScript: stuck, args: ["--tool-call-timeout-sec", "2"] });
+  assert.notEqual(r.code, 0, tail(r));
+  assert.ok(Date.now() - started < 30_000, "ended at the call's limit, not the step's budget");
+  assert.match(String(r.sidecar?.error), /read_file gave no answer in 2 s/);
+});
+
+test("tools that cannot start stop the step before any model call", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const script = { sessions: [{ turns: [[...textAnswer(0, "Hello.", { prompt_token_count: 10 })]] }] };
+  // The tools' project folder does not exist: the tool process fails as it starts.
+  const r = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, config: { project_root: join(tmpdir(), "no-such-project-folder") } });
+  assert.notEqual(r.code, 0, tail(r));
+  assert.equal(r.sessions.length, 0, "no session was opened, so nothing was paid");
+  assert.match(r.stderr, /the step's tools could not start/);
 });
