@@ -114,6 +114,23 @@ export function requiresServerDispatch(adapter: string, authMode: AuthMode): boo
  * this computer's claude CLI, so its note says that instead of "this run does
  * not dispatch to it".
  */
+/**
+ * The session's own model, when the policy names one (session_model): priced as every model the run can reach is, so
+ * an estimated run can price the session's work (load_policy's session_model_price) and the post-run collector can bill
+ * it. A name the price list does not know (a typo the loader's "claude-" check lets through) halts the run, as an
+ * unpriced model does. Null when the policy names none, or names one of its own models (already priced).
+ */
+export function sessionModelPriceProblem(
+  sessionModel: string | undefined,
+  models: { model_name: string }[],
+  checkPrice: (model: { id: string; model_name: string }) => PriceCheck,
+): string | null {
+  if (!sessionModel || models.some((m) => m.model_name === sessionModel)) return null;
+  const price = checkPrice({ id: "session_model", model_name: sessionModel });
+  if (price.ok) return null;
+  return `Cannot price the policy's session_model ${sessionModel} for today (${price.reason ?? "no price"}): the session's own work could not be priced. Name a model the price list knows.`;
+}
+
 export function assessModels(
   models: PreflightModel[],
   authMode: AuthMode,

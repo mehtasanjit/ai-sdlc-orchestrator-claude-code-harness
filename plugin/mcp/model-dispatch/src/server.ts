@@ -28,7 +28,7 @@ import {
   validateSelectOverrides,
   unreachableModelIds,
 } from "./routing.js";
-import { assessModels, claudeKeyProblem, executorCliCheck, parseAuthMode, type AuthMode } from "./preflight.js";
+import { assessModels, claudeKeyProblem, executorCliCheck, parseAuthMode, sessionModelPriceProblem, type AuthMode } from "./preflight.js";
 import { checkModelPrice, withEffectivePrices } from "./effectivePrice.js";
 import { appendEvent, cacheWriteBuckets, normalizeDirectTierEvent } from "./telemetry.js";
 import { createAdapter } from "./adapters/index.js";
@@ -314,7 +314,9 @@ function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: str
   const sdk = checkAgsdk(reachable.filter((m) => m.adapter === "antigravity-worker"), process.env as Record<string, string | undefined>);
   // Which model runs each phase, and who: a thinking phase nothing can run as a thinking step stops the run here.
   const routes = routeTable(policy, overrides, intent);
-  const haltReason = [assessment.halt_reason, cli.halt, sdk.halt, ...routes.problems].filter((r): r is string => !!r).join(" ") || null;
+  // The session's own model is priced too, when the policy names one.
+  const sessionPrice = sessionModelPriceProblem(policy.session_model, reachable, (m) => checkModelPrice(m as ModelConfig, today, authMode));
+  const haltReason = [assessment.halt_reason, sessionPrice, cli.halt, sdk.halt, ...routes.problems].filter((r): r is string => !!r).join(" ") || null;
   const warnings = [...assessment.warnings, ...(cli.warning ? [cli.warning] : []), ...sdk.warnings];
 
   // Resolved Gemini configuration — the project and region the run will bill.

@@ -338,3 +338,12 @@ test("T9 simulate_policy reads input_tokens_cache_write_1h as a share of input_t
     "each written token is priced once, at its own TTL rate",
   );
 });
+
+test("pre-flight: a session_model the price list cannot price halts the run; a priced one, or none, passes", async () => {
+  const ep = await effectivePriceModule();
+  const check = (m) => ep.checkModelPrice(m, DAY, "estimated");
+  // A name the loader's claude- check lets through, but no price list knows: the session's own work could not be priced.
+  assert.match(preflight.sessionModelPriceProblem("claude-opus-typo-9", MODELS, check) ?? "", /session_model claude-opus-typo-9/);
+  assert.equal(preflight.sessionModelPriceProblem("claude-opus-5", [], check), null);
+  assert.equal(preflight.sessionModelPriceProblem(undefined, MODELS, check), null);
+});

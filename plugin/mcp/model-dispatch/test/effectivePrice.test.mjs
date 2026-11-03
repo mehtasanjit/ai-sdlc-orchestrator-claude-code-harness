@@ -208,3 +208,23 @@ test("Q3 withEffectivePrices: the day decides — a 3.7 Flash leaf carrying the 
   const p = later.models[0].effective_price;
   assert.deepEqual([p.rates.input, p.rates.input_cached, p.rates.output, p.pricing_block, p.period.from], [1.5, 0.15, 7.5, "ignored_differs_from_list", "2027-01-01"]);
 });
+
+// The session's own model is priced too: a policy whose thinking steps run on Gemini names the Claude model the
+// session runs on (session_model), and in estimated mode the session prices its own work from load_policy.
+test("withEffectivePrices prices the policy's session_model, and every shipped policy that names one has its rates", async () => {
+  const view = ep.withEffectivePrices({ session_model: "claude-opus-5", models: [model({ id: "flash", adapter: "antigravity-worker", model_name: "gemini-3.8-flash" })] }, DAY);
+  assert.deepEqual(view.session_model_price.rates, OPUS5_LIST);
+  assert.equal(view.session_model_price.basis, "list");
+  assert.equal("session_model_price" in ep.withEffectivePrices({ models: [model()] }, DAY), false, "nothing is added for a policy without one");
+  const { readdirSync } = await import("node:fs");
+  const { join, dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const { loadPolicyFromPath } = await import("../dist/policy.js");
+  const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "config", "policies");
+  const named = readdirSync(dir).filter((f) => f.endsWith(".yaml")).map((f) => [f, loadPolicyFromPath(join(dir, f))]).filter(([, p]) => p.session_model);
+  assert.ok(named.length >= 5, `the Gemini-planning policies name a session_model (${named.map(([f]) => f).join(", ")})`);
+  for (const [f, p] of named) {
+    const priced = ep.withEffectivePrices(p, new Date()).session_model_price;
+    assert.ok(priced?.rates, `${f}: session_model ${p.session_model} has no price for today: ${priced?.unpriced_reason}`);
+  }
+});
