@@ -373,10 +373,13 @@ test("the contract page names every place a planned write or read is refused bef
   assert.match(findings, /writeRefusal\(root, /, "findings-to-packets holds each fix target to the writer's rule");
   const layers = section(CONTRACT_DOC, "## Four enforcement layers").replace(/\s+/g, " ");
   assert.match(layers, /`findings-to-packets\.mjs`/);
-  // The server's own read rule is applied in hydrateInputs, on the path as written and through links.
-  const hydrate = APPLY.slice(APPLY.indexOf("export function hydrateInputs"), APPLY.indexOf("\nexport ", APPLY.indexOf("export function hydrateInputs") + 1));
-  assert.match(hydrate, /realpathSync/);
-  assert.match(hydrate, /readOffLimits\(/);
+  // The server's own read rule is applied in hydrateInputs, through modelReadOf (the one judge of a model's read, which
+  // a thinking step's inputs use too): on the path as written and through links.
+  const fn = (name) => APPLY.slice(APPLY.indexOf(`export function ${name}`), APPLY.indexOf("\nexport ", APPLY.indexOf(`export function ${name}`) + 1));
+  assert.match(fn("hydrateInputs"), /modelReadOf\(projectRoot, s\.path/);
+  const judge = fn("modelReadOf");
+  assert.match(judge, /realpathSync/);
+  assert.match(judge, /readOffLimits\(/);
   const writer = section(CONTRACT_DOC, "## The server's writer (apply form and `execute_batch`)").replace(/\s+/g, " ");
   assert.match(writer, /`hydrateInputs`/);
   assert.match(writer, /through links|by the file it reaches/);
