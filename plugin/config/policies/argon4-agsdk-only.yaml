@@ -12,7 +12,8 @@
 # and both reviewers run on Argon through run_thinking_step: the helper's own
 # instructions, read-only tools that apply the engine's read rule, and hand-in tools that
 # run the Claude helper's own checks piece by piece. A step that cannot finish within
-# thinking_timeout_sec (default four hours of its own work) stops the run; no other model
+# thinking_timeout_sec (default four hours of its own work), or that answers three reminders
+# in a row of what it owes without progress, stops the run; no other model
 # takes it over. Discovery (before Gate 0), the orchestrator's own turns and the gates run on
 # session_model, which the driver check pins (CLAUDE_CODE_SUBAGENT_MODEL) in both auth modes. Versions up to 2 of
 # this policy ran under plugins before 0.10.0, where the session's own model planned and

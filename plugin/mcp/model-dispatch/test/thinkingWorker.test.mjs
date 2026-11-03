@@ -31,6 +31,18 @@ test("a step whose every piece was accepted keeps its summary when its worker st
   assert.deepEqual(r.summary.accepted, ["requirements"]);
   assert.equal(r.summary.conversation_id, "standin-1", "the conversation, by the SDK's own id");
   assert.ok(r.log.some((e) => e.ev === "tool_run" && e.name === "write_requirements"), "the model's call ran the step's real tool");
+  assert.equal(r.summary.reason, "done", "every piece was accepted: the step is done, whatever ended its last turn");
+  // The same stop with the piece still owed: the step stopped on its own work time, and its summary and its failed
+  // line say so (review: the stop did not say which limit was hit).
+  const owed = await runWorker("thinking", { script: { sessions: [{ turns: [[
+    { at: 0, step: step.tool("read_file", "ACTIVE", { path: "brief.md" }, "r1") },
+    { at: 0, usage: { prompt_token_count: 10, candidates_token_count: 5 } },
+    { at: 0, hold: true },
+  ]] }] }, timeout: 3, args: ["--stall-sec", "2", "--stall-tries", "1", "--busy-budget-sec", "1"], limitMs: 45_000 });
+  assert.notEqual(owed.code, 0, tail(owed));
+  assert.equal(owed.summary.done, false, JSON.stringify(owed.summary));
+  assert.equal(owed.summary.reason, "budget", JSON.stringify(owed.summary));
+  assert.match(owed.stderr, /thinking_worker failed: the step's own work time reached its limit, 3 s \(thinking_timeout_sec\); still owed: requirements\.md \(write_requirements\)/);
 });
 
 test("a nudge carries on the same conversation, by the SDK's own id", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
@@ -50,16 +62,61 @@ test("a nudge carries on the same conversation, by the SDK's own id", { skip: NO
   assert.match(r.chats[1].message, /Not done yet\. Still owed: /);
 });
 
+// A greenfield architect's build-spec sections, as the spec store takes them.
+const header = {
+  stack: ["Python 3.13", "FastAPI", "pytest"],
+  commands: [{ name: "backend tests", run: "pytest -q", cwd: "backend", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }],
+  no_audit_reason: "a test", decisions: [{ topic: "ids", choice: "integer", rejected: ["uuid"], reason: "simplest" }],
+  shared: { conventions: ["snake_case"], data_model: [{ name: "Todo", fields: [{ name: "id", type: "int", constraints: "primary key" }] }], api: [{ method: "POST", path: "/todos", access: "any", request: "TodoCreate", response: "Todo", success_status: 201, error_statuses: [422] }] },
+};
+const unit = (id, path) => ({ id, path, phase: "codegen", import_line: "", exports: [{ name: "Todo", kind: "class", params: [], returns: "Todo" }], behaviour: `writes ${path}`, depends_on: [], style_from: { reason: "first file of its kind" }, covers: ["FR-1.1"], tests: [{ name: "valid", given: "a title", expect: "a Todo" }], approx_lines: 20 });
+
+// E-thinking-no-cap. Review: a fixed cap of 8 reminders stopped a step that still had budget, and the stop did not say
+// which limit was hit. There is no fixed number of turns, as there is none for the Claude helper (design 7.5).
+test("a step that answers three reminders in a row with nothing stops there: four turns, and its summary says why", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  // Every turn answers text and hands nothing in.
+  const script = { sessions: [{ turns: [textAnswer(0, "I have read the brief.", { prompt_token_count: 10 })] }] };
+  const r = await runWorker("thinking", { script, timeout: 60, limitMs: 45_000 });
+  assert.notEqual(r.code, 0, `the worker reports the stop: ${tail(r)}`);
+  assert.equal(r.sessions.length, 4, "the first turn, then three reminders answered without progress");
+  assert.equal(r.summary.done, false);
+  assert.equal(r.summary.reason, "no_progress", JSON.stringify(r.summary));
+  assert.deepEqual(r.summary.missing, ["requirements.md (write_requirements)"]);
+  assert.match(r.stderr, /thinking_worker failed: the step made no progress for 3 turns in a row; still owed: requirements\.md \(write_requirements\)/);
+});
+
+test("a step that makes progress on every turn is not stopped by a count of turns: eleven turns, then done", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  // A Gemini architect that hands one piece in per turn: the header, nine units files, then finalize.
+  const turn = (call, id) => ({ turns: [[{ at: 0, step: step.tool(call.name, "ACTIVE", call.args, id) }, ...textAnswer(0, `Handed in ${id}.`, { prompt_token_count: 10 })]] });
+  const sessions = [
+    turn({ name: "submit_section", args: { name: "header.json", section_json: JSON.stringify(header) } }, "h"),
+    ...Array.from({ length: 9 }, (_, i) => turn({ name: "submit_section", args: { name: `units-00${i + 1}.json`, section_json: JSON.stringify([unit(`U0${i + 1}`, `backend/app/m${i + 1}.py`)]) } }, `u${i + 1}`)),
+    turn({ name: "finalize", args: {} }, "f"),
+  ];
+  const r = await runWorker("thinking", { script: { sessions }, timeout: 120, limitMs: 50_000, role: "architect", outputs: { sections_dir: "out/spec.sections" }, config: { spec_dir: "out", run_token: "run-1" } });
+  assert.equal(r.code, 0, tail(r));
+  assert.equal(r.sessions.length, 11, "each turn handed a piece in, so none was a turn without progress");
+  assert.deepEqual(r.log.filter((e) => e.ev === "tool_run").map((e) => e.result.split(":")[0]), ["accepted header.json", ...Array.from({ length: 9 }, (_, i) => `accepted units-00${i + 1}.json`), "finalized"]);
+  assert.equal(r.summary.done, true, JSON.stringify(r.summary));
+  assert.equal(r.summary.reason, "done");
+});
+
+test("a step the engine stops, and one whose call ends with an error Google's busy window does not cover, each say so", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  // A call that is out and never answered, then the engine's SIGTERM.
+  const stopped = await runWorker("thinking", { script: { sessions: [{ turns: [[{ at: 0, hold: true }]] }] }, timeout: 30, limitMs: 45_000, killAfterMs: 1500 });
+  assert.notEqual(stopped.code, 0, tail(stopped));
+  assert.equal(stopped.summary?.reason, "stopped", JSON.stringify(stopped.summary));
+  assert.match(stopped.stderr, /thinking_worker failed: the worker was stopped; still owed: requirements\.md \(write_requirements\)/);
+  const refused = await runWorker("thinking", { script: { sessions: [{ turns: [[{ at: 0, step: step.error(400, "Error 400: the request is invalid") }, { at: 0.01, raise: "AntigravityConnectionError", message: "400: the request is invalid" }]] }] }, timeout: 30, limitMs: 45_000, args: ["--busy-window-sec", "30"] });
+  assert.notEqual(refused.code, 0, tail(refused));
+  assert.equal(refused.sessions.length, 1, "not a wait for Google: the step ends at once");
+  assert.equal(refused.summary?.reason, "error", JSON.stringify(refused.summary));
+  assert.match(refused.stderr, /thinking_worker failed: the model's call ended with an error: .*the request is invalid.*; still owed: requirements\.md/);
+});
+
 test("a revise through the worker: an unchanged section goes by its name alone, and finalize's drop removes a unit by id", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
   const { loadServerLib } = await import(pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "lib", "server-lib.mjs")).href);
   const { specStore } = await loadServerLib();
-  const header = {
-    stack: ["Python 3.13", "FastAPI", "pytest"],
-    commands: [{ name: "backend tests", run: "pytest -q", cwd: "backend", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }],
-    no_audit_reason: "a test", decisions: [{ topic: "ids", choice: "integer", rejected: ["uuid"], reason: "simplest" }],
-    shared: { conventions: ["snake_case"], data_model: [{ name: "Todo", fields: [{ name: "id", type: "int", constraints: "primary key" }] }], api: [{ method: "POST", path: "/todos", access: "any", request: "TodoCreate", response: "Todo", success_status: 201, error_statuses: [422] }] },
-  };
-  const unit = (id, path) => ({ id, path, phase: "codegen", import_line: "", exports: [{ name: "Todo", kind: "class", params: [], returns: "Todo" }], behaviour: `writes ${path}`, depends_on: [], style_from: { reason: "first file of its kind" }, covers: ["FR-1.1"], tests: [{ name: "valid", given: "a title", expect: "a Todo" }], approx_lines: 20 });
   // The spec the person reviewed: this run's first call handed in two units files and finalized.
   const approved = (work) => {
     const specDir = join(work, "out");
@@ -138,9 +195,11 @@ test("past the run's busy window the step ends unavailable, naming when its unse
   const since = Date.parse(sc.unserved_since);
   assert.ok(since >= Date.parse(sc.tries[0].started_at) && since < Date.parse(sc.tries[1].started_at), `the stretch began with the first refused call: ${sc.unserved_since} ${JSON.stringify(sc.tries.map((t) => t.started_at))}`);
   assert.equal(r.summary.done, false);
+  assert.equal(r.summary.reason, "busy");
   const once = await runWorker("thinking", { script: refusedAgain, timeout: 30, limitMs: 45_000, args: BUSY });
   assert.notEqual(once.code, 0);
   assert.equal(once.sessions.length, 1, "no busy window given: the worker does not wait");
+  assert.equal(once.summary.reason, "busy");
 });
 
 // E-thinking-tool-limits. Review: no tool call had a time limit, and a tool process that died at start was found only
@@ -163,6 +222,12 @@ rl.on("line", (l) => { const m = JSON.parse(l); if (n++ === 0) process.stdout.wr
   assert.notEqual(r.code, 0, tail(r));
   assert.ok(Date.now() - started < 30_000, "ended at the call's limit, not the step's budget");
   assert.match(String(r.sidecar?.error), /read_file gave no answer in 2 s/);
+  assert.equal(r.summary?.reason, "tool_dead", JSON.stringify(r.summary));
+  // The status call after a turn has the same limit: a turn that calls no tool ends there, saying so.
+  const quiet = await runWorker("thinking", { script: { sessions: [{ turns: [textAnswer(0, "Read.", { prompt_token_count: 10 })] }] }, timeout: 30, limitMs: 45_000, toolsScript: stuck, args: ["--tool-call-timeout-sec", "2"] });
+  assert.notEqual(quiet.code, 0, tail(quiet));
+  assert.equal(quiet.summary?.reason, "tool_dead", JSON.stringify(quiet.summary));
+  assert.match(quiet.stderr, /thinking_worker failed: the step's tool status gave no answer in 2 s; the step stopped there/);
 });
 
 test("tools that cannot start stop the step before any model call", { skip: NO_PYTHON, timeout: 60_000 }, async () => {

@@ -369,6 +369,35 @@ export function preface(role: string): string {
   ].join("\n");
 }
 
+/** How many reminders in a row a Gemini step may answer without progress (worker/thinking_worker.py NO_PROGRESS_TURNS; a test holds the two equal). */
+export const NO_PROGRESS_TURNS = 3;
+
+/**
+ * Why a Gemini step stopped with pieces owed, by its worker's summary `reason` (worker/thinking_worker.py), in the
+ * reply's words; with `detail`, the dispatch's own error follows, where it says what happened.
+ */
+const WORKER_STOPS: Readonly<Record<string, { words: (timeoutSec: number) => string; detail: boolean }>> = {
+  budget: { words: (t) => `its own work time reached the policy's limit, thinking_timeout_sec (${t} s, the time Google held or refused its calls not counted)`, detail: false },
+  no_progress: { words: () => `no progress for ${NO_PROGRESS_TURNS} turns in a row`, detail: false },
+  busy: { words: () => "Google could not serve the model for the run's busy window", detail: true },
+  tool_dead: { words: () => "a tool of the step gave no answer in its time limit", detail: true },
+  stopped: { words: () => "the worker was stopped", detail: true },
+  error: { words: () => "its model call ended with an error", detail: true },
+};
+
+/**
+ * A step's reason when it stopped with pieces owed: why its worker stopped, in plain words, then what is still owed
+ * (review: the reply said "ended with pieces still owed" whatever stopped the step). A worker that gave no reason
+ * (killed before it could say) is told by its dispatch's error.
+ */
+export function stoppedReason(model: string, summary: { reason?: string | null; missing?: string[] }, result: Pick<ExecutionResult, "success" | "error">, timeoutSec: number): string {
+  const stop = summary.reason ? WORKER_STOPS[summary.reason] : undefined;
+  const why = stop
+    ? `stopped: ${stop.words(timeoutSec)}${stop.detail && result.error ? ` (${result.error})` : ""}`
+    : !result.success ? `could not finish: ${result.error ?? "no reason given"}` : "ended with pieces still owed";
+  return `the ${model} step ${why}${summary.missing?.length ? `; still owed: ${summary.missing.join("; ")}` : ""}`;
+}
+
 interface SessionRecord { conversation_id?: string }
 
 function readRecord(path: string): SessionRecord {
@@ -454,7 +483,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const { result, events } = await deps.dispatch(packet, { role: args.role, toolsConfig, saveDir, resumeId, timeoutSec: deps.thinkingTimeoutSec });
   const after = before ? projectSnapshot(args.project_root) : null;
   deps.record(events.map((e) => ({ ...e, judgment_role: args.role })));
-  const summary = (result.result ?? {}) as { done?: boolean; missing?: string[]; accepted?: string[]; conversation_id?: string };
+  const summary = (result.result ?? {}) as { done?: boolean; missing?: string[]; accepted?: string[]; conversation_id?: string; reason?: string | null };
   if (summary.conversation_id) writeFileSync(recordPath, JSON.stringify({ conversation_id: summary.conversation_id }) + "\n");
 
   const stop = (why: string, missing?: string[]): ThinkingReply => {
@@ -478,8 +507,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
     return { ...base, route: "halt", reason, cost_usd: result.cost_usd };
   }
   if (changed.length) return stop(changedText);
-  if (!result.success && !summary.done) return stop(`the ${model.model_name} step could not finish: ${result.error ?? "no reason given"}`, summary.missing);
-  if (!summary.done) return stop(`the ${model.model_name} step ended with pieces still owed`, summary.missing);
+  if (!summary.done) return stop(stoppedReason(model.model_name, summary, result, deps.thinkingTimeoutSec), summary.missing);
   // Every piece is handed in and accepted by the checks a Claude helper's hand-over runs: the step is done, even when
   // its last turn ended with an error (review: a fully accepted step was reported stopped and its work thrown away).
   if (!result.success) deps.log("warn", "thinking.done_after_error", { role: args.role, phase: role.phase, model: model.model_name, reason: result.error });

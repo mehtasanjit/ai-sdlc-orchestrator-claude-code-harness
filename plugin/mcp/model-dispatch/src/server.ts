@@ -1072,8 +1072,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "run's policy routes its phase. A Claude model: the reply is route 'session' and nothing is spent; delegate the " +
         "helper (or write requirements yourself) as before. An antigravity-worker leaf: Gemini runs the helper's own " +
         "instructions with read-only tools (the engine's read rule) and hands each piece in through the same check the " +
-        "Claude helper's hand-over runs, until every piece is accepted or the policy's thinking_timeout_sec is spent; " +
-        "the reply is route 'done'. A step that cannot finish replies 'stopped' with the reason and what is still owed, " +
+        "Claude helper's hand-over runs, until every piece is accepted (the reply is route 'done'), the policy's " +
+        "thinking_timeout_sec is spent, or Gemini answers three reminders in a row of what it owes without progress. " +
+        "A step that cannot finish replies 'stopped' with the reason, saying in plain words what stopped it, and what is still owed, " +
         "and Google serving nothing for the run's busy window replies 'halt': stop the run in both cases; no other " +
         "model takes the step over. Pass `revise` (a gate's comments, or a check's lines to fix) to carry on the step's " +
         "saved conversation. Pass `acceptance_fix` (role 'architect') for the acceptance stage's install or audit failure: " +

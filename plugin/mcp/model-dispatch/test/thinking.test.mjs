@@ -99,6 +99,28 @@ test("a step that ends with pieces owed stops the run at that step, saying what 
   assert.deepEqual(r.missing, ["header.json, accepted"]);
 });
 
+// E-thinking-stop-reason. Review: the reply said "ended with pieces still owed" whatever stopped the step, so a person
+// could not tell its work budget, a model making no progress and a tool that hung apart.
+test("a stopped step's reply names why its worker stopped, in plain words, and what is still owed", async () => {
+  const worker = readFileSync(join(PLUGIN_ROOT, "mcp", "model-dispatch", "worker", "thinking_worker.py"), "utf8");
+  const turns = /^NO_PROGRESS_TURNS = (\d+)$/m.exec(worker)?.[1];
+  assert.ok(turns, "the worker names its no-progress limit");
+  const stopped = (summary, error) => runThinkingStep(args(project()), deps(AGENT, () => result({ success: false, error, result: { done: false, missing: ["header.json, accepted"], accepted: ["units-001.json"], conversation_id: "c1", ...summary } })).d);
+  const idle = await stopped({ reason: "no_progress" }, "The agent worker exited 1. thinking_worker failed: the step made no progress");
+  assert.equal(idle.route, "stopped");
+  assert.equal(idle.reason, `the gemini-4-argon step stopped: no progress for ${turns} turns in a row; still owed: header.json, accepted`);
+  assert.deepEqual(idle.missing, ["header.json, accepted"], "what is owed, as before");
+  assert.deepEqual(idle.accepted, ["units-001.json"], "and what was kept");
+  assert.equal((await stopped({ reason: "budget" }, "The agent worker exited 1. thinking_worker failed: the step's own work time reached its limit")).reason,
+    "the gemini-4-argon step stopped: its own work time reached the policy's limit, thinking_timeout_sec (14400 s, the time Google held or refused its calls not counted); still owed: header.json, accepted");
+  // Where the worker's own error says what happened, it follows.
+  assert.equal((await stopped({ reason: "tool_dead" }, "The agent worker exited 1: the step's tool read_file gave no answer in 1800 s; the step stopped there")).reason,
+    "the gemini-4-argon step stopped: a tool of the step gave no answer in its time limit (The agent worker exited 1: the step's tool read_file gave no answer in 1800 s; the step stopped there); still owed: header.json, accepted");
+  // A worker that could not say why (killed before it could) stops the step with its dispatch's error, as before.
+  assert.equal((await stopped({}, "The agent worker was stopped: no heartbeat for 60 s")).reason,
+    "the gemini-4-argon step could not finish: The agent worker was stopped: no heartbeat for 60 s; still owed: header.json, accepted");
+});
+
 test("a worker that fails stops the step with its reason", async () => {
   const root = project();
   const { d } = deps(AGENT, () => result({ success: false, result: null, error: "the step's own work time reached the policy's limit" }));

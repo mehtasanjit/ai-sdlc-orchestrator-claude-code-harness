@@ -7,16 +7,24 @@ The agent worker (gemini_worker.py) with four differences:
     checks the Claude helper's hand-over runs. Gemini has no tool that writes the project, runs a shell or reaches
     the network;
   - the step is done when the tools say every piece it owes is accepted, not when Gemini stops talking: a turn that
-    ends with pieces missing is answered with what is missing, in the same conversation, until the step's own work
-    time (--timeout, the policy's thinking_timeout_sec) runs out;
+    ends with pieces missing is answered with what is missing, in the same conversation. There is no fixed number of
+    turns, as there is none for the Claude helper: the step goes on until its own work time (--timeout, the policy's
+    thinking_timeout_sec) is spent, or until Gemini answers NO_PROGRESS_TURNS reminders in a row without progress
+    (no piece newly accepted, and what it owes unchanged);
   - the conversation is saved under --save-dir and carried on with --resume-id, so a gate's revise continues the
     session that wrote the pieces instead of starting over;
   - a call Google could not serve is waited out, and the same conversation carried on, while the run's busy window
     (--busy-window-sec) is open, as a batch waits out a busy model for a typing call.
 
 Everything else is the agent worker's: the call supervisor (stall cuts, failover, busy budget, heartbeat, the time
-limit counting own work only) and its usage sidecar. stdout carries one JSON line: {done, missing, accepted,
-conversation_id, text}.
+limit counting own work only) and its usage sidecar. stdout carries one JSON line, also kept in --summary-file after
+every turn: {done, missing, accepted, conversation_id, text, reason}. `reason` says why the step stopped: done (every
+piece accepted), budget (its own work time reached --timeout), no_progress (NO_PROGRESS_TURNS reminders in a row
+answered without progress), busy (Google could not serve the model for the run's busy window), tool_dead (a tool
+call, the status one included, gave no answer in its limit), stopped (the worker was stopped), error (the model's call
+ended with another error); it is null in a summary kept while the step still runs. The worker exits 0 only when every
+piece is accepted and its last turn answered; otherwise it exits 1, and its stderr line "thinking_worker failed: ..."
+says why in plain words and what is still owed.
 """
 from __future__ import annotations
 
@@ -35,9 +43,29 @@ import gemini_worker as gw  # noqa: E402
 import agy_supervisor as sv  # noqa: E402
 from google.antigravity import types  # noqa: E402
 
-# A turn that ends with pieces still missing is answered this many times before the step stops; each answer is a
-# turn in the same conversation, so the model keeps what it read.
-MAX_NUDGES = 8
+# A turn that ends with pieces still missing is answered with what is missing (a reminder), in the same conversation,
+# so the model keeps what it read. The step stops when this many reminders in a row are answered without progress; the
+# first turn, which answers the task itself, is not one (review: a fixed cap of 8 reminders stopped a step that still
+# had budget and was handing pieces in).
+NO_PROGRESS_TURNS = 3
+
+# Why a step stopped with pieces owed (the summary's `reason`), in plain words for the worker's "failed" line; `error` is
+# the last call's own reason when it failed. src/thinking.ts says the same in the step's reply.
+STOP_WORDS = {
+    "budget": lambda args, error: f"the step's own work time reached its limit, {args.timeout} s (thinking_timeout_sec)",
+    "no_progress": lambda args, error: f"the step made no progress for {NO_PROGRESS_TURNS} turns in a row",
+    "busy": lambda args, error: f"Google could not serve the model for the run's busy window ({args.busy_window_sec} s): {error}",
+    "tool_dead": lambda args, error: error,
+    "stopped": lambda args, error: "the worker was stopped",
+    "error": lambda args, error: f"the model's call ended with an error: {error}",
+}
+
+
+def progressed(before: dict, after: dict) -> bool:
+    """Whether a turn moved the step on, between two of the tools' status answers: a piece accepted that was not
+    before, or a change in what the step still owes (a refused piece's problems included)."""
+    newly = set(after.get("accepted") or []) - set(before.get("accepted") or [])
+    return bool(newly) or (after.get("missing") or []) != (before.get("missing") or [])
 
 
 class ToolHost:
@@ -240,7 +268,7 @@ async def run(args):
     fn_tools = tools_for(host, args.role)
     resume = args.resume_id or None
     message = task
-    summary = {"done": False, "missing": [], "accepted": [], "conversation_id": resume, "text": ""}
+    summary = {"done": False, "missing": [], "accepted": [], "conversation_id": resume, "text": "", "reason": None}
 
     def keep() -> None:
         # The summary is the step's state (what is accepted and owed, the conversation to carry on): kept after every
@@ -253,8 +281,12 @@ async def run(args):
         os.replace(tmp, args.summary_file)
 
     s = None
-    nudges = 0
     busy_waits = 0
+    # What the step owed after the last turn (before the first, the tools' start-up answer), and how many reminders in
+    # a row were answered without progress. A turn Google could not serve is not counted: the busy window rules it.
+    before = json.loads(first["result"])
+    idle = 0
+    reminded = False
     sup.start()
     try:
         while True:
@@ -264,16 +296,30 @@ async def run(args):
             resume = s.conversation_id or resume
             summary["conversation_id"] = resume
             summary["text"] = s.text
+            raw = None if host.dead else host.text("status")
             if host.dead:
-                # A tool call gave no answer in its limit: the step ends here, saying why.
+                # A tool call, the status one included, gave no answer in its limit: the step ends here, saying why.
                 s.ok = False
                 s.error = host.dead
+                summary["reason"] = "tool_dead"
                 break
-            status = json.loads(host.text("status"))
+            status = json.loads(raw)
             summary.update({k: status.get(k) for k in ("done", "missing", "accepted")})
             keep()
-            if status.get("done") or sup.stopped or sup.work_s() >= args.timeout:
+            if status.get("done"):
+                summary["reason"] = "done"
                 break
+            if sup.stopped:
+                summary["reason"] = "stopped"
+                break
+            if sup.work_s() >= args.timeout:
+                summary["reason"] = "budget"
+                break
+            if progressed(before, status):
+                idle = 0
+            elif reminded and s.ok:
+                idle += 1
+            before = status
             if not s.ok:
                 # Google could not serve the step's call within the call's own budget. As a batch does for a typing
                 # call (busyLedger.ts), the step waits and carries on its own conversation, in this process and with
@@ -281,18 +327,21 @@ async def run(args):
                 # engine stops the run with Google's reason.
                 left = args.busy_window_sec - sup.unserved_for()
                 if not sup.unavailable or left <= 0:
+                    summary["reason"] = "busy" if sup.unavailable else "error"
                     break
                 sup.carry_on()
                 sup.recovering()
                 await sup.wait(min(left, sup.backoff(busy_waits)))
                 busy_waits += 1
                 if sup.stopped:
+                    summary["reason"] = "stopped"
                     break
                 message = sv.CONTINUE_MESSAGE if resume else task
                 continue
-            nudges += 1
-            if nudges > MAX_NUDGES:
+            if idle >= NO_PROGRESS_TURNS:
+                summary["reason"] = "no_progress"
                 break
+            reminded = True
             message = ("Not done yet. Still owed: " + "; ".join(status.get("missing") or []) +
                        ". Hand each piece in with your tools; a refused piece answers with every problem to fix.")
     finally:
@@ -337,6 +386,14 @@ def main():
         print(f"thinking_worker failed: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
     print(json.dumps(summary))
+    if not summary["done"]:
+        # The step stopped with pieces owed: why, in plain words, and what is still owed.
+        words = STOP_WORDS.get(summary["reason"])
+        error = s.error if s is not None and not s.ok else None
+        why = (words(args, error) if words else None) or error or "the step stopped with pieces owed"
+        owed = "; ".join(summary["missing"] or [])
+        print(f"thinking_worker failed: {why}{f'; still owed: {owed}' if owed else ''}", file=sys.stderr)
+        sys.exit(1)
     if s is None or not s.ok:
         print(f"thinking_worker failed: {s.error if s else 'no session'}", file=sys.stderr)
         sys.exit(1)
