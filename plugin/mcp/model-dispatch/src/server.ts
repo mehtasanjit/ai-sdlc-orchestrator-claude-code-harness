@@ -66,7 +66,7 @@ import { judgingAgentLeaves, probeEvents, probeTypists, runTypingLeaves } from "
 import { runCard } from "./runCard.js";
 import { PLUGIN_ROOT } from "./paths.js";
 import { routeTable } from "./routeTable.js";
-import { DEFAULT_THINKING_TIMEOUT_SEC, THINKING_MODULE, THINKING_ROLES, THINKING_TASK_TYPE, runThinkingStep, type ThinkingDeps } from "./thinking.js";
+import { DEFAULT_THINKING_TIMEOUT_SEC, THINKING_ROLES, runThinkingStep, type ThinkingDeps } from "./thinking.js";
 import { BusyLedger, unservedSince } from "./busyLedger.js";
 import { bindingConflict, checkAgsdk, leafLocations, writeBinding, type BoundLeaf } from "./agsdkPreflight.js";
 
@@ -1206,9 +1206,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         const { policy, run } = runFor(a);
         const deps: ThinkingDeps = {
           pluginRoot: PLUGIN_ROOT,
+          // A step goes where the run's route table (routeTable.ts) gives its phase, so the step and the table
+          // pre-flight printed agree: a phase the table gives the session on no model of the policy (no rule names it)
+          // is answered "session", on the session's own Claude model as the table names it.
           route: (phase) => {
-            const d = pickModel({ phase, task_type: THINKING_TASK_TYPE, module: THINKING_MODULE, retry_count: 0, intent: a.intent }, policy, selectOverrides());
-            return { model: getModel(policy, d.modelId), reason: d.reason };
+            const row = routeTable(policy, selectOverrides(), a.intent).rows.find((r) => r.phase === phase);
+            if (!row) throw new Error(`run_thinking_step: the route table has no row for ${phase}`);
+            if (row.model_id === null) return { model: { id: "session_model", adapter: "builtin-anthropic", model_name: row.model } as ModelConfig, reason: row.reason };
+            return { model: getModel(policy, row.model_id), reason: row.reason };
           },
           // The agent door's own guards, as runPacket applies them: a pre-flight in this server process, and the run's
           // busy ledger (Google serving nothing for its window halts the run).

@@ -153,40 +153,67 @@ export function unreachableModelIds(
   return unreachable;
 }
 
+/**
+ * The rule that routes a context: the first rule that matches it, else the policy's (first) default rule, with its
+ * index (-1 for the default); null when neither exists.
+ */
+function ruleFor(ctx: TaskContext, policy: Policy): { rule: Rule; index: number } | null {
+  for (let i = 0; i < policy.rules.length; i++) {
+    const rule = policy.rules[i];
+    if ("default" in rule) continue; // defaults handled last
+    if (matches(rule.when, ctx)) return { rule, index: i };
+  }
+  const rule = policy.rules.find((r) => "default" in r);
+  return rule ? { rule, index: -1 } : null;
+}
+
+/** The decision a rule gives: its target resolved against the run's slot choices, and why. */
+function decisionFor(policy: Policy, rule: Rule, index: number, overrides: SelectOverrides): RoutingDecision {
+  const resolved = resolveNamed(policy, "default" in rule ? rule.default : rule.use, overrides);
+  return {
+    modelId: resolved.modelId,
+    reason: rule.reason ?? ("default" in rule ? "fell through to policy default" : `matched rule ${index} (${describeMatcher(rule.when)})`),
+    ruleIndex: index,
+    ...(resolved.selection ? { selection: resolved.selection } : {}),
+  };
+}
+
 export function pickModel(
   ctx: TaskContext,
   policy: Policy,
   overrides: SelectOverrides = {}
 ): RoutingDecision {
-  for (let i = 0; i < policy.rules.length; i++) {
-    const rule = policy.rules[i];
-    if ("default" in rule) continue; // defaults handled last
-    if (matches(rule.when, ctx)) {
-      const resolved = resolveNamed(policy, rule.use, overrides);
-      return {
-        modelId: resolved.modelId,
-        reason: rule.reason ?? `matched rule ${i} (${describeMatcher(rule.when)})`,
-        ruleIndex: i,
-        ...(resolved.selection ? { selection: resolved.selection } : {}),
-      };
-    }
+  const hit = ruleFor(ctx, policy);
+  if (!hit) {
+    throw new Error(
+      `Policy '${policy.name}' has no rule matching ${JSON.stringify(ctx)} and no default rule.`
+    );
   }
-  // Fall through to default
-  for (let i = 0; i < policy.rules.length; i++) {
-    const rule = policy.rules[i];
-    if ("default" in rule) {
-      const resolved = resolveNamed(policy, rule.default, overrides);
-      return {
-        modelId: resolved.modelId,
-        reason: rule.reason ?? "fell through to policy default",
-        ruleIndex: -1,
-        ...(resolved.selection ? { selection: resolved.selection } : {}),
-      };
-    }
-  }
-  throw new Error(
-    `Policy '${policy.name}' has no rule matching ${JSON.stringify(ctx)} and no default rule.`
-  );
+  return decisionFor(policy, hit.rule, hit.index, overrides);
+}
+
+/** A thinking phase the session runs: its Claude helper (or, for requirements, the orchestrator) does the step. */
+export interface SessionRoute {
+  session: true;
+  reason: string;
+  /** The rule that gives the phase to the session, or -1 when no rule names it. */
+  ruleIndex: number;
+}
+
+/** Why the session runs a thinking phase that no rule names. */
+export const NO_RULE_REASON = "no rule names this phase; the session's helper runs it as before";
+
+/**
+ * Where a thinking step goes (a THINKING_PHASES context, as thinking.ts routes it): the model pickModel names, or the
+ * session when no rule matches and the policy has no default. A thinking phase was the session's before thinking steps
+ * followed the policy, so a policy that routes only typing keeps it there, instead of failing pre-flight with the
+ * routing's "no rule matching" (review). The route table, run_thinking_step and the run-start check route a thinking
+ * phase with this, so the three agree; typing goes through pickModel, which still refuses a context nothing routes.
+ */
+export function routeThinking(ctx: TaskContext, policy: Policy, overrides: SelectOverrides = {}): RoutingDecision | SessionRoute {
+  const hit = ruleFor(ctx, policy);
+  if (!hit) return { session: true, reason: NO_RULE_REASON, ruleIndex: -1 };
+  return decisionFor(policy, hit.rule, hit.index, overrides);
 }
 
 function matches(matcher: RuleMatcher, ctx: TaskContext): boolean {

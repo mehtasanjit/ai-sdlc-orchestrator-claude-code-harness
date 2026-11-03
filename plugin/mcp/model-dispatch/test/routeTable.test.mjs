@@ -70,3 +70,21 @@ test("phases no rule can route are shown as such: change_plan and plan_task_pack
   assert.deepEqual(t.problems, []);
   assert.deepEqual(["discovery", "change_plan", "plan_task_packets"].map((p) => [row(t.rows, p).who, row(t.rows, p).model_id]), [["session", null], ["code", null], ["code", null]]);
 });
+
+// Review: a valid policy with no default rule and no rule for a thinking phase failed pre-flight with a raw "no rule
+// matching" exception from the routing, where before thinking steps followed the policy the session ran them.
+test("a thinking phase no rule names is the session's, as before; the typing phases are routed as always", () => {
+  const policy = {
+    version: 1, name: "typing-only",
+    models: [{ id: "flash", adapter: "antigravity-worker", model_name: "gemini-3.8-flash" }],
+    rules: [{ when: { phase: ["codegen", "tests", "docs", "debug"] }, use: "flash" }],
+  };
+  const { rows, problems } = routeTable(policy, {});
+  assert.deepEqual(problems, []);
+  for (const phase of ["requirements_analysis", "architecture_design", "senior_code_review", "security_review"]) {
+    assert.deepEqual(row(rows, phase), { phase, model: "the session's own model", model_id: null, who: "session", reason: "no rule names this phase; the session's helper runs it as before" }, phase);
+  }
+  assert.deepEqual([row(rows, "codegen").model_id, row(rows, "codegen").who], ["flash", "engine, typing"]);
+  // With session_model, that is the model the session runs them on.
+  assert.equal(row(routeTable({ ...policy, session_model: "claude-opus-5-5" }, {}).rows, "architecture_design").model, "claude-opus-5-5");
+});

@@ -242,3 +242,34 @@ test("discovery is not a thinking step: the tool refuses the role, and the step'
     cleanup(bin, root);
   }
 });
+
+// E-thinking-no-rule. Review: a policy with no default rule and no rule for a thinking phase failed pre-flight with the
+// routing's raw "no rule matching" exception, though before thinking steps followed the policy the session ran them.
+test("a policy with no rule for a thinking phase passes pre-flight, and its table and the step both give the phase to the session", { timeout: 60_000 }, async () => {
+  const fake = fakeWorkerPython({ runs: [{}] });
+  const bin = standInClaude([receipt({})]);
+  const root = project({ contract: false });
+  writeFileSync(join(root, "policy.yaml"), [
+    "version: 1", "name: typing-only", "models:",
+    "  - id: flash", "    adapter: antigravity-worker", "    model_name: gemini-3.8-flash",
+    "rules:", "  - when: { phase: [codegen, tests, docs, debug] }", "    use: flash", "",
+  ].join("\n"));
+  const policy_path = join(root, "policy.yaml");
+  try {
+    await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
+      const pf = await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r8" });
+      assert.equal(pf.isError, false, pf.text);
+      assert.equal(pf.json?.ok, true, pf.text);
+      for (const phase of ["requirements_analysis", "architecture_design", "senior_code_review", "security_review"]) {
+        const r = pf.json.route_table.find((x) => x.phase === phase);
+        assert.deepEqual([r?.who, r?.reason], ["session", "no rule names this phase; the session's helper runs it as before"], phase);
+      }
+      const step = await call("run_thinking_step", { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, run_id: "r8", output_dir: "out", policy_path, telemetry_path: "out/telemetry.jsonl" });
+      assert.equal(step.json?.route, "session", step.text);
+      assert.equal(fake.runs().length, 0, "nothing was sent");
+    });
+  } finally {
+    fake.cleanup();
+    cleanup(bin, root);
+  }
+});

@@ -458,3 +458,29 @@ test("phases code renders and discovery do not pin the session: only the thinkin
     assert.equal(r.stdout.trim(), "");
   });
 });
+
+// Review: a policy with no default rule and no rule for a thinking phase failed the check with the routing's raw "no
+// rule matching" exception; such a phase is the session's, as before, and pins nothing of its own.
+const TYPING_ONLY = `
+version: 1
+name: typing-only
+models:
+  - id: flash
+    adapter: antigravity-worker
+    model_name: gemini-3.8-flash
+rules:
+  - when: { phase: [codegen, tests, docs, debug] }
+    use: flash
+`;
+
+test("a thinking phase no rule names is the session's: the check passes, pinned only by session_model", () => {
+  withPolicy(TYPING_ONLY, (root) => {
+    const r = run(["--project-root", root]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /names no Claude model for this session/);
+  });
+  withPolicy(TYPING_ONLY.replace("name: typing-only\n", "name: typing-only\nsession_model: claude-opus-5-5\n"), (root) => {
+    assert.equal(run(["--project-root", root, "--print-only"]).stdout.trim(), "claude-opus-5-5");
+    assert.equal(run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" }).code, 0);
+  });
+});
