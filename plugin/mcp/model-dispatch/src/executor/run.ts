@@ -35,6 +35,7 @@ import { isSafeRelativePath, type Spec, type SpecUnit } from "../spec/store.js";
 import { renderRepairInstruction, renderUnitInstruction, framedPacket, repairPacket, unitPacket } from "./brief.js";
 import { checkAnswer, type CheckResult, type CheckTarget } from "./checks.js";
 import type { Answer, Contract, Door, Edit, Typist, TypistResult } from "./typists.js";
+import { BusyLedger } from "../busyLedger.js";
 
 export type Stage = "codegen" | "tests" | "docs" | "repair";
 
@@ -85,6 +86,11 @@ export interface StageDeps {
   random?(): number;
   now?(): number;
   check?(target: CheckTarget, answer: { path: string; content: string }): CheckResult;
+  /**
+   * The run's busy ledger (busyLedger.ts): a call Google could not serve is a wait until nothing of its model was served
+   * in the run for the whole window; then the stage stops. Absent: a ledger of this stage's own calls.
+   */
+  ledger?: BusyLedger;
 }
 
 export interface StageReceipt {
@@ -94,9 +100,10 @@ export interface StageReceipt {
   failed: { id: string; path: string; reason: string }[];
   failed_not_listed?: number;
   /**
-   * Set when a door refused the login or permission (HTTP 401/403): the stage
-   * stopped there, so the files are never quietly handed to the lean Opus
-   * attempt — a multi-model run with a broken Gemini door would otherwise
+   * Set when a door refused the login or permission (HTTP 401/403), or when
+   * Google could not serve a model for the run's busy ledger's whole window:
+   * the stage stopped there, so the files are never quietly handed to the lean
+   * Opus attempt — a multi-model run with a broken Gemini door would otherwise
    * complete entirely on Opus, at Opus's price, with no failure shown.
    */
   stopped?: string;
@@ -141,6 +148,8 @@ const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
 export const RECEIPT_MAX_BYTES = 2048;
 /** HTTP statuses that mean the credentials or permission are wrong, not that the vendor is busy: 401 Unauthorized, 403 Forbidden (RFC 9110). */
 const CONFIG_REFUSALS = new Set([401, 403]);
+/** A job's call that a stopped stage did not send: nothing billed, nothing recorded. */
+const NOT_SENT: TypistResult = { answer: null, error: "not sent: the stage had stopped", transport: false, tokens: { input: 0, input_cached: 0, output: 0 }, cost_usd: 0, latency_ms: 0 };
 
 /**
  * The receipt as sent, within RECEIPT_MAX_BYTES measured on the compact JSON
@@ -464,6 +473,7 @@ export async function executeStage(spec: Spec, opts: StageOptions, deps: StageDe
   const random = deps.random ?? Math.random;
   const now = deps.now ?? Date.now;
   const check = deps.check ?? ((t: CheckTarget, a: { path: string; content: string }) => checkAnswer(t, a));
+  const ledger = deps.ledger ?? new BusyLedger({ now });
   const codeRoot = resolve(opts.codeDir);
 
   let jobs: Job[];
@@ -529,6 +539,8 @@ export async function executeStage(spec: Spec, opts: StageOptions, deps: StageDe
     retry_reason: retryReason,
     error: ok ? undefined : why,
     price_basis: r.price_basis as any,
+    unpriced_models: r.unpriced_models?.length ? r.unpriced_models : undefined,
+    gemini: r.gemini,
   });
 
   // Warm the cache first. A lean Opus typist whose cache has gone cold sends
@@ -554,13 +566,31 @@ export async function executeStage(spec: Spec, opts: StageOptions, deps: StageDe
     }
   }
 
-  /** One typist call, waiting out transport failures. Every call is billed. */
-  async function call(job: Job, typist: Typist, decision: ReturnType<typeof pickModel> | null, refusal: string | undefined, attempt: number): Promise<TypistResult> {
+  /**
+   * One typist call, waiting out transport failures and calls Google could not serve. Every call is billed, and none
+   * is sent once the stage has stopped, since the stage discards whatever comes back: `notSent` is such a job's end. A
+   * result with `unservedFor` is the job's end: none of its calls was served for the ledger's window while the model's
+   * other calls were (BusyLedger.unservedFor), so it is not typed again, by this typist or the next. `emitted` says
+   * that call's event is already written (it was waited on before the job's end was found).
+   */
+  async function call(job: Job, typist: Typist, decision: ReturnType<typeof pickModel> | null, refusal: string | undefined, attempt: number): Promise<TypistResult & { unservedFor?: string; emitted?: boolean; notSent?: boolean }> {
     const packet = job.packet(refusal);
-    for (let k = 0; ; k++) {
+    // `k`: transport waits, a stated number per call; `u`: unavailable calls sent again, bounded by the ledger's window.
+    // `unservedSince`: when this job's first unavailable call since its last served one was sent, on the ledger's clock.
+    // `waited`: the call this loop last waited on before a resend; its event is written.
+    let unservedSince: number | null = null;
+    let waited: TypistResult | null = null;
+    for (let k = 0, u = 0; ; ) {
       const t0 = Date.now();
       let r: TypistResult;
       const release = await warmGate(typist);
+      // The stage may have stopped while this job waited to resend, or for the lean Opus cache warm-up (another job's
+      // call can stop it): then nothing more is sent, and the call waited on, if any, is the job's last.
+      if (stopped) {
+        release?.(false);
+        return waited ? { ...waited, emitted: true } : { ...NOT_SENT, notSent: true };
+      }
+      const sentAt = ledger.time();
       try {
         r = await typist.type({ unit: { id: job.id, path: job.path }, packet, framed: framedPacket(packet), shared: deps.shared, sharedFile: deps.sharedFile, contract: job.contract, passId: opts.passId });
       } catch (e: any) {
@@ -579,24 +609,67 @@ export async function executeStage(spec: Spec, opts: StageOptions, deps: StageDe
       }
       if (r.error_status !== undefined && CONFIG_REFUSALS.has(r.error_status) && !stopped) {
         stopped = `the ${typist.door} door refused the call with HTTP ${r.error_status} (its login or permission is broken): the stage stopped here instead of sending the remaining files to another typist; fix the credentials and run the stage again`;
+        stoppedFor = "stopped: the door refused the login or permission";
+      }
+      // Google could not serve the call within its own budget: a wait, typed again by the same typist, until the run's
+      // ledger says nothing of the model was served for the whole window; then the stage stops with Google's reason.
+      let unavailableWait = false;
+      // This job's own calls went unserved for the window while the model's other calls were: its end, the stage goes on.
+      let own: string | null = null;
+      if (r.unavailable !== undefined) {
+        unservedSince ??= sentAt;
+        const halt = stopped ? null : ledger.unavailable(typist.modelName, r.unavailable, sentAt);
+        if (halt) {
+          stopped = `${halt}; the stage stopped here instead of sending the remaining files to another typist; run the stage again when Google serves`;
+          stoppedFor = "stopped: Google could not serve the model";
+        } else if (!stopped) {
+          own = ledger.unservedFor(typist.modelName, unservedSince, r.unavailable, "job");
+          unavailableWait = own === null;
+        }
+      } else if (r.answer || r.tokens.output > 0) {
+        ledger.served(typist.modelName);
+        unservedSince = null;
       }
       receipt.calls++;
       receipt.cost_usd += r.cost_usd;
       const b = bill(typist.door);
       b.calls++;
       b.cost_usd += r.cost_usd;
+      if (own) return { ...r, error: `Google could not serve ${typist.modelName} for this file: ${own}`, unservedFor: own };
+      if (unavailableWait) {
+        deps.emit(event(job, typist, decision, r, attempt, false, r.error, "transport"));
+        receipt.transport_waits++;
+        await sleep(backoffMs(u, opts.transport.baseMs, opts.transport.capMs, random));
+        u++;
+        waited = r;
+        // Typed again only while the model's window is open and the stage still runs: either may have changed
+        // during the wait (a stopped stage sends nothing more, at the loop's head).
+        const closed = stopped ? null : ledger.closed(typist.modelName);
+        if (closed) {
+          stopped = `${closed}; the stage stopped here instead of sending the remaining files to another typist; run the stage again when Google serves`;
+          stoppedFor = "stopped: Google could not serve the model";
+        }
+        // Nor past this job's own window, which may also have passed during the wait (this call's event is written).
+        const ownAfter = stopped ? null : ledger.unservedFor(typist.modelName, unservedSince, r.unavailable!, "job");
+        if (ownAfter) return { ...r, error: `Google could not serve ${typist.modelName} for this file: ${ownAfter}`, unservedFor: ownAfter, emitted: true };
+        continue;
+      }
       if (r.transport && k < opts.transport.maxWaits) {
         deps.emit(event(job, typist, decision, r, attempt, false, r.error, "transport"));
         receipt.transport_waits++;
         await sleep(r.retry_after_ms ?? backoffMs(k, opts.transport.baseMs, opts.transport.capMs, random));
+        k++;
+        waited = r;
         continue;
       }
       return r;
     }
   }
 
-  // A door that refuses the login or permission stops the stage (see StageReceipt.stopped).
+  // A door that refuses the login or permission, or a model Google could not serve for the ledger's whole window,
+  // stops the stage (see StageReceipt.stopped); `stoppedFor` is the reason each file left untyped gets.
   let stopped: string | undefined;
+  let stoppedFor = "stopped: the door refused the login or permission";
 
   const planFor = (job: Job) => [
     ...Array.from({ length: opts.routedAttempts }, (_, i) => { const d = route(job, i); return { typist: deps.typistFor(d.modelId), decision: d as ReturnType<typeof pickModel> | null }; }),
@@ -611,8 +684,16 @@ export async function executeStage(spec: Spec, opts: StageOptions, deps: StageDe
       const attempt = i + 1;
       const r = await call(job, typist, d, refusal, attempt);
       if (stopped) {
-        deps.emit(event(job, typist, d, r, attempt, false, r.error));
-        receipt.failed.push({ id: job.id, path: job.path, reason: "stopped: the door refused the login or permission" });
+        // The last call's event, unless it is written (waited on before the stop) or no call was sent.
+        if (!r.emitted && !r.notSent) deps.emit(event(job, typist, d, r, attempt, false, r.error));
+        receipt.failed.push({ id: job.id, path: job.path, reason: stoppedFor });
+        return;
+      }
+      if (r.unservedFor) {
+        // Google served none of this file's calls for the window: the file fails with that reason, never typed by the
+        // next attempt's typist (the lean Opus attempt included), and the stage goes on.
+        if (!r.emitted) deps.emit(event(job, typist, d, r, attempt, false, r.error));
+        receipt.failed.push({ id: job.id, path: job.path, reason: r.unservedFor.slice(0, 160) });
         return;
       }
       let verdict: CheckResult | null = null;

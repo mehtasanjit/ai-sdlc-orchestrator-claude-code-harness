@@ -306,6 +306,62 @@ export interface TelemetryEvent {
   retry_reason?: RetryReason;
   artifact_path?: string;
   error?: string;
+  /** A Gemini call's record (GeminiCallRecord): where it ran, each try, Google's codes. Absent on every other event. */
+  gemini?: GeminiCallRecord | GeminiEndpointRecord;
+}
+
+/**
+ * One try of a Gemini call through the Antigravity SDK: a session (the agent typist) or a segment of a session (the
+ * agent door), with its own tokens and dollars at its own location.
+ */
+export interface GeminiTry {
+  location: string;
+  /** answer | error | refused | network | stalled | work_limit | cancelled */
+  ended_by: string;
+  /** Google's HTTP codes from the SDK's error steps; 2 is the harness's network code. */
+  http_codes: number[];
+  s: number;
+  served_tier?: string | null;
+  input_tokens: number;
+  input_tokens_cached: number;
+  output_tokens: number;
+  cost_usd: number;
+  reason?: string;
+}
+
+/**
+ * What a Gemini call through the Antigravity SDK did, on its telemetry event and its attempt: the project, the
+ * location of the try that ended the call, every try, how the call ended, Google's last status, the stalls cut, the
+ * failovers, the calls cut before Google reported their usage (their tokens, if billed, are not in cost_usd), the time
+ * the session's limit did not count (Google's holds and refusals), the time it did, the time the Mac slept, the SDK
+ * version and the usage reading applied, the reason when Google could not serve it, and GOOGLE_VERTEX_BASE_URL when the
+ * server's environment redirects Vertex (a rig's fake endpoint).
+ */
+export interface GeminiCallRecord {
+  project: string | null;
+  location: string;
+  tries: GeminiTry[];
+  /** answer | error | refused | stalled | work_limit | killed | cancelled */
+  ended_by: string;
+  last_status: number | null;
+  stall_cuts: number;
+  failovers: number;
+  cut_calls: number;
+  google_wait_ms: number;
+  work_ms: number;
+  slept_ms: number | null;
+  sdk_version: string | null;
+  usage_semantics: string;
+  unavailable: string | null;
+  endpoint_override: string | null;
+}
+
+/** The direct Gemini route's subset of the record: which backend, project and location served it, at which tier. */
+export interface GeminiEndpointRecord {
+  backend: string;
+  project: string | null;
+  location: string | null;
+  served_tier: string | null;
 }
 
 /** One attempt from the output-cap doubling loop. */
@@ -392,6 +448,14 @@ export interface AttemptRecord {
    * typistResult): `transport` for a busy reply, else the reason the apply loop gave the packet. Absent on a first call.
    */
   retry_reason?: RetryReason;
+  /**
+   * Set when Google could not serve the call: its worker spent the call's own budget against refusals or stalls
+   * (worker/agy_supervisor.py). The loops ask the run's busy ledger (busyLedger.ts) whether this stops the run or is a
+   * wait; it is never a ladder attempt.
+   */
+  unavailable?: string;
+  /** A Gemini call's record (the Antigravity doors: GeminiCallRecord; the direct route: its endpoint). */
+  gemini?: GeminiCallRecord | GeminiEndpointRecord;
 }
 
 export type PriceBasis = "list" | "custom";
@@ -498,10 +562,22 @@ export interface ModelConfig {
    */
   region?: string;
   /**
-   * Deadline for an agent-worker delegation. Read only by adapters that spawn
-   * a worker; ignored by completion adapters.
+   * Deadline for an agent-worker delegation: the session's own work time (calls Google held until they were cut,
+   * refused requests and their waits are not counted). Read only by adapters that spawn a worker; ignored by
+   * completion adapters.
    */
   worker_timeout_sec?: number;
+  /**
+   * `antigravity-worker` only: the other Vertex locations a call moves to, in order, when its own location refuses it
+   * (busy, network) or holds it past `stall_sec`. Absent: no failover (every shipped policy). Each other location bills
+   * +10% on Gemini 3+.
+   */
+  failover_locations?: string[];
+  /**
+   * `antigravity-worker` only: the most a model call may go without receiving anything from Google before it is cut
+   * and sent again (the second try gets twice this). Absent: the model's default (executor/stall.ts).
+   */
+  stall_sec?: number;
 }
 
 /**
@@ -515,6 +591,11 @@ export interface RunContext {
   work_dir?: string;
   /** Delegation evidence lands beside this path. */
   telemetry_path?: string;
+  /**
+   * The request's own stop (Claude Code cancels a tool call when the person presses Stop): a typist that runs a
+   * program kills its process group, so a stopped run stops billing.
+   */
+  signal?: AbortSignal;
 }
 
 export type RuleMatcher = {
@@ -582,6 +663,8 @@ export interface ExecutionResult {
   error?: string;
   /** Populated on doubling loop; length ≥ 1. */
   attempts?: AttemptRecord[];
+  /** Set when the run stops here: Google could not serve the model for the busy ledger's whole window. */
+  halt?: string;
   /**
    * Why the doubling loop stopped. `_budget_exhausted` means "retries used but
    * model still had headroom" (raise the cap); `_at_model_absolute` means "hit

@@ -272,6 +272,24 @@ test("SDK 0.1.9 reports cached input as part of prompt, measured the same way", 
   assert.equal(tokens.input + tokens.input_cached, 24245, "Google counted 24,245 input tokens for this job");
 });
 
+test("SDK 0.1.22 counts cached input inside prompt_token_count, so only the rest is billed as fresh", () => {
+  // Checked against Google's own Cloud Monitoring counter
+  // (aiplatform.googleapis.com/publisher/online_serving/token_count) for an agent-door job on SDK 0.1.22: the input
+  // it recorded is prompt_token_count alone, the Gemini API convention, as on 0.1.9. The numbers here are the SDK's
+  // own sums of Vertex's usage fields on a recorded three-call session (1,000, 3,000 and 7,000 prompt tokens, of
+  // which 0, 2,000 and 6,500 cached; 60 candidates and 6 thoughts in all).
+  const tokens = mapSidecarTokens({
+    sdk_version: "0.1.22",
+    usage: { prompt_token_count: 11000, cached_content_token_count: 8500, candidates_token_count: 60, thoughts_token_count: 6 },
+  });
+  assert.equal(sidecarUsageSemantics({ sdk_version: "0.1.22", usage: {} }), "inclusive");
+  assert.equal(tokens.input, 2500);
+  assert.equal(tokens.input_cached, 8500);
+  assert.equal(tokens.input + tokens.input_cached, 11000, "the input Google counts is prompt_token_count");
+  assert.equal(tokens.output, 66);
+  assert.equal(tokens.output_reasoning, 6);
+});
+
 test("only SDK versions checked against Google's counter get a named reading", () => {
   assert.equal(sidecarUsageSemantics({ sdk_version: "0.1.9", usage: {} }), "inclusive");
   assert.equal(sidecarUsageSemantics({ sdk_version: "0.1.16", usage: {} }), "disjoint");

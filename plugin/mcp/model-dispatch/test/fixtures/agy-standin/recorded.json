@@ -1,0 +1,1414 @@
+{
+ "_about": "Step sequences google-antigravity 0.1.22 yielded (driver logs of its harness against a fake Vertex endpoint), in the stand-in's script format: each event at its recorded second after chat(). A test scales the times or appends events (usage, the end of the turn) as its case needs.",
+ "refused_429_six_retries": {
+  "source": "e06-429-typist-retry: 6 retries from 2 s, doubling, then model unreachable",
+  "events": [
+   {
+    "at": 0.18,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 2.191,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "http_code": 429,
+     "error": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")",
+     "content": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")"
+    }
+   },
+   {
+    "at": 4.615,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 2,
+     "target": "TARGET_USER",
+     "http_code": 429,
+     "error": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")",
+     "content": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")"
+    }
+   },
+   {
+    "at": 10.396,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "http_code": 429,
+     "error": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")",
+     "content": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")"
+    }
+   },
+   {
+    "at": 22.568,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 4,
+     "target": "TARGET_USER",
+     "http_code": 429,
+     "error": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")",
+     "content": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")"
+    }
+   },
+   {
+    "at": 46.388,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 5,
+     "target": "TARGET_USER",
+     "http_code": 429,
+     "error": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")",
+     "content": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")"
+    }
+   },
+   {
+    "at": 93.226,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 6,
+     "target": "TARGET_USER",
+     "http_code": 429,
+     "error": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")",
+     "content": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")"
+    }
+   },
+   {
+    "at": 93.288,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 7,
+     "target": "TARGET_USER",
+     "http_code": 429,
+     "error": "Agent execution terminated due to error. (\"agent executor error: model unreachable: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")",
+     "content": "Agent execution terminated due to error. (\"agent executor error: model unreachable: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")"
+    }
+   },
+   {
+    "at": 93.289,
+    "raise": "AntigravityExecutionError",
+    "message": "model unreachable: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []"
+   }
+  ]
+ },
+ "refused_403": {
+  "source": "e09-403",
+  "events": [
+   {
+    "at": 0.05,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.058,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "http_code": 403,
+     "error": "Agent execution terminated due to error. (\"agent executor error: Error 403, Message: fake PERMISSION_DENIED, Status: PERMISSION_DENIED, Details: []: Error 403, Message: fake PERMISSION_DENIED, Status: PERMISSION_DENIED, Details: []\")",
+     "content": "Agent execution terminated due to error. (\"agent executor error: Error 403, Message: fake PERMISSION_DENIED, Status: PERMISSION_DENIED, Details: []: Error 403, Message: fake PERMISSION_DENIED, Status: PERMISSION_DENIED, Details: []\")"
+    }
+   },
+   {
+    "at": 0.058,
+    "raise": "AntigravityConnectionError",
+    "message": "Agent execution terminated due to error. (\"agent executor error: Error 403, Message: fake PERMISSION_DENIED, Status: PERMISSION_DENIED, Details: []: Error 403, Message: fake PERMISSION_DENIED, Status: PERMISSION_DENIED, Details: []\")"
+   }
+  ]
+ },
+ "refused_401": {
+  "source": "e09-401",
+  "events": [
+   {
+    "at": 0.109,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.115,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "http_code": 401,
+     "error": "Agent execution terminated due to error. (\"agent executor error: Error 401, Message: fake UNAUTHENTICATED, Status: UNAUTHENTICATED, Details: []: Error 401, Message: fake UNAUTHENTICATED, Status: UNAUTHENTICATED, Details: []\")",
+     "content": "Agent execution terminated due to error. (\"agent executor error: Error 401, Message: fake UNAUTHENTICATED, Status: UNAUTHENTICATED, Details: []: Error 401, Message: fake UNAUTHENTICATED, Status: UNAUTHENTICATED, Details: []\")"
+    }
+   },
+   {
+    "at": 0.116,
+    "raise": "AntigravityConnectionError",
+    "message": "Agent execution terminated due to error. (\"agent executor error: Error 401, Message: fake UNAUTHENTICATED, Status: UNAUTHENTICATED, Details: []: Error 401, Message: fake UNAUTHENTICATED, Status: UNAUTHENTICATED, Details: []\")"
+   }
+  ]
+ },
+ "not_found_404": {
+  "source": "e09-404",
+  "events": [
+   {
+    "at": 0.113,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.119,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "http_code": 404,
+     "error": "Agent execution terminated due to error. (\"agent executor error: Error 404, Message: fake NOT_FOUND, Status: NOT_FOUND, Details: []: Error 404, Message: fake NOT_FOUND, Status: NOT_FOUND, Details: []\")",
+     "content": "Agent execution terminated due to error. (\"agent executor error: Error 404, Message: fake NOT_FOUND, Status: NOT_FOUND, Details: []: Error 404, Message: fake NOT_FOUND, Status: NOT_FOUND, Details: []\")"
+    }
+   },
+   {
+    "at": 0.12,
+    "raise": "AntigravityExecutionError",
+    "message": "Error 404, Message: fake NOT_FOUND, Status: NOT_FOUND, Details: []: Error 404, Message: fake NOT_FOUND, Status: NOT_FOUND, Details: []"
+   }
+  ]
+ },
+ "bad_request_400": {
+  "source": "e09-400",
+  "events": [
+   {
+    "at": 0.122,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.137,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "http_code": 400,
+     "error": "Agent execution terminated due to error. (\"agent executor error: Error 400, Message: fake INVALID_ARGUMENT, Status: INVALID_ARGUMENT, Details: []: Error 400, Message: fake INVALID_ARGUMENT, Status: INVALID_ARGUMENT, Details: []\")",
+     "content": "Agent execution terminated due to error. (\"agent executor error: Error 400, Message: fake INVALID_ARGUMENT, Status: INVALID_ARGUMENT, Details: []: Error 400, Message: fake INVALID_ARGUMENT, Status: INVALID_ARGUMENT, Details: []\")"
+    }
+   },
+   {
+    "at": 0.137,
+    "raise": "AntigravityConnectionError",
+    "message": "Agent execution terminated due to error. (\"agent executor error: Error 400, Message: fake INVALID_ARGUMENT, Status: INVALID_ARGUMENT, Details: []: Error 400, Message: fake INVALID_ARGUMENT, Status: INVALID_ARGUMENT, Details: []\")"
+   }
+  ]
+ },
+ "internal_500": {
+  "source": "e31-raw-500: a 500 is not retried by the harness",
+  "events": [
+   {
+    "at": 0.057,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.062,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "http_code": 500,
+     "error": "Agent execution terminated due to error. (\"agent executor error: Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []: Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []\")",
+     "content": "Agent execution terminated due to error. (\"agent executor error: Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []: Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []\")"
+    }
+   },
+   {
+    "at": 0.062,
+    "raise": "AntigravityExecutionError",
+    "message": "Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []: Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []"
+   }
+  ]
+ },
+ "busy_503_then_500": {
+  "source": "e08-5xx",
+  "events": [
+   {
+    "at": 0.106,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 4.116,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "http_code": 503,
+     "error": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 503, Message: fake UNAVAILABLE, Status: UNAVAILABLE, Details: []: Error 503, Message: fake UNAVAILABLE, Status: UNAVAILABLE, Details: []\")",
+     "content": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 503, Message: fake UNAVAILABLE, Status: UNAVAILABLE, Details: []: Error 503, Message: fake UNAVAILABLE, Status: UNAVAILABLE, Details: []\")"
+    }
+   },
+   {
+    "at": 4.129,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 2,
+     "target": "TARGET_USER",
+     "http_code": 500,
+     "error": "Agent execution terminated due to error. (\"agent executor error: Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []: Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []\")",
+     "content": "Agent execution terminated due to error. (\"agent executor error: Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []: Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []\")"
+    }
+   },
+   {
+    "at": 4.13,
+    "raise": "AntigravityExecutionError",
+    "message": "Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []: Error 500, Message: fake INTERNAL, Status: INTERNAL, Details: []"
+   }
+  ]
+ },
+ "network_refused": {
+  "source": "e12-conn-refused: HTTP code 2, retried by the harness",
+  "events": [
+   {
+    "at": 0.1,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 4.107,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "http_code": 2,
+     "error": "Encountered retryable error from model provider: There was a network issue connecting to the server, please try again. (\"doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: connection refused: doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: con",
+     "content": "Encountered retryable error from model provider: There was a network issue connecting to the server, please try again. (\"doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: connection refused: doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: con"
+    }
+   },
+   {
+    "at": 10.008,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 2,
+     "target": "TARGET_USER",
+     "http_code": 2,
+     "error": "Encountered retryable error from model provider: There was a network issue connecting to the server, please try again. (\"doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: connection refused: doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: con",
+     "content": "Encountered retryable error from model provider: There was a network issue connecting to the server, please try again. (\"doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: connection refused: doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: con"
+    }
+   },
+   {
+    "at": 23.618,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "http_code": 2,
+     "error": "Encountered retryable error from model provider: There was a network issue connecting to the server, please try again. (\"doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: connection refused: doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: con",
+     "content": "Encountered retryable error from model provider: There was a network issue connecting to the server, please try again. (\"doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: connection refused: doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: con"
+    }
+   },
+   {
+    "at": 48.971,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 4,
+     "target": "TARGET_USER",
+     "http_code": 2,
+     "error": "Encountered retryable error from model provider: There was a network issue connecting to the server, please try again. (\"doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: connection refused: doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: con",
+     "content": "Encountered retryable error from model provider: There was a network issue connecting to the server, please try again. (\"doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: connection refused: doRequest: error sending request: Post \\\"http://127.0.0.1:18099/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse\\\": dial tcp 127.0.0.1:18099: connect: con"
+    }
+   }
+  ]
+ },
+ "two_tools_then_text": {
+  "source": "e02-multicall",
+  "events": [
+   {
+    "at": 0.029,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.038,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e02-multicall-1-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.039,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e02-multicall-1-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.039,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e02-multicall-1-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.039,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 1,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e02-multicall-1-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.047,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 2,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e02-multicall-2-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.048,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 2,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e02-multicall-2-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.048,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 2,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e02-multicall-2-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.049,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 2,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e02-multicall-2-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.054,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "All ",
+     "content_delta": "All "
+    }
+   },
+   {
+    "at": 0.054,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "All done.",
+     "content_delta": "done."
+    }
+   },
+   {
+    "at": 0.055,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "All done."
+    }
+   },
+   {
+    "at": 0.055,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "All done."
+    }
+   }
+  ],
+  "usage": {
+   "prompt_token_count": 11000,
+   "cached_content_token_count": 8500,
+   "candidates_token_count": 60,
+   "thoughts_token_count": 6,
+   "total_token_count": 11066,
+   "service_tier": "standard"
+  }
+ },
+ "tool_then_held": {
+  "source": "e28-cancel-usage: a tool call, then a request that never answers; cancel() kept this usage",
+  "events": [
+   {
+    "at": 0.054,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.06,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e28-cancel-usage-1-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.06,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e28-cancel-usage-1-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.061,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e28-cancel-usage-1-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 0.061,
+    "step": {
+     "type": "TOOL_CALL",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 1,
+     "target": "TARGET_ENVIRONMENT",
+     "content": "Tool execution",
+     "tool_calls": [
+      {
+       "name": "view_file",
+       "args": {},
+       "id": "e28-cancel-usage-1-0"
+      }
+     ]
+    }
+   },
+   {
+    "at": 3.009,
+    "raise": "AntigravityCancelledError",
+    "message": "The request was cancelled by the client."
+   }
+  ],
+  "usage": {
+   "prompt_token_count": 10000,
+   "cached_content_token_count": 6000,
+   "candidates_token_count": 111,
+   "thoughts_token_count": 22,
+   "total_token_count": 10133,
+   "service_tier": "standard"
+  }
+ },
+ "text_then_bare_504_then_restart": {
+  "source": "c4-bare504-after-11: Google's bare in-stream 504 after 11 chunks; the harness continues and the model restarts",
+  "events": [
+   {
+    "at": 0.121,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.134,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer ",
+     "content_delta": "Partial answer "
+    }
+   },
+   {
+    "at": 0.337,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 ",
+     "content_delta": "part1 "
+    }
+   },
+   {
+    "at": 0.539,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 part2 ",
+     "content_delta": "part2 "
+    }
+   },
+   {
+    "at": 0.74,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 part2 part3 ",
+     "content_delta": "part3 "
+    }
+   },
+   {
+    "at": 0.941,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 part2 part3 part4 ",
+     "content_delta": "part4 "
+    }
+   },
+   {
+    "at": 1.144,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 part2 part3 part4 part5 ",
+     "content_delta": "part5 "
+    }
+   },
+   {
+    "at": 1.345,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 part2 part3 part4 part5 part6 ",
+     "content_delta": "part6 "
+    }
+   },
+   {
+    "at": 1.545,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 part2 part3 part4 part5 part6 part7 ",
+     "content_delta": "part7 "
+    }
+   },
+   {
+    "at": 1.746,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 part2 part3 part4 part5 part6 part7 part8 ",
+     "content_delta": "part8 "
+    }
+   },
+   {
+    "at": 1.947,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 part2 part3 part4 part5 part6 part7 part8 part9 ",
+     "content_delta": "part9 "
+    }
+   },
+   {
+    "at": 2.149,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 part2 part3 part4 part5 part6 part7 part8 part9 part10 ",
+     "content_delta": "part10 "
+    }
+   },
+   {
+    "at": 2.357,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer part1 part2 part3 part4 part5 part6 part7 part8 part9 part10 "
+    }
+   },
+   {
+    "at": 6.361,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 2,
+     "target": "TARGET_USER",
+     "http_code": 504,
+     "error": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 504, Message: Deadline expired before operation could complete., Status: DEADLINE_EXCEEDED, Details: []: Error 504, Message: Deadline expired before operation could complete., Status: DEADLINE_EXCEEDED, Details: []\")",
+     "content": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 504, Message: Deadline expired before operation could complete., Status: DEADLINE_EXCEEDED, Details: []: Error 504, Message: Deadline expired before operation could complete., Status: DEADLINE_EXCEEDED, Details: []\")"
+    }
+   },
+   {
+    "at": 6.366,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-",
+     "content_delta": "FINAL-"
+    }
+   },
+   {
+    "at": 6.366,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER",
+     "content_delta": "ANSWER"
+    }
+   },
+   {
+    "at": 6.367,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER"
+    }
+   },
+   {
+    "at": 6.367,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER"
+    }
+   }
+  ],
+  "usage": {
+   "prompt_token_count": 3000,
+   "cached_content_token_count": 500,
+   "candidates_token_count": 25,
+   "thoughts_token_count": 3,
+   "total_token_count": 3028,
+   "service_tier": "standard"
+  }
+ },
+ "text_then_tcp_close_then_restart": {
+  "source": "c5-tcpclose-after-1",
+  "events": [
+   {
+    "at": 0.133,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.142,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer ",
+     "content_delta": "Partial answer "
+    }
+   },
+   {
+    "at": 0.646,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "Partial answer "
+    }
+   },
+   {
+    "at": 4.65,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 2,
+     "target": "TARGET_USER",
+     "http_code": 2,
+     "error": "Encountered retryable error from model provider: There was a network issue connecting to the server, please try again. (\"unexpected EOF: unexpected EOF\")",
+     "content": "Encountered retryable error from model provider: There was a network issue connecting to the server, please try again. (\"unexpected EOF: unexpected EOF\")"
+    }
+   },
+   {
+    "at": 4.655,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-",
+     "content_delta": "FINAL-"
+    }
+   },
+   {
+    "at": 4.656,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER",
+     "content_delta": "ANSWER"
+    }
+   },
+   {
+    "at": 4.656,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER"
+    }
+   },
+   {
+    "at": 4.656,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER"
+    }
+   }
+  ],
+  "usage": {
+   "prompt_token_count": 3000,
+   "cached_content_token_count": 500,
+   "candidates_token_count": 25,
+   "thoughts_token_count": 3,
+   "total_token_count": 3028,
+   "service_tier": "standard"
+  }
+ },
+ "thought_then_bare_429": {
+  "source": "v3-thought-then-bare429",
+  "events": [
+   {
+    "at": 0.134,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.147,
+    "step": {
+     "type": "THINKING",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER"
+    }
+   },
+   {
+    "at": 0.652,
+    "step": {
+     "type": "THINKING",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 1,
+     "target": "TARGET_USER"
+    }
+   },
+   {
+    "at": 4.656,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 2,
+     "target": "TARGET_USER",
+     "http_code": 429,
+     "error": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")",
+     "content": "Encountered retryable error from model provider: Agent execution terminated due to error. (\"Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []: Error 429, Message: Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details., Status: RESOURCE_EXHAUSTED, Details: []\")"
+    }
+   },
+   {
+    "at": 4.659,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-",
+     "content_delta": "FINAL-"
+    }
+   },
+   {
+    "at": 4.659,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER",
+     "content_delta": "ANSWER"
+    }
+   },
+   {
+    "at": 4.659,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER"
+    }
+   },
+   {
+    "at": 4.66,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER"
+    }
+   }
+  ],
+  "usage": {
+   "prompt_token_count": 3000,
+   "cached_content_token_count": 500,
+   "candidates_token_count": 25,
+   "thoughts_token_count": 3,
+   "total_token_count": 3028,
+   "service_tier": "standard"
+  }
+ },
+ "empty_output_loop": {
+  "source": "v6-empty-stop-always: 212 billed empty answers in 10 s, each 10000/6000/111/22 tokens",
+  "events": [
+   {
+    "at": 0.127,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.141,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.147,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 2,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.153,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 3,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.16,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 4,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.167,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 5,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.177,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 6,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.185,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 7,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.194,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 8,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.201,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 9,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.21,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 10,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.221,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 11,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   }
+  ],
+  "usage_per_call": {
+   "prompt_token_count": 10000,
+   "cached_content_token_count": 6000,
+   "candidates_token_count": 111,
+   "thoughts_token_count": 22,
+   "total_token_count": 10133,
+   "service_tier": "standard"
+  }
+ },
+ "empty_output_budget_end": {
+  "source": "empty-typist probe: three empty STOP answers 8 ms apart under the typist's FINISH-only session with max_model_calls 3 and no API retries; the harness emits an error step for the first two only, then halts the turn on its model-call budget: no SDK error, stop_reason MAX_MODEL_CALLS_EXCEEDED, the three calls billed",
+  "events": [
+   {
+    "at": 0.0,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Write src/widget.ts."
+    }
+   },
+   {
+    "at": 0.009,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.017,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "SYSTEM",
+     "status": "ERROR",
+     "step_index": 2,
+     "target": "TARGET_USER",
+     "error": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")",
+     "content": "Model produced invalid output. (\"model output error: model output must contain either output text or tool calls, these cannot both be empty, please try again\")"
+    }
+   },
+   {
+    "at": 0.018,
+    "end": true,
+    "stop_reason": "MAX_MODEL_CALLS_EXCEEDED"
+   }
+  ],
+  "usage_per_call": {
+   "prompt_token_count": 10000,
+   "cached_content_token_count": 6000,
+   "candidates_token_count": 111,
+   "thoughts_token_count": 22,
+   "total_token_count": 10133,
+   "service_tier": "standard"
+  },
+  "calls": 3
+ },
+ "text_answer": {
+  "source": "c0-ok-steps",
+  "events": [
+   {
+    "at": 0.131,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "USER",
+     "status": "DONE",
+     "step_index": 0,
+     "content": "Reply with the single word: done."
+    }
+   },
+   {
+    "at": 0.146,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "FINAL-",
+     "content_delta": "FINAL-"
+    }
+   },
+   {
+    "at": 0.147,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER",
+     "content_delta": "ANSWER"
+    }
+   },
+   {
+    "at": 0.148,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "ACTIVE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER"
+    }
+   },
+   {
+    "at": 0.149,
+    "step": {
+     "type": "TEXT_RESPONSE",
+     "source": "MODEL",
+     "status": "DONE",
+     "step_index": 1,
+     "target": "TARGET_USER",
+     "content": "FINAL-ANSWER"
+    }
+   }
+  ],
+  "usage": {
+   "prompt_token_count": 10000,
+   "cached_content_token_count": 6000,
+   "candidates_token_count": 111,
+   "thoughts_token_count": 22,
+   "total_token_count": 10133,
+   "service_tier": "standard"
+  }
+ }
+}

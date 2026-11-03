@@ -230,6 +230,8 @@ export interface DelegationRecordInput {
   /** Filenames, not paths — the record sits in the same directory as both. */
   briefFile: string;
   usageFile: string;
+  /** The call's Gemini record (types.ts GeminiCallRecord): each try's location, codes, tokens and dollars. */
+  gemini?: unknown;
 }
 
 /**
@@ -279,5 +281,6 @@ export function buildDelegationRecord(i: DelegationRecordInput): Record<string, 
       unreadable: i.diff.unreadable,
     },
     artifacts: { brief: i.briefFile, usage: i.usageFile },
+    ...(i.gemini ? { gemini: i.gemini } : {}),
   };
 }

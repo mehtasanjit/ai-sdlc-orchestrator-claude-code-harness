@@ -2,7 +2,7 @@
 # The mechanical tier has two doors to the same model, chosen per run via the
 # `select:` block below: `flash-completion` (one call per packet) or
 # `flash-agsdk-worker` (an Antigravity SDK agent session). Default is completion.
-version: 1
+version: 2
 name: opus-plus-flash
 
 # Pricing blocks mirror the dated price list (plugin/mcp/model-dispatch/src/prices.ts),
@@ -52,6 +52,7 @@ models:
     # no `auth:` block.
     # 9-minute deadline, then the worker's process group is killed.
     worker_timeout_sec: 540
+    failover_locations: [us, eu]  # a refused or held call carries on at us, then eu, billed +10% there
     # No max_output_tokens_absolute: the doubling loop only makes sense when WE
     # chose the ceiling. An agent session sets its own per-turn limits.
 

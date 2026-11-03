@@ -13,9 +13,10 @@ yarn-error.log*
 plugin/mcp/model-dispatch/dist/
 
 # Antigravity agent worker's Python environment. Built on demand by
-# verify-setup.mjs --enable-agent; machine-specific (a virtualenv hardcodes the
-# interpreter's absolute path), so a committed one would be broken elsewhere.
-# Its source and requirements.txt ARE tracked.
+# verify-setup.mjs (--fix or --enable-agent) from the hash-locked requirements.txt
+# for an install whose selection or policy uses the agent; machine-specific (a
+# virtualenv hardcodes the interpreter's absolute path), so a committed one would
+# be broken elsewhere. Its source and requirements.txt ARE tracked.
 plugin/mcp/model-dispatch/worker/.venv/
 __pycache__/
 

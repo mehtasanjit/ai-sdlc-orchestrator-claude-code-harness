@@ -34,12 +34,13 @@ import { claudeCommand } from "../claudeCommand.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AttemptRecord, ModelConfig, TaskPacket } from "../types.js";
+import type { AttemptRecord, GeminiCallRecord, ModelConfig, TaskPacket, UnpricedModel } from "../types.js";
 import { GeminiFlashAdapter } from "../adapters/GeminiFlashAdapter.js";
 import { AntigravityWorkerAdapter } from "../adapters/AntigravityWorkerAdapter.js";
 import { priceClaudeCliResult } from "../adapters/claudeCliLedger.js";
-import { computeCostUsd } from "../pricing.js";
-import { mapSidecarTokens } from "../delegation/workerProcess.js";
+import { sidecarUsageSemantics } from "../delegation/workerProcess.js";
+import { BUSY_BUDGET_SEC, HEARTBEAT_SEC, STALL_TRIES, STOPPED_BY_REQUEST, callWaitBoundSec, stallSecFor, watchWorker, withoutHeartbeats, type BackstopOptions, type Heartbeat } from "./stall.js";
+import { log } from "../log.js";
 // The Python workers' folder, from the package root: in the single-file bundle this module is not two folders
 // below it (paths.ts).
 import { WORKER_DIR } from "../paths.js";
@@ -83,6 +84,15 @@ export interface TypistResult {
   retry_after_ms?: number;
   /** The vendor's HTTP status for a refused call, when it reported one (the executor stops a stage on 401/403). */
   error_status?: number;
+  /**
+   * The agent door: Google could not serve the call (its worker spent the call's own budget against refusals or
+   * stalls). The executor asks the run's busy ledger whether that stops the run or is a wait; it is never an attempt.
+   */
+  unavailable?: string;
+  /** The agent door: the call's Gemini record (where each try ran, its codes, tokens and dollars). */
+  gemini?: GeminiCallRecord;
+  /** Models whose tokens were billed but have no price (a try served at a tier the list does not price). */
+  unpriced_models?: UnpricedModel[];
   tokens: TypistTokens;
   cost_usd: number;
   price_basis?: string;
@@ -102,8 +112,9 @@ export interface TypeRequest {
   contract: Contract;
   passId: string;
   /**
-   * Stops the call when it fires (zero-touch hand-offs: the person pressed Stop): a typist that runs a program kills
-   * its process group. Optional, and never set by the executor, so a workflow's typing is not affected.
+   * Stops the call when it fires (the person pressed Stop): a typist that runs a program kills its process group, so a
+   * stopped run stops billing. Set by the hand-off tools and by a brownfield run's apply loop (the request's own
+   * signal); the stage runner sets none.
    */
   signal?: AbortSignal;
 }
@@ -344,18 +355,27 @@ function removeScratch(dir: string): void {
   try { rmSync(dir, { recursive: true, force: true }); } catch { /* left for the system's temp cleanup */ }
 }
 
-/** Runs a child in its own process group and kills the whole group on timeout, so nothing is left billing. */
-function runChild(cmd: string, args: string[], opts: { env: Record<string, string>; cwd: string; input: string; timeoutMs: number; signal?: AbortSignal }): Promise<{ code: number | null; out: string; err: string; timedOut: boolean }> {
+/**
+ * Runs a child in its own process group, so nothing is left billing: on a fixed timer the whole group is killed at
+ * `timeoutMs`; in heartbeat mode (the agent typist's worker) there is no timer, and the kill rule that reads the
+ * worker's heartbeat stops the group instead (executor/stall.ts watchWorker), SIGTERM first so the worker writes its
+ * receipt. Lean Opus keeps the fixed timer.
+ */
+function runChild(cmd: string, args: string[], opts: { env: Record<string, string>; cwd: string; input: string; timeoutMs: number; signal?: AbortSignal; heartbeat?: { workLimitS: number; waitBoundS: number; backstop?: BackstopOptions } }): Promise<{ code: number | null; out: string; err: string; timedOut: boolean; killed?: string | null; lastBeat?: Heartbeat | null }> {
   return new Promise((done) => {
     const child = spawn(cmd, args, { env: opts.env, cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
     let out = "", err = "", timedOut = false;
     const kill = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ } };
-    const timer = setTimeout(() => {
+    const watch = opts.heartbeat ? watchWorker(child, opts.heartbeat) : null;
+    const timer = watch ? null : setTimeout(() => {
       timedOut = true;
       kill();
     }, opts.timeoutMs);
     // A stop asked for while the program runs (TypeRequest.signal) ends its whole process group at once.
-    const onAbort = () => { err += "stopped: the call was cancelled"; kill(); };
+    const onAbort = () => {
+      err += STOPPED_BY_REQUEST;
+      if (watch) watch.stop(STOPPED_BY_REQUEST); else kill();
+    };
     if (opts.signal?.aborted) onAbort(); else opts.signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
@@ -365,7 +385,12 @@ function runChild(cmd: string, args: string[], opts: { env: Record<string, strin
     // listener that error would take the whole MCP server down. It is part of
     // this child's failure, which the caller reports as a failed attempt.
     child.stdin.on("error", (e) => { err += String(e); });
-    child.on("close", (code) => { clearTimeout(timer); opts.signal?.removeEventListener("abort", onAbort); done({ code, out, err, timedOut }); });
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      watch?.closed();
+      opts.signal?.removeEventListener("abort", onAbort);
+      done({ code, out, err, timedOut, ...(watch ? { killed: watch.reason, lastBeat: watch.lastBeat } : {}) });
+    });
     child.stdin.end(opts.input);
   });
 }
@@ -462,11 +487,48 @@ export const TYPIST_WORKER = join(WORKER_DIR, "typist_worker.py");
  * rate limits handed to the SDK's own API retry (its errors carry no HTTP
  * status, so the executor cannot wait them out itself; left unset, the SDK
  * applies unstated defaults and a rate limit can surface as a failed attempt).
+ * The call supervisor's settings (worker/agy_supervisor.py) are rendered when
+ * given: the locations in order, the stall limit and tries, the busy budget and
+ * the heartbeat interval.
  */
-export function agyWorkerArgs(i: { briefFile: string; sharedFile: string; schemaFile: string; model: string; region: string; workdir: string; receiptFile: string; thinking: string; maxModelCalls: number; timeoutSec: number; apiRetries: number; apiRetryInitialMs: number }): string[] {
+export function agyWorkerArgs(i: { briefFile: string; sharedFile: string; schemaFile: string; model: string; region: string; workdir: string; receiptFile: string; thinking: string; maxModelCalls: number; timeoutSec: number; apiRetries: number; apiRetryInitialMs: number; locations?: string[]; stallSec?: number; stallTries?: number; busyBudgetSec?: number; heartbeatSec?: number }): string[] {
   return [TYPIST_WORKER, "--brief-file", i.briefFile, "--system-file", i.sharedFile, "--answer-schema-file", i.schemaFile, "--model", i.model, "--region", i.region,
     "--workdir", i.workdir, "--out", i.receiptFile, "--thinking", i.thinking.toUpperCase(), "--max-model-calls", String(i.maxModelCalls), "--timeout", String(i.timeoutSec),
-    "--api-retries", String(i.apiRetries), "--api-retry-initial-ms", String(i.apiRetryInitialMs)];
+    "--api-retries", String(i.apiRetries), "--api-retry-initial-ms", String(i.apiRetryInitialMs),
+    ...(i.locations?.length ? ["--locations", i.locations.join(",")] : []),
+    ...(i.stallSec !== undefined ? ["--stall-sec", String(i.stallSec)] : []),
+    ...(i.stallTries !== undefined ? ["--stall-tries", String(i.stallTries)] : []),
+    ...(i.busyBudgetSec !== undefined ? ["--busy-budget-sec", String(i.busyBudgetSec)] : []),
+    ...(i.heartbeatSec !== undefined ? ["--heartbeat-sec", String(i.heartbeatSec)] : [])];
+}
+
+export interface AgyTypistOptions {
+  effort: string;
+  maxModelCalls: number;
+  /** The worker's limit on the session's own work. */
+  timeoutSec: number;
+  apiRetries: number;
+  apiRetryInitialMs: number;
+  /** The call's locations, the leaf's own first; default: the leaf's own, then its failover_locations. */
+  locations?: string[];
+  /** Default: the leaf's stall_sec, else its model's (executor/stall.ts). */
+  stallSec?: number;
+  /** Default: STALL_TRIES. */
+  stallTries?: number;
+  /** How long a call may keep meeting refusals across its tries. Default: BUSY_BUDGET_SEC. */
+  busyBudgetSec?: number;
+  /** The kill rule's thresholds, shortened only by tests. */
+  backstop?: BackstopOptions;
+}
+
+/**
+ * A worker's stderr for an error text: its last line first (a traceback's exception, or the worker's own "failed:"
+ * line), then the lines before it. A batch's events keep an error's first line only.
+ */
+function lastLineFirst(stderr: string): string {
+  const lines = stderr.trim().split("\n").filter((l) => l.trim());
+  const last = lines.pop() ?? "";
+  return lines.length ? `${last}\n${lines.join("\n").slice(-300)}` : last;
 }
 
 export class AgyTypist implements Typist {
@@ -474,7 +536,8 @@ export class AgyTypist implements Typist {
   readonly modelId: string;
   readonly modelName: string;
   private readonly agent: AntigravityWorkerAdapter;
-  constructor(private readonly leaf: ModelConfig, private readonly opts: { effort: string; maxModelCalls: number; timeoutSec: number; apiRetries: number; apiRetryInitialMs: number }) {
+  private warnedUnverified = false;
+  constructor(private readonly leaf: ModelConfig, readonly opts: AgyTypistOptions) {
     this.modelId = leaf.id;
     this.modelName = leaf.model_name;
     // The product's agent-door adapter resolves the Vertex project, the region,
@@ -484,7 +547,8 @@ export class AgyTypist implements Typist {
   }
   async type(req: TypeRequest): Promise<TypistResult> {
     // The scratch folder holds the brief, the answer schema, the receipt and the SDK's own files; the
-    // receipt is read into the result, so nothing in the folder is needed once the call returns.
+    // receipt is read into the result (its facts are in the result's gemini record), so nothing in the folder is
+    // needed once the call returns.
     const scratch = mkdtempSync(join(tmpdir(), "mmo-agy-typist-"));
     try {
       return await this.typeIn(scratch, req);
@@ -497,34 +561,66 @@ export class AgyTypist implements Typist {
     const briefFile = join(scratch, "brief.md"), receiptFile = join(scratch, "receipt.json"), schemaFile = join(scratch, "answer-schema.json");
     writeFileSync(briefFile, req.framed);
     writeFileSync(schemaFile, JSON.stringify(req.packet.outputSchema));
-    const args = agyWorkerArgs({ briefFile, sharedFile: req.sharedFile, schemaFile, model: this.leaf.model_name, region: this.agent.location, workdir: scratch, receiptFile, thinking: this.opts.effort, maxModelCalls: this.opts.maxModelCalls, timeoutSec: this.opts.timeoutSec, apiRetries: this.opts.apiRetries, apiRetryInitialMs: this.opts.apiRetryInitialMs });
-    // The worker enforces its own time limit and still writes its receipt; the
-    // extra 30 s is the process-group kill for a worker that hangs past it.
-    const r = await runChild(this.agent.python, args, { env: agyEnv(process.env, this.agent.project, this.agent.location), cwd: scratch, input: "", timeoutMs: (this.opts.timeoutSec + 30) * 1000, signal: req.signal });
+    const stallSec = this.opts.stallSec ?? stallSecFor(this.leaf);
+    const stallTries = this.opts.stallTries ?? STALL_TRIES;
+    const busyBudgetSec = this.opts.busyBudgetSec ?? BUSY_BUDGET_SEC;
+    const args = agyWorkerArgs({
+      briefFile, sharedFile: req.sharedFile, schemaFile, model: this.leaf.model_name, region: this.agent.location, workdir: scratch, receiptFile,
+      thinking: this.opts.effort, maxModelCalls: this.opts.maxModelCalls, timeoutSec: this.opts.timeoutSec, apiRetries: this.opts.apiRetries,
+      apiRetryInitialMs: this.opts.apiRetryInitialMs, locations: this.opts.locations ?? this.agent.locations, stallSec, stallTries,
+      busyBudgetSec, heartbeatSec: HEARTBEAT_SEC,
+    });
+    // No timer: the worker keeps its own limits and the kill rule reads its heartbeat (executor/stall.ts), with the
+    // bound of the very settings the worker was given (its stall tries, its harness retry rule, its busy budget).
+    const waitBoundS = callWaitBoundSec(stallSec, { tries: stallTries, retry: { retries: this.opts.apiRetries, initialMs: this.opts.apiRetryInitialMs }, busyBudgetSec });
+    const r = await runChild(this.agent.python, args, {
+      env: agyEnv(process.env, this.agent.project, this.agent.location), cwd: scratch, input: "", timeoutMs: 0, signal: req.signal,
+      heartbeat: { workLimitS: this.opts.timeoutSec, waitBoundS, backstop: this.opts.backstop },
+    });
     const latency = Date.now() - started;
+    const stopped = AntigravityWorkerAdapter.stoppedBy(r.killed ?? null);
+    if (r.killed && stopped === "killed") log("warn", "agsdk.backstop_kill", { model_id: this.modelId, reason: r.killed });
+    const stderr = withoutHeartbeats(r.err);
     if (!existsSync(receiptFile)) {
-      const why = r.timedOut ? `the agent typist did not finish within ${this.opts.timeoutSec + 30} s (killed; its usage is unknown)` : `the agent typist wrote no receipt (usage unknown): ${r.err.slice(-300)}`;
-      return { answer: null, error: why, transport: false, tokens: ZERO, cost_usd: 0, latency_ms: latency };
+      // No receipt: the worker was stopped, or crashed, before it wrote one. Its last heartbeat says what it had spent.
+      const beat = r.lastBeat ?? null;
+      const bill = beat ? this.agent.billHeartbeat(beat, { started: new Date(started), stopped }) : null;
+      const spent = beat ? "its tokens are those of its last heartbeat" : "its usage is unknown";
+      const why = r.killed
+        ? `the agent typist was stopped (${r.killed}); ${spent}`
+        : `the agent typist wrote no receipt (${spent}): ${lastLineFirst(stderr)}`;
+      return { answer: null, error: why.slice(0, 300), transport: false, tokens: bill?.tokens ?? ZERO, cost_usd: bill?.cost_usd ?? 0, latency_ms: latency, ...(bill ? { gemini: bill.gemini } : {}) };
     }
     let receipt: any;
     try { receipt = JSON.parse(readFileSync(receiptFile, "utf8")); } catch (e: any) {
       // A receipt cut short (a worker killed mid-write) is a failed attempt whose usage is unknown, never a thrown error.
       return { answer: null, error: `the agent typist left an unreadable receipt (usage unknown): ${e?.message ?? e}`.slice(0, 300), transport: false, tokens: ZERO, cost_usd: 0, latency_ms: latency };
     }
-    // The worker records the session's cumulative usage even when the session
-    // failed or timed out, so a failed call is billed for what it spent.
-    const tokens = receipt.usage ? mapSidecarTokens({ sdk_version: receipt.sdk_version, usage: receipt.usage }) : ZERO;
+    if (!this.warnedUnverified && receipt.usage && sidecarUsageSemantics(receipt) === "unverified") {
+      // Billed on the larger reading, never under-reported: said once per typist, so the version gets checked.
+      this.warnedUnverified = true;
+      log("warn", "agsdk.usage_semantics_unverified", { model_id: this.modelId, sdk_version: receipt.sdk_version ?? null, billed_as: "disjoint (fresh = prompt_token_count, cached on top)" });
+    }
     const price = this.agent.pricingOn(new Date(started));
-    const cost = price.unpriced ? 0 : computeCostUsd(tokens, price.billed);
     const basis = price.unpriced ? undefined : price.basis;
+    const answer = receipt.error && !receipt.finish_output ? null : parseAnswer(receipt.finish_output, req.contract);
+    // The worker records the usage of every try even when the call failed, was cut or ran out of time, so a failed
+    // call is billed for what it spent, each try at its own location and day.
+    const bill = this.agent.bill(receipt, { started: new Date(started), answered: answer !== null, stopped });
+    // A receipt in the earlier shape with no usage at all bills nothing, as before.
+    const tokens = !Array.isArray(receipt.tries) && !receipt.usage ? ZERO : bill.tokens;
+    const record = {
+      gemini: bill.gemini,
+      ...(bill.unpriced_models.length ? { unpriced_models: bill.unpriced_models } : {}),
+      ...(typeof receipt.unavailable === "string" && receipt.unavailable ? { unavailable: receipt.unavailable as string } : {}),
+    };
     if (receipt.error && !receipt.finish_output) {
       const text = String(receipt.error);
-      // The vendor's HTTP status, as the worker read it from the SDK's error (typist_worker.py _http_status); only a
-      // whole number is one.
+      // The vendor's HTTP status, as the worker read it from the SDK's error steps (or its APIError); only a whole
+      // number is one.
       const status = Number.isInteger(receipt.error_status) ? { error_status: receipt.error_status as number } : {};
-      return { answer: null, error: text.slice(0, 300), transport: agyOutcome(receipt).transport, ...status, tokens, cost_usd: cost, price_basis: basis, latency_ms: latency };
+      return { answer: null, error: text.slice(0, 300), transport: agyOutcome(receipt).transport, ...status, tokens, cost_usd: bill.cost_usd, price_basis: basis, latency_ms: latency, ...record };
     }
-    const answer = parseAnswer(receipt.finish_output, req.contract);
-    return { answer, error: answer ? undefined : `the agent did not finish with one object in the ${contractShape(req.contract)} contract`, transport: false, tokens, cost_usd: cost, price_basis: basis, latency_ms: latency };
+    return { answer, error: answer ? undefined : `the agent did not finish with one object in the ${contractShape(req.contract)} contract`, transport: false, tokens, cost_usd: bill.cost_usd, price_basis: basis, latency_ms: latency, ...record };
   }
 }

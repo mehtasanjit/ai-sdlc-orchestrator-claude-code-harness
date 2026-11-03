@@ -113,6 +113,8 @@ export interface GeminiTransport {
   readonly backend: GeminiBackend;
   /** "global" or a region name; empty on the AI Studio path. Cost depends on it. */
   readonly location: string;
+  /** The Vertex project the calls bill, when one resolved; none on the AI Studio path. */
+  readonly project?: string;
   /** Create an explicit context cache; undefined → adapter inlines the header. */
   createCache(
     modelName: string,
@@ -229,7 +231,7 @@ export class ApiKeyTransport extends GenAiTransport {
 export class VertexAdcTransport extends GenAiTransport {
   readonly backend: GeminiBackend = "vertex-adc";
   readonly location: string;
-  private readonly project?: string;
+  readonly project?: string;
 
   constructor(env: Record<string, string | undefined> = process.env) {
     const project = resolveGcpProject(env);

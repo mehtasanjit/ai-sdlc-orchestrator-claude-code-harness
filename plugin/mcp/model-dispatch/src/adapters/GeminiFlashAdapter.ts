@@ -8,6 +8,7 @@
 import type {
   AttemptRecord,
   ExecutionResult,
+  GeminiEndpointRecord,
   ModelConfig,
   ModelPricing,
   TaskPacket,
@@ -92,6 +93,16 @@ export class GeminiFlashAdapter implements ModelAdapter {
     return price.unpriced ? undefined : price.billed;
   }
 
+  /** Which backend, project and location an attempt went to, and the tier Google served it at (its trafficType). */
+  private endpointRecord(trafficType?: unknown): GeminiEndpointRecord {
+    return {
+      backend: this.transport.backend,
+      project: this.transport.project ?? null,
+      location: this.transport.location || null,
+      served_tier: servedTier(trafficType),
+    };
+  }
+
   /**
    * Place `header` first in every prompt this adapter sends, inline, without
    * creating an explicit context cache. The executor uses it for the run's
@@ -159,6 +170,7 @@ export class GeminiFlashAdapter implements ModelAdapter {
         latency_ms: 0,
         success: false,
         error: unpricedRefusal(this.modelConfig, dispatchDate, price.reason),
+        gemini: this.endpointRecord(),
       });
       return this.finalizeResult(attempts, null, false, "vendor_error");
     }
@@ -219,6 +231,7 @@ export class GeminiFlashAdapter implements ModelAdapter {
           error: err?.message ?? String(err),
           ...failure,
           price_basis: price.basis,
+          gemini: this.endpointRecord(),
         });
         return this.finalizeResult(attempts, null, cacheHit, "vendor_error");
       }
@@ -259,6 +272,7 @@ export class GeminiFlashAdapter implements ModelAdapter {
         latency_ms: Date.now() - attemptStart,
         success: !hitOutputCap,
         price_basis: price.basis,
+        gemini: this.endpointRecord((usage as Record<string, unknown>).trafficType),
       });
 
       if (!hitOutputCap) {
@@ -322,6 +336,20 @@ export class GeminiFlashAdapter implements ModelAdapter {
       attempts,
       terminal_reason: terminalReason,
     };
+  }
+}
+
+/**
+ * The tier a response's `usageMetadata.trafficType` says Google served it at, in the Antigravity SDK's words: on-demand
+ * is the standard tier. Null when the response does not say.
+ */
+export function servedTier(trafficType: unknown): string | null {
+  switch (trafficType) {
+    case "ON_DEMAND": return "standard";
+    case "ON_DEMAND_PRIORITY": return "priority";
+    case "ON_DEMAND_FLEX": return "flex";
+    case "PROVISIONED_THROUGHPUT": return "provisioned_throughput";
+    default: return typeof trafficType === "string" && trafficType && trafficType !== "TRAFFIC_TYPE_UNSPECIFIED" ? trafficType.toLowerCase() : null;
   }
 }
 

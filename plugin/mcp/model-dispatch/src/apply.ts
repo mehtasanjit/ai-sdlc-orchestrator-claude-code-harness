@@ -26,6 +26,7 @@ import { contractShape, isTransient, parseAnswer } from "./executor/typists.js";
 import { checkAnswer } from "./executor/checks.js";
 import { isSafeRelativePath } from "./spec/store.js";
 import { commandEnv } from "./executor/acceptance.js";
+import { BusyLedger } from "./busyLedger.js";
 
 /** `{path, content}` — what every apply packet returns; substituted when the packet omits outputSchema. */
 export const FILE_OUTPUT_SCHEMA = {
@@ -1395,7 +1396,10 @@ export interface ApplyOutcome {
   escalate?: { retry_count: number; model_id: string; failure: string };
   /** Set on "refused": why the packet was refused before or instead of a write. Not retried — a planner bug, or the person's decision. */
   refusal?: string;
-  /** Set when the vendor refused the call's credentials (401, 403): every packet would fail the same way, so the batch stops. */
+  /**
+   * Set when the batch stops here: the vendor refused the call's credentials (401, 403), so every packet would fail the
+   * same way; or Google could not serve the model for the run's busy ledger's whole window (busyLedger.ts).
+   */
   halt?: string;
   /** Typed checks the file failed before the change (baselineChecks): set aside, never judging this packet. */
   set_aside?: { id?: string; run: string; output?: string }[];
@@ -1421,7 +1425,7 @@ export interface DispatchResult {
     cost_usd: number;
     terminal_reason?: string;
     /** The vendor's own account of the last call (types.ts AttemptRecord): a failure is classified from these, never from words. */
-    attempts?: Array<{ error_status?: number; error_code?: string; retry_after_ms?: number; transient?: boolean }>;
+    attempts?: Array<{ error_status?: number; error_code?: string; retry_after_ms?: number; transient?: boolean; unavailable?: string }>;
   };
   events: TelemetryEvent[];
 }
@@ -1468,6 +1472,14 @@ export interface ApplyLoopDeps {
   transport?: { maxWaits: number; baseMs: number; capMs: number };
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /**
+   * The run's busy ledger (busyLedger.ts). A call that comes back `unavailable` (Google could not serve it within the
+   * call's own budget) is a wait, sent again unchanged, until the ledger says nothing of its model was served in the
+   * run for the whole window; then the batch stops with Google's reason. Absent: a ledger of this packet's own calls.
+   */
+  ledger?: BusyLedger;
+  /** The model a routing decision names (the ledger's key: the model name); absent, the decision's leaf id. */
+  modelOf?: (decision: RouteDecision) => string;
 }
 
 /** HTTP statuses that mean the credentials or permission are wrong, not that the vendor is busy (RFC 9110). */
@@ -1516,10 +1528,16 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
   const transport = deps.transport ?? TRANSPORT;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const random = deps.random ?? Math.random;
+  const ledger = deps.ledger ?? new BusyLedger();
+  const modelOf = deps.modelOf ?? ((d: RouteDecision) => d.modelId);
   // Busy-vendor waits: `waits` for the attempt in hand (greenfield counts them per call, from 0), `transportWaits` for
-  // the packet, for the receipt.
+  // the packet, for the receipt. `unavailableWaits`: calls Google could not serve that were sent again (bounded by the
+  // ledger's window, not by a count). `unservedSince`: when this packet's first unavailable call since its last served
+  // one was sent, on the ledger's clock; past the window the packet ends (BusyLedger.unservedFor).
   let waits = 0;
   let transportWaits = 0;
+  let unavailableWaits = 0;
+  let unservedSince: number | null = null;
   const attempts: ApplyAttemptSummary[] = [];
   const allEvents: TelemetryEvent[] = [];
   const tokens = { input: 0, input_cached: 0, output: 0 };
@@ -1676,6 +1694,7 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
         });
       }
       let one: DispatchResult;
+      const sentAt = ledger.time();
       try {
         one = await dispatch(current, step.forced ? decision : undefined);
       } catch (e) {
@@ -1703,8 +1722,16 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
         cost_usd: one.result.cost_usd,
       };
 
+      const lastAttempt = one.result.attempts?.[one.result.attempts.length - 1];
+      // Google served the call (it answered, whatever the answer's verdict): the model's window in the ledger restarts,
+      // and so does this packet's own.
+      if (!lastAttempt?.unavailable && (one.result.success || one.result.tokens.output > 0)) {
+        ledger.served(modelOf(one.decision));
+        unservedSince = null;
+      }
+
       if (!one.result.success) {
-        const last = one.result.attempts?.[one.result.attempts.length - 1];
+        const last = lastAttempt;
         let reason = one.result.error ?? "the typist returned no answer";
         // Credentials the vendor refuses fail every packet the same way: the batch stops here, as greenfield's executor
         // stops its stage, instead of handing each file to another model.
@@ -1713,6 +1740,55 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
           summary.failure = reason;
           attempts.push(summary);
           return finish("dispatch_failed", { halt: `the ${one.decision.modelId} call was refused with HTTP ${last.error_status} (its login or permission is broken); the batch stopped here` });
+        }
+        // Google could not serve the call within its own budget. Not an attempt, and never handed to another model: a
+        // wait, sent again unchanged, until the run's ledger says Google served nothing of the model for the whole
+        // window; then the batch stops with Google's reason (the packets not started settle `stopped`). A packet whose
+        // own calls went unserved for that window while the model's other calls were served ends here on its own, a
+        // failed dispatch with Google's reason, and the batch goes on.
+        if (last?.unavailable) {
+          const model = modelOf(one.decision);
+          unservedSince ??= sentAt;
+          const halt = ledger.unavailable(model, last.unavailable, sentAt);
+          if (halt) {
+            settle(false, reason, attemptReason);
+            summary.failure = reason;
+            attempts.push(summary);
+            log("warn", "apply.unavailable_halt", { packet_id: current.id, model_id: one.decision.modelId });
+            return finish("dispatch_failed", { halt: `${halt}; the batch stopped here. Re-run the batch when Google serves again: applied files are kept and skipped` });
+          }
+          // This packet's own end, past its window: its last call is its failure (the batch's reason for it).
+          const unserved = () => {
+            const why = ledger.unservedFor(model, unservedSince, last.unavailable!, "packet");
+            return why ? `Google could not serve ${model} for this packet: ${why}` : null;
+          };
+          const endUnserved = (why: string) => {
+            summary.failure = why;
+            attempts.push(summary);
+            log("warn", "apply.unavailable_unserved", { packet_id: current.id, model_id: one.decision.modelId });
+            return finish("dispatch_failed");
+          };
+          const own = unserved();
+          if (own) {
+            settle(false, own, attemptReason);
+            return endUnserved(own);
+          }
+          settle(false, reason, "transport");
+          log("info", "apply.unavailable_wait", { packet_id: current.id, model_id: one.decision.modelId, wait: unavailableWaits + 1 });
+          await sleep(backoffMs(unavailableWaits, transport.baseMs, transport.capMs, random));
+          unavailableWaits++;
+          transportWaits++;
+          // Sent again only while the model's window is open: it may have closed during the wait (no call of the
+          // model served since, this packet's or another's), and then the batch stops here without another call.
+          const closed = ledger.closed(model);
+          if (closed) {
+            log("warn", "apply.unavailable_halt", { packet_id: current.id, model_id: one.decision.modelId });
+            return finish("dispatch_failed", { halt: `${closed}; the batch stopped here. Re-run the batch when Google serves again: applied files are kept and skipped` });
+          }
+          // Nor past this packet's own window, which may also have passed during the wait.
+          const ownAfter = unserved();
+          if (ownAfter) return endUnserved(ownAfter);
+          continue;
         }
         // Cut off at the model's own output limit (the packet starts there: applyBudget). Greenfield's rule
         // (executor/run.ts): the same model cannot return the whole answer at the same limit, so its later attempts are

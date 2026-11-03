@@ -8,7 +8,7 @@
 # `execute_with_model` calls this policy governs actually route to Flash.
 # The manifest.model_breakdown will still show a Claude row for the
 # orchestrator's session turns; that is expected and correct.
-version: 1
+version: 2
 name: flash-agsdk-only-v38
 
 # Pricing blocks mirror the dated price list (plugin/mcp/model-dispatch/src/prices.ts),
@@ -34,6 +34,7 @@ models:
     # the flat global endpoint by default. Vertex-only: the Antigravity SDK is
     # ADC-only and has no API-key door, so no `auth:` block.
     worker_timeout_sec: 540
+    failover_locations: [us, eu]  # a refused or held call carries on at us, then eu, billed +10% there
     # No max_output_tokens_absolute — agent sessions manage their own per-turn
     # limits.
 

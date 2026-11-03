@@ -14,7 +14,7 @@
 # rules name a Gemini model. No Claude model belongs in this file: the ladder's last
 # attempt goes to a policy's first Claude leaf (executor/tools.ts fallbackLeaf), so
 # one here would type files. With none, the last attempt stays on Argon.
-version: 1
+version: 2
 name: argon4-agsdk-only
 
 models:
@@ -36,6 +36,7 @@ models:
     # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so
     # no `auth:` block.
     worker_timeout_sec: 540
+    failover_locations: [us, eu]  # a refused or held call carries on at us, then eu, billed +10% there
     # No `reasoning:`: every typist runs at low effort (executor/tools.ts
     # TYPIST_EFFORT), so a tier here would read as a setting and change nothing.
     # No max_output_tokens_absolute — agent sessions manage their own per-turn

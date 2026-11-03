@@ -276,6 +276,94 @@ export function selectsAgentWorker(env = {}) {
   return Object.values(pairs).includes(AGENT_WORKER_MODEL_ID);
 }
 
+/** A policy file's top-level sections, comments removed: `{ models: [lines], rules: [...], select: [...] }`. */
+function policySections(text) {
+  const out = {};
+  let key = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/(^|\s)#.*$/, "");
+    const top = /^([A-Za-z_][\w-]*)\s*:/.exec(line);
+    if (top) {
+      key = top[1];
+      out[key] = [line.slice(top[0].length)];
+    } else if (key) out[key].push(line);
+  }
+  return out;
+}
+
+/** The items of a YAML list held in `lines`, each as one text (block or flow style). */
+function policyListItems(lines = []) {
+  const dashes = lines.map((l) => /^(\s*)-\s/.exec(l)?.[1].length).filter((n) => n !== undefined);
+  if (!dashes.length) return [];
+  const indent = Math.min(...dashes);
+  const items = [];
+  for (const l of lines) {
+    if (/^(\s*)-\s/.exec(l)?.[1].length === indent) items.push(l);
+    else if (items.length) items[items.length - 1] += `\n${l}`;
+  }
+  return items;
+}
+
+const policyValue = (text, key) => new RegExp(`(?:^|[\\s{,-])${key}\\s*:\\s*["']?([\\w.-]+)`, "m").exec(text)?.[1] ?? null;
+
+/**
+ * Whether a run of this policy text reaches an antigravity-worker leaf with no MMO_SELECT choice: a rule names the
+ * leaf, or names a slot whose default the leaf is. A leaf that is only a slot's other option (opus-plus-flash's
+ * flash-agsdk-worker) is reached through MMO_SELECT, which selectsAgentWorker reads. Read by lines, as
+ * setup-policy.mjs reads policies: this script runs before the server is built and cannot load its policy loader.
+ */
+export function policyReachesAgentWorker(text) {
+  const sec = policySections(String(text ?? ""));
+  const agentLeaves = new Set(policyListItems(sec.models)
+    .filter((item) => policyValue(item, "adapter") === "antigravity-worker")
+    .map((item) => policyValue(item, "id"))
+    .filter(Boolean));
+  if (!agentLeaves.size) return false;
+  const slotDefaults = new Map();
+  const slotLines = (sec.select ?? []).filter((l) => l.trim());
+  const slotIndent = Math.min(...slotLines.map((l) => /^(\s*)/.exec(l)[1].length));
+  let slot = null;
+  for (const l of slotLines) {
+    const head = /^(\s*)([\w.-]+)\s*:(.*)$/.exec(l);
+    if (head && head[1].length === slotIndent) {
+      slot = head[2];
+      slotDefaults.set(slot, policyValue(head[3], "default"));
+    } else if (slot && !slotDefaults.get(slot)) slotDefaults.set(slot, policyValue(l, "default"));
+  }
+  const targets = [...String((sec.rules ?? []).join("\n")).matchAll(/(?:^|[\s{,-])(?:use|default)\s*:\s*["']?([\w.-]+)/gm)].map((m) => m[1]);
+  return targets.some((t) => agentLeaves.has(t) || agentLeaves.has(slotDefaults.get(t)));
+}
+
+/**
+ * The policy this project's runs load, when it reaches an antigravity-worker leaf (policyReachesAgentWorker): its
+ * name, else null. The server's rule picks the file (src/policy.ts loadPolicy): <project>/routing-policy.yaml, else
+ * the shipped policy .sdlc/project.json names as default_policy.
+ */
+export function projectPolicyUsingAgentWorker(projectRoot, pluginRoot) {
+  if (!projectRoot) return null;
+  let name = "routing-policy.yaml";
+  let file = join(projectRoot, name);
+  if (!existsSync(file)) {
+    try {
+      name = JSON.parse(readFileSync(join(projectRoot, ".sdlc", "project.json"), "utf8")).default_policy;
+    } catch {
+      return null;
+    }
+    if (typeof name !== "string" || !/^[A-Za-z0-9._-]+$/.test(name)) return null;
+    file = join(pluginRoot, "config", "policies", `${name}.yaml`);
+  }
+  try {
+    return policyReachesAgentWorker(readFileSync(file, "utf8")) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The google-antigravity version worker/requirements.txt pins, or null. */
+export function pinnedSdkVersion(requirementsText) {
+  return /^google-antigravity==(\S+)/m.exec(String(requirementsText ?? ""))?.[1] ?? null;
+}
+
 /** Blocking finding for a spec the server will refuse to parse. */
 export function selectSpecProblem(env = {}) {
   const spec = usableEnv(env).MMO_SELECT;
@@ -351,7 +439,11 @@ export function evaluate({
   vertex = null,
   /** Defaults to true — only observed absence is worth naming. */
   hasGcloud = true,
-  /** {hasVenv, sdkImportable, detail} or null when this install didn't ask for the agent. */
+  /**
+   * {hasVenv, sdkImportable, detail} or null when this install didn't ask for the agent; observeAgentWorker adds
+   * `policy` (the project policy that asked, when MMO_SELECT did not), `chosen` (the interpreter is
+   * GEMINI_WORKER_PYTHON's), `python`, `pin` and `version` (google-antigravity's, null when it could not be read).
+   */
   agentWorker = null,
   /** `claude --help` as read: {text}, {error} when it failed, or null when it was not read. */
   claudeHelp = null,
@@ -556,20 +648,26 @@ export function evaluate({
   // Agent-path prerequisites. Blocking — this install has already declared
   // it will route work there, and the adapter constructor throws without them.
   if (agentWorker) {
+    // The policy asked when MMO_SELECT did not: say which, and how to leave it.
+    const byPolicy = Boolean(agentWorker.policy) && !selectsAgentWorker(realEnv);
     if (!agentWorker.hasVenv) {
       problems.push({
         id: "agent-worker-python",
         severity: "blocking",
-        message:
-          `MMO_SELECT routes the mechanical tier to '${AGENT_WORKER_MODEL_ID}', which runs a Python ` +
-          "agent worker, but the worker has no Python environment. Every mechanical task would fail.",
+        message: byPolicy
+          ? `This project's policy '${agentWorker.policy}' calls Gemini through the Antigravity SDK, which runs a ` +
+            "Python worker, but the worker has no Python environment. Every call that leaf makes would fail."
+          : `MMO_SELECT routes the mechanical tier to '${AGENT_WORKER_MODEL_ID}', which runs a Python ` +
+            "agent worker, but the worker has no Python environment. Every mechanical task would fail.",
         // --fix first: it works on both install routes. `node tools/setup.mjs`
         // exists only in a clone.
         fix:
           "Re-run this check with --fix, which builds the environment. On a clone, " +
           "`node tools/setup.mjs` does the same and asks first. Or set GEMINI_WORKER_PYTHON " +
-          "to a Python >= 3.10 that already has google-antigravity installed. " +
-          "To go back to the model path instead, remove MMO_SELECT.",
+          `to a Python >= 3.10 that already has google-antigravity${agentWorker.pin ? ` ${agentWorker.pin}` : ""} installed. ` +
+          (byPolicy
+            ? "To run without it, pick a policy with no Antigravity leaf (/mmo:policy change)."
+            : "To go back to the model path instead, remove MMO_SELECT."),
       });
     } else if (!agentWorker.sdkImportable) {
       problems.push({
@@ -585,6 +683,26 @@ export function evaluate({
           "Re-run this check with --fix, which rebuilds the environment from scratch. " +
           "The commonest cause is an environment built against an interpreter that has since " +
           "been upgraded or removed.",
+      });
+    } else if (agentWorker.pin && agentWorker.version !== undefined && agentWorker.version !== agentWorker.pin) {
+      // The version that runs must be the one pinned: the worker's harness behaviour and its usage reading are
+      // only known for it (worker/requirements.txt). Pre-flight stops a run on a known different version too.
+      const where = agentWorker.chosen ? `GEMINI_WORKER_PYTHON (${agentWorker.python})` : "The agent worker's Python environment";
+      const unread = agentWorker.version === null;
+      problems.push({
+        id: "agent-worker-sdk-version",
+        severity: unread ? "warning" : "blocking",
+        rebuild: !agentWorker.chosen,
+        message: unread
+          ? `${where} imports google.antigravity, but its google-antigravity version could not be read` +
+            `${agentWorker.detail ? ` (${agentWorker.detail})` : ""}; this plugin runs ${agentWorker.pin}. ` +
+            "Its calls are billed on the larger usage reading."
+          : `${where} has google-antigravity ${agentWorker.version}; this plugin runs ${agentWorker.pin}, the ` +
+            "version its Antigravity calls and costs were checked on. Pre-flight stops every run on another version.",
+        fix: agentWorker.chosen
+          ? `Unset GEMINI_WORKER_PYTHON, or point it at an environment with google-antigravity ${agentWorker.pin}.`
+          : `Re-run this check with --fix, which rebuilds the environment at google-antigravity ${agentWorker.pin} ` +
+            "from the hash-locked worker/requirements.txt.",
       });
     }
   }
@@ -631,25 +749,33 @@ function readClaudeHelp(claude = "claude") {
  * against an upgraded/uninstalled interpreter looks healthy on disk and
  * fails on its first import.
  */
-function observeAgentWorker(pluginRoot, env) {
-  if (!selectsAgentWorker(env)) return null;
+function observeAgentWorker(pluginRoot, env, projectRoot) {
+  const policy = selectsAgentWorker(env) ? null : projectPolicyUsingAgentWorker(projectRoot, pluginRoot);
+  if (!selectsAgentWorker(env) && !policy) return null;
 
   const override = usableEnv(env).GEMINI_WORKER_PYTHON;
   const python = override || workerPaths(pluginRoot).venvPython;
-  if (!existsSync(python)) return { hasVenv: false, sdkImportable: false, detail: null };
+  const asked = { policy, chosen: Boolean(override), python };
+  if (!existsSync(python)) return { hasVenv: false, sdkImportable: false, detail: null, ...asked };
 
-  const probe = spawnSync(python, ["-c", "import google.antigravity"], { encoding: "utf8" });
-  if (probe.status === 0) return { hasVenv: true, sdkImportable: true, detail: null };
   // Last line of a traceback is the exception.
-  const stderr = (probe.stderr || "").trim().split("\n").filter(Boolean).pop() ?? null;
-  return { hasVenv: true, sdkImportable: false, detail: stderr };
+  const lastLine = (r) => (r.stderr || "").trim().split("\n").filter(Boolean).pop() ?? null;
+  const probe = spawnSync(python, ["-c", "import google.antigravity"], { encoding: "utf8" });
+  if (probe.status !== 0) return { hasVenv: true, sdkImportable: false, detail: lastLine(probe), ...asked };
+
+  // The installed version, asked as the worker records it (its receipt's sdk_version) and as pre-flight asks.
+  let pin = null;
+  try { pin = pinnedSdkVersion(readFileSync(workerPaths(pluginRoot).requirements, "utf8")); } catch { /* no pin to check */ }
+  const query = spawnSync(python, ["-c", "import importlib.metadata as m; print(m.version('google-antigravity'))"], { encoding: "utf8" });
+  const version = query.status === 0 ? String(query.stdout ?? "").trim().split("\n").pop()?.trim() || null : null;
+  return { hasVenv: true, sdkImportable: true, detail: version ? null : lastLine(query), ...asked, pin, version };
 }
 
 /**
  * `env` is a parameter so `--enable-agent` can pass in the selection it just
  * wrote (settings files aren't read until the next Claude Code session).
  */
-function observe(pluginRoot, env = process.env) {
+function observe(pluginRoot, env = process.env, projectRoot = process.cwd()) {
   const { nodeModules, distEntry, bundleEntry, bundleLib } = mcpPaths(pluginRoot);
   // Credential files are opened and read, not merely stat-ed — a truncated
   // key or a path to a deleted file passes existsSync and fails a real call.
@@ -674,7 +800,7 @@ function observe(pluginRoot, env = process.env) {
       adcFile: inspectCredentialFile(adcFile),
     }),
     env,
-    agentWorker: observeAgentWorker(pluginRoot, env),
+    agentWorker: observeAgentWorker(pluginRoot, env, projectRoot),
   };
 }
 
@@ -723,7 +849,9 @@ export function findWorkerPython(run = spawnSync, resolve = onPath) {
  * A virtualenv (not the machine's Python): PEP 668 refuses `pip install` into
  * Homebrew/system interpreters, and pinning the SDK here can't disturb the
  * user's environment. Both install routes reach this — plugin route via
- * `--fix`, clone route by import.
+ * `--fix`, clone route by import. requirements.txt is a lock: every package
+ * pinned with its hashes, so `--require-hashes --no-deps` installs exactly
+ * those files and nothing pip would resolve on its own.
  */
 export function buildWorkerEnvironment(pluginRoot, log = () => {}) {
   const { workerDir, venvPython } = workerPaths(pluginRoot);
@@ -741,7 +869,7 @@ export function buildWorkerEnvironment(pluginRoot, log = () => {}) {
     // --clear empties an existing .venv so this can rebuild a broken
     // environment. Callers only reach here when it's missing or known broken.
     ["creating the virtual environment", python.command, ["-m", "venv", "--clear", ".venv"]],
-    ["installing the Antigravity SDK", venvPython, ["-m", "pip", "install", "--quiet", "-r", "requirements.txt"]],
+    ["installing the Antigravity SDK", venvPython, ["-m", "pip", "install", "--quiet", "--require-hashes", "--no-deps", "-r", "requirements.txt"]],
   ]) {
     const result = spawnSync(cmd, args, { cwd: workerDir, encoding: "utf8", stdio: "pipe" });
     if (result.status !== 0) {
@@ -1088,7 +1216,7 @@ if (invokedDirectly) {
 
   // Keep the observation, not just the verdict — the end-of-run hints need
   // the credential state and re-deriving it could give two different answers.
-  let observed = observe(pluginRoot, env);
+  let observed = observe(pluginRoot, env, projectRoot);
   let state = evaluate(observed);
   const needsRepair = state.problems.some(
     (p) => p.id === "mcp-dependencies" || p.id === "mcp-build"
@@ -1097,21 +1225,23 @@ if (invokedDirectly) {
   if (needsRepair && repairing) {
     log("  The bundled MCP server needs building. Repairing:");
     if (repair(pluginRoot, log)) {
-      observed = observe(pluginRoot, env);
+      observed = observe(pluginRoot, env, projectRoot);
       state = evaluate(observed);
     }
   }
 
-  // Conditional: an install that never selected the agent worker must not
-  // have a virtualenv built for it.
+  // Conditional: an install whose selection and policy never use the agent
+  // worker must not have a virtualenv built for it. An environment at another
+  // google-antigravity is rebuilt; one GEMINI_WORKER_PYTHON names is never.
   const needsWorker = state.problems.some(
-    (p) => p.id === "agent-worker-python" || p.id === "agent-worker-sdk"
+    (p) => p.id === "agent-worker-python" || p.id === "agent-worker-sdk" ||
+      (p.id === "agent-worker-sdk-version" && p.rebuild && p.severity === "blocking")
   );
   if (needsWorker && repairing) {
     log("  The agent worker needs a Python environment. Repairing:");
     const built = buildWorkerEnvironment(pluginRoot, log);
     if (built.ok) {
-      observed = observe(pluginRoot, env);
+      observed = observe(pluginRoot, env, projectRoot);
       state = evaluate(observed);
     } else log(`  ✗ ${built.detail}`);
   }

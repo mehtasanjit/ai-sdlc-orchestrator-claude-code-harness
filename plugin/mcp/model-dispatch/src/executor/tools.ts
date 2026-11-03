@@ -35,6 +35,8 @@ import { boundReceipt, executeStage, executorView, type RepairItem, type Stage }
 import { runAcceptance } from "./acceptance.js";
 import { AgyTypist, FlashCompletionTypist, LeanOpusTypist, type Door, type Typist } from "./typists.js";
 import { LEGACY_GEMINI_ADAPTER_ID } from "../adapters/index.js";
+import { FAILOVER_API_RETRY } from "./stall.js";
+import type { BusyLedger } from "../busyLedger.js";
 import { runStateConflict } from "../runCard.js";
 
 /**
@@ -222,9 +224,17 @@ export function typistForLeaf(leaf: ModelConfig, authMode: "estimated" | "vendor
       return new LeanOpusTypist(leaf, { authMode, effort: TYPIST_EFFORT, timeoutMs: TYPIST_TIMEOUT_S * 1000 });
     case "flash-completion":
       return new FlashCompletionTypist(leaf, TYPIST_EFFORT, TYPIST_TIMEOUT_S * 1000);
-    case "agy":
+    case "agy": {
       // The leaf's worker_timeout_sec bounds a whole agent job; a typist types one file, so the executor's bound applies.
-      return new AgyTypist(leaf, { effort: TYPIST_EFFORT, maxModelCalls: AGY_MAX_MODEL_CALLS, timeoutSec: TYPIST_TIMEOUT_S, apiRetries: TRANSPORT.maxWaits, apiRetryInitialMs: TRANSPORT.baseMs });
+      // A leaf that opts into failover gives each location one quick retry, so a refused call moves on in seconds; every
+      // other leaf keeps the executor's own wait rule.
+      const failover = (leaf.failover_locations ?? []).length > 0;
+      return new AgyTypist(leaf, {
+        effort: TYPIST_EFFORT, maxModelCalls: AGY_MAX_MODEL_CALLS, timeoutSec: TYPIST_TIMEOUT_S,
+        apiRetries: failover ? FAILOVER_API_RETRY.retries : TRANSPORT.maxWaits,
+        apiRetryInitialMs: failover ? FAILOVER_API_RETRY.initialMs : TRANSPORT.baseMs,
+      });
+    }
     default:
       throw noTypist(leaf);
   }
@@ -334,7 +344,7 @@ function runToken(run: RunState): string {
   return t;
 }
 
-export async function handleExecutorTool(name: string, a: any, ctx: { run?: () => RunState | undefined; policy?: (run: RunState) => Policy; overrides: SelectOverrides; progress?: ProgressChannel }): Promise<Reply> {
+export async function handleExecutorTool(name: string, a: any, ctx: { run?: () => RunState | undefined; policy?: (run: RunState) => Policy; overrides: SelectOverrides; progress?: ProgressChannel; ledger?: (run: RunState) => BusyLedger }): Promise<Reply> {
   if (name === "submit_spec_section") {
     // The section travels as a file the architect wrote, never inline: a large inline section can arrive unparseable and be lost whole (readSectionFile).
     const loaded = readSectionFile(a.spec_dir, a.file, a.section === "header" ? "header" : "units");
@@ -415,6 +425,7 @@ export async function handleExecutorTool(name: string, a: any, ctx: { run?: () =
     }, {
       typistFor, fallback, shared, sharedFile, emit,
       progress: (d, t, m) => { done = d; total = t; say(`${m} (${d}/${t})`); },
+      ...(ctx.ledger ? { ledger: ctx.ledger(run) } : {}),
     });
     const final = boundReceipt(notRouted.length ? { ...receipt, not_routed: [...notRouted, ...(receipt.not_routed ?? [])] } : receipt);
     log("info", "executor.stage.end", { stage: final.stage, written: final.written, failed: final.failed.length + (final.failed_not_listed ?? 0), cost_usd: final.cost_usd, seconds: final.seconds, not_routed: (final.not_routed?.length ?? 0) + (final.not_routed_not_listed ?? 0), telemetry_path: telemetryPath });
