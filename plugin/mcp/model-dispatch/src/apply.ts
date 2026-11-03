@@ -302,13 +302,6 @@ export function sliceSection(text: string, heading: string): string | null {
   return start === -1 ? null : lines.slice(start).join("\n");
 }
 
-/**
- * Fill in `content` for every slice that arrived without it. Reads relative to `projectRoot`, and only a file the read
- * rule lets a model see: a path that escapes the project, as written or through a symbolic link (the real path is judged
- * too, as greenfield's insideCodeDir judges what reaches a vendor's brief), a path that is not a file, an off-limits
- * file (readOffLimits), a missing file or a slice over MAX_SLICE_BYTES throws — those are planner bugs the
- * orchestrator should see, not silently empty inputs, and an off-limits file is the person's decision.
- */
 /** Why the read rule refuses a model's read of one file (modelReadOf). */
 export type ModelReadRefusal =
   | { kind: "outside"; throughLink: boolean }
@@ -361,6 +354,13 @@ export function modelReadOf(
   return { abs, real, st };
 }
 
+/**
+ * Fill in `content` for every slice that arrived without it. Reads relative to `projectRoot`, and only a file the read
+ * rule lets a model see: a path that escapes the project, as written or through a symbolic link (the real path is judged
+ * too, as greenfield's insideCodeDir judges what reaches a vendor's brief), a path that is not a file, an off-limits
+ * file (readOffLimits), a missing file or a slice over MAX_SLICE_BYTES throws — those are planner bugs the
+ * orchestrator should see, not silently empty inputs, and an off-limits file is the person's decision.
+ */
 export function hydrateInputs(packet: TaskPacket, projectRoot: string): { packet: TaskPacket; hydrated: string[] } {
   const hydrated: string[] = [];
   let binding: { contract: any; runId: string | null } | null | undefined;
