@@ -14,6 +14,7 @@
  * {id, ok: false, error}. Started with --config <file>, a JSON object written by the server (src/thinking.ts).
  */
 import { spawnSync } from "node:child_process";
+import v8 from "node:v8";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
@@ -33,6 +34,10 @@ const MAX_FILE_BYTES = 2_000_000;
 const MAX_SEARCH_HITS = 200;
 const WALK_SKIP = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".next", ".nuxt", ".turbo", ".cache", "coverage"]);
 const COMMAND_TIMEOUT_MS = 300_000;
+// A search pattern is the model's: it is compiled for V8's linear-time engine (the `l` flag), so no pattern can hold the
+// tool process, and with it the step, by backtracking (review: `(\w+\s*)+:` ran past 30 s, `^(a+)+$` doubles per
+// character). A pattern that engine cannot run in bounded time (a back-reference, a look-ahead) is refused.
+v8.setFlagsFromString("--enable-experimental-regexp-engine");
 
 /** What each role must hand in before its step is done, and the hand-in tools it gets. */
 export const ROLE_TOOLS = {
@@ -89,6 +94,8 @@ export class ThinkingTools {
     if (r.error) return { error: r.error };
     const st = statSync(r.abs);
     if (st.isDirectory()) return { error: `${path} is a folder: use list_files` };
+    // A named pipe, a socket or a device would hold the read, and the step, until something writes to it.
+    if (!st.isFile()) return { error: `${path} is not a regular file` };
     if (st.size > MAX_FILE_BYTES) return { error: `${path} is ${st.size} bytes; read it by line range is not possible above ${MAX_FILE_BYTES}` };
     const text = readFileSync(r.abs, "utf8");
     if (holdsPrivateKey(text)) return { error: `${path} holds a private key: the read rule keeps it from models` };
@@ -144,11 +151,19 @@ export class ThinkingTools {
   }
 
   search_files({ pattern, path = "." }) {
+    if (typeof pattern !== "string" || pattern === "") return { error: "give a regular expression to search for" };
     let re;
-    try { re = new RegExp(pattern); } catch (e) { return { error: `not a regular expression: ${e.message}` }; }
+    try { re = new RegExp(pattern, "l"); } catch (e) {
+      try { new RegExp(pattern); } catch (e2) { return { error: `not a regular expression: ${e2.message}` }; }
+      return { error: "this pattern cannot be searched in bounded time (a back-reference or a look-ahead): search for it without one" };
+    }
     const start = this.readable(path);
     if (start.error) return { error: start.error };
     const hits = [];
+    // What the walk passed over is said, never silent (review: a key under src/coverage was not found, and one
+    // unreadable file failed the whole search): a skipped folder can be searched by naming it as the path.
+    const skipped = [];
+    const unread = [];
     const walk = (abs, rel) => {
       if (hits.length >= MAX_SEARCH_HITS) return;
       let st;
@@ -157,16 +172,28 @@ export class ThinkingTools {
       const posix = rel.split(sep).join("/");
       if (posix && readRefusal(this.root, this.cfg.run_id, posix)) return;
       if (st.isDirectory()) {
-        for (const name of readdirSync(abs).sort()) if (!WALK_SKIP.has(name)) walk(join(abs, name), rel ? join(rel, name) : name);
+        let names;
+        try { names = readdirSync(abs).sort(); } catch { unread.push(`${posix || "."}/`); return; }
+        for (const name of names) {
+          const child = rel ? join(rel, name) : name;
+          if (WALK_SKIP.has(name)) { try { if (lstatSync(join(abs, name)).isDirectory()) skipped.push(child.split(sep).join("/")); } catch {} continue; }
+          walk(join(abs, name), child);
+        }
         return;
       }
       if (!st.isFile() || st.size > MAX_FILE_BYTES) return;
-      const text = readFileSync(abs, "utf8");
+      let text;
+      try { text = readFileSync(abs, "utf8"); } catch { unread.push(posix); return; }
       if (text.includes("\u0000") || holdsPrivateKey(text)) return;
       text.split("\n").forEach((line, i) => { if (hits.length < MAX_SEARCH_HITS && re.test(line)) hits.push(`${posix}:${i + 1}: ${line.slice(0, 300)}`); });
     };
     walk(start.abs, start.rel === "" ? "" : start.rel);
-    return { result: cut(hits.join("\n") + (hits.length >= MAX_SEARCH_HITS ? `\n[first ${MAX_SEARCH_HITS} matches only: narrow the pattern or the path]` : "")) };
+    const notes = [
+      ...(hits.length >= MAX_SEARCH_HITS ? [`[first ${MAX_SEARCH_HITS} matches only: narrow the pattern or the path]`] : []),
+      ...(skipped.length ? [`[not searched, as dependency, tool or cache folders (name one as the path to search it): ${skipped.slice(0, 20).join(", ")}${skipped.length > 20 ? ` and ${skipped.length - 20} more` : ""}]`] : []),
+      ...(unread.length ? [`[could not read: ${unread.slice(0, 20).join(", ")}${unread.length > 20 ? ` and ${unread.length - 20} more` : ""}]`] : []),
+    ];
+    return { result: cut([hits.join("\n"), ...notes].filter(Boolean).join("\n")) };
   }
 
   /** Write one file the step owns, inside the step's own folder (output_dir) and never through a link. */

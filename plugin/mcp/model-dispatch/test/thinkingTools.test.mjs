@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -223,4 +223,53 @@ test("an acceptance fix hands in its failures entries, or the one line why it ca
   // A design step hands in no acceptance fix.
   const design = new ThinkingTools({ role: "architect", project_root: root, run_id: "r1", output_dir: "out", outputs: { sections_dir: "out/spec.sections" }, spec_dir: "out", run_token: "run-1" });
   assert.match((await design.call("write_acceptance_fix", { failures_json: JSON.stringify(entries) })).error, /only an acceptance fix/);
+});
+
+test("a search runs in bounded time: a pattern that would backtrack is answered at once, and one that cannot be bounded is refused", async () => {
+  const root = project();
+  writeFileSync(join(root, "src", "long.txt"), "a".repeat(28) + "!\n");
+  const t = tools(root, "senior-reviewer");
+  const started = Date.now();
+  const r = await t.call("search_files", { pattern: "^(a+)+$", path: "src" });
+  assert.ok(Date.now() - started < 500, `answered in ${Date.now() - started} ms`);
+  assert.equal(r.error, undefined, r.error);
+  assert.match((await t.call("search_files", { pattern: "(a)\\1", path: "src" })).error, /cannot be searched in bounded time/);
+  assert.match((await t.call("search_files", { pattern: "const token", path: "src" })).result, /src\/a\.ts:2: const token/);
+});
+
+test("a search names the folders it skips and the files it could not read, and searches the rest", async () => {
+  const root = project();
+  mkdirSync(join(root, "src", "coverage"));
+  writeFileSync(join(root, "src", "coverage", "policy.ts"), "const apiKey = load();\n");
+  writeFileSync(join(root, "src", "locked.ts"), "const apiKey = 2;\n");
+  chmodSync(join(root, "src", "locked.ts"), 0o000);
+  writeFileSync(join(root, "src", "open.ts"), "const apiKey = 3;\n");
+  const t = tools(root, "senior-reviewer");
+  const r = await t.call("search_files", { pattern: "apiKey", path: "src" });
+  chmodSync(join(root, "src", "locked.ts"), 0o644);
+  assert.equal(r.error, undefined, r.error);
+  assert.match(r.result, /src\/open\.ts:1: const apiKey = 3/);
+  assert.match(r.result, /not searched[^\n]*src\/coverage/);
+  assert.match(r.result, /could not read[^\n]*src\/locked\.ts/);
+  // A skipped folder is searched when it is named.
+  assert.match((await t.call("search_files", { pattern: "apiKey", path: "src/coverage" })).result, /src\/coverage\/policy\.ts:1/);
+});
+
+test("a named pipe is refused at once, through the tool process itself", { timeout: 20_000 }, async () => {
+  const { spawn, execFileSync } = await import("node:child_process");
+  const root = project();
+  execFileSync("mkfifo", [join(root, "src", "dev.pipe")]);
+  const cfg = join(root, "tools.json");
+  writeFileSync(cfg, JSON.stringify({ role: "senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/review.json" } }));
+  const child = spawn(process.execPath, [resolve(HERE, "..", "..", "..", "scripts", "thinking-tools.mjs"), "--config", cfg], { stdio: ["pipe", "pipe", "inherit"] });
+  const answer = new Promise((done) => {
+    let buf = "";
+    child.stdout.on("data", (d) => { buf += d; if (buf.includes("\n")) done(JSON.parse(buf.split("\n")[0])); });
+    setTimeout(() => done(null), 3000);
+  });
+  child.stdin.write(JSON.stringify({ id: 1, op: "read_file", args: { path: "src/dev.pipe" } }) + "\n");
+  const r = await answer;
+  child.kill("SIGKILL");
+  assert.ok(r, "the tool answered within 3 s");
+  assert.match(r.error, /not a regular file/);
 });
