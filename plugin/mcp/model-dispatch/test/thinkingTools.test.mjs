@@ -183,6 +183,26 @@ test("a revise keeps every unit of the approved spec, or removes one only by nam
   assert.match((await again.call("finalize", {})).result, /finalized: 1 unit/);
 });
 
+test("a refused finalize lists every problem in one answer: the coverage gap and each of the store's errors", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-finalize-"));
+  mkdirSync(join(root, "out"));
+  writeFileSync(join(root, "out", "requirements.md"), "# R\n- FR-1: answer ping.\n- FR-2: answer pong.\n- AC-1: a ping is answered with pong.\n");
+  // No audit command and no reason for none, no command checks AC-1, and the units cover FR-1 only.
+  const header = { stack: ["Node 22"], commands: [{ name: "tests", run: "npm test", cwd: ".", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }], decisions: [{ topic: "ids", choice: "integer", reason: "simplest" }], shared: { conventions: [], data_model: [], api: [] } };
+  const unit = { id: "U01", path: "src/app.js", phase: "codegen", import_line: "", exports: [], behaviour: "answers ping", depends_on: [], style_from: { reason: "first file" }, covers: ["FR-1"], tests: [], approx_lines: 20 };
+  const t = new ThinkingTools({ role: "architect", project_root: root, run_id: "r1", output_dir: "out", outputs: { sections_dir: "out/spec.sections" }, spec_dir: "out", requirements_path: "out/requirements.md", run_token: "run-1" });
+  assert.match((await t.call("submit_section", { name: "header.json", json: JSON.stringify(header) })).result, /accepted/);
+  assert.match((await t.call("submit_section", { name: "units-001.json", json: JSON.stringify([unit]) })).result, /accepted/);
+  const r = await t.call("finalize", {});
+  // As a section refusal reads: one line per problem, each with where it is.
+  assert.equal(r.error, [
+    "refused:",
+    "/units no unit covers FR-2, AC-1: hand in a units file that covers them",
+    "/header/commands no command has role \"audit\" and no no_audit_reason is given: add the stack's dependency audit (its threshold set so high or critical advisories exit non-zero), or say in no_audit_reason why there is none",
+    "/header/commands no acceptance command checks AC-1: add it to a command's checks, or list it in unchecked with the reason it cannot be checked by running",
+  ].join("\n"));
+});
+
 test("a refused section is owed until a hand-in of the same name is accepted, in greenfield as in brownfield", async () => {
   const root = mkdtempSync(join(tmpdir(), "mmo-refused-"));
   mkdirSync(join(root, "out"));

@@ -315,7 +315,10 @@ export class ThinkingTools {
     return approved.filter((u) => !held.has(u.id));
   }
 
-  /** `drop`: on a revise, the approved spec's units the changes remove, by id; every other approved unit must be in. */
+  /**
+   * `drop`: on a revise, the approved spec's units the changes remove, by id; every other approved unit must be in. A
+   * refusal lists every problem the store finds, the requirements no unit covers among them.
+   */
   async finalize({ drop } = {}) {
     if (this.cfg.acceptance_fix) return { error: ACCEPTANCE_FIX_ONLY };
     const { specStore } = await loadServerLib();
@@ -329,7 +332,13 @@ export class ThinkingTools {
     }
     const r = specStore.finalizeSpec(join(this.root, this.cfg.spec_dir), this.cfg.requirements_path ? join(this.root, this.cfg.requirements_path) : undefined);
     if (r.ok) { this.accepted.set("finalize", true); return { result: `finalized: ${r.units} unit(s); design.md rendered${dropped.length ? `; removed from the approved spec: ${dropped.join(", ")}` : ""}` }; }
-    return { error: r.missing_coverage?.length ? `no unit covers ${r.missing_coverage.join(", ")}: add a new units file that covers them, then finalize again` : JSON.stringify(r.errors ?? r) };
+    // Every problem in one answer, one line each with where it is, as a section refusal lists them and as finalize_spec
+    // answers the Claude architect (review: a coverage gap hid the store's other errors, each then found a round later).
+    const lines = [
+      ...(r.missing_coverage?.length ? [`/units no unit covers ${r.missing_coverage.join(", ")}: hand in a units file that covers them`] : []),
+      ...(r.errors ?? []).map((e) => `${e.path} ${e.message}`),
+    ];
+    return { error: `refused:\n${lines.join("\n")}` };
   }
 
   /**
