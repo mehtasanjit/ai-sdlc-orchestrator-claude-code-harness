@@ -413,8 +413,11 @@ test("a second call of a step while it runs is refused at once; a lock left by a
   assert.equal(r.route, "done");
   assert.equal(holder.pid, process.pid, "taken over by this call");
   assert.equal(existsSync(lock), false);
-  // So is one that cannot be read.
+  // So is one that cannot be read, and one with this server's process id that no call of this server holds: an earlier
+  // server had the same id (ids start again after a restart).
   writeFileSync(lock, "");
+  assert.equal((await runThinkingStep(args(root), deps(AGENT, () => result()).d)).route, "done");
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, started_at: "2026-11-01T09:00:00.000Z", token: "an-earlier-server" }) + "\n");
   assert.equal((await runThinkingStep(args(root), deps(AGENT, () => result()).d)).route, "done");
   assert.deepEqual(readdirSync(join(root, ".sdlc", "runs", "r1", "thinking")).filter((f) => /lock/.test(f)), [], "nothing of the lock is left behind");
 });

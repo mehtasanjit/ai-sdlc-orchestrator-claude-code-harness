@@ -427,6 +427,17 @@ function processAlive(pid: unknown): boolean {
   try { process.kill(pid as number, 0); return true; } catch (e: any) { return e?.code === "EPERM"; }
 }
 
+/** The tokens of the step locks this server's calls hold now. */
+const HELD_LOCKS = new Set<string>();
+
+/**
+ * Whether a lock is held by a call that still runs. One with this server's process id is live only while a call of
+ * this server holds it: else it was left by an earlier server that had the same id (ids start again after a restart).
+ */
+function lockLive(lock: StepLock): boolean {
+  return lock.pid === process.pid ? typeof lock.token === "string" && HELD_LOCKS.has(lock.token) : processAlive(lock.pid);
+}
+
 /** A step as a person names it: its role, its review file when it has one, and its run. */
 function stepName(args: ThinkingArgs): string {
   return `the ${args.role} step${args.review_path ? ` for ${args.review_path}` : ""}${args.run_id ? ` of run ${args.run_id}` : ""}`;
@@ -436,31 +447,36 @@ function stepName(args: ThinkingArgs): string {
  * One call of a step at a time. The call holds `<stepDir>/<key>.lock`, created exclusively and holding the server's
  * process id and the call's start time; it is removed when the call returns. A second call of the step while it is held
  * is refused before it writes anything, so two workers never share one save folder, tools config, record and packet
- * (review: nothing refused it). A lock whose process is gone (process.kill(pid, 0) finds none: the server stopped
- * mid-step) is taken over. In one server, taking the lock is one synchronous step, so two calls there can never both
+ * (review: nothing refused it). A lock whose call no longer runs is taken over: its process is gone (process.kill(pid,
+ * 0) finds none: the server stopped mid-step), or it names this server's process id but no call of this server holds
+ * it, or it cannot be read. In one server, taking the lock is one synchronous step, so two calls there can never both
  * hold it; between servers, a lock being taken over is first moved aside, in one step, and one that turns out to be
  * another call's live lock is put back. Returns the release.
  */
 export function takeStepLock(lockPath: string, step: string): () => void {
   const mine = { pid: process.pid, started_at: new Date().toISOString(), token: randomUUID() };
-  const running = (held: StepLock) => new Error(`run_thinking_step: ${step} is already running (process ${String(held.pid)}, since ${String(held.started_at)}); nothing was sent. Two calls of one step would share its save folder, tools config and record: wait for that call to return.`);
+  const running = (held: StepLock) => new Error(`run_thinking_step: ${step} is already running (process ${String(held.pid)}, since ${String(held.started_at)}; its lock is ${lockPath}); nothing was sent. Two calls of one step would share its save folder, tools config and record: wait for that call to return.`);
   for (let tries = 0; ; tries++) {
     try { writeFileSync(lockPath, JSON.stringify(mine) + "\n", { flag: "wx" }); break; } catch (e: any) { if (e?.code !== "EEXIST") throw e; }
     if (tries >= 3) throw new Error(`run_thinking_step: ${step} could not take its lock ${lockPath}; nothing was sent`);
     const held = readLock(lockPath);
     if (held === undefined) continue;
-    if (held && processAlive(held.pid)) throw running(held);
+    if (held && lockLive(held)) throw running(held);
     const aside = `${lockPath}.${mine.token}.stale`;
     try { renameSync(lockPath, aside); } catch (e: any) { if (e?.code === "ENOENT") continue; throw e; }
     const moved = readLock(aside);
-    if (moved && moved.token !== held?.token && processAlive(moved.pid)) {
+    if (moved && moved.token !== held?.token && lockLive(moved)) {
       try { writeFileSync(lockPath, readFileSync(aside), { flag: "wx" }); } catch { /* a third call holds it now */ }
       rmSync(aside, { force: true });
       throw running(moved);
     }
     rmSync(aside, { force: true });
   }
-  return () => { if (readLock(lockPath)?.token === mine.token) rmSync(lockPath, { force: true }); };
+  HELD_LOCKS.add(mine.token);
+  return () => {
+    HELD_LOCKS.delete(mine.token);
+    if (readLock(lockPath)?.token === mine.token) rmSync(lockPath, { force: true });
+  };
 }
 
 export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): Promise<ThinkingReply> {
