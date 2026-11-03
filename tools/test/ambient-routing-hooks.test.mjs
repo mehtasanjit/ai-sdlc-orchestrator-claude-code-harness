@@ -421,6 +421,32 @@ test("the workflows' helpers follow the chat's model: a chat on another model th
   } finally { late.cleanup(); }
 });
 
+// Review: zero-touch skipped the chat-model check under vendor ("every call goes through the model server"), though the
+// workflow's own run-start check runs in both modes: a vendor workflow started on the wrong chat model and stopped at
+// its first step with the check's terminal text, and the switch guard was off while it ran.
+test("under vendor the chat's model is checked as under estimated: the same refusal before the start, and the same lock while it runs", { skip: SKIP ?? false }, async () => {
+  const start = (s, sid, model) => run("session-start", { session_id: sid, cwd: s.repo, source: "startup", model }, s);
+  const vendor = sandbox("existing", { routing_defaults: { auth: "vendor" } });
+  const plan = sandbox("existing");
+  try {
+    await start(vendor, "v1", "claude-opus-5-5[1m]");
+    await start(plan, "e1", "claude-opus-5-5[1m]");
+    const v = await prompt(vendor, "v1", JOB);
+    const e = await prompt(plan, "e1", JOB);
+    assert.doesNotMatch(context(v), /"mmo:bugfix"/, "a vendor workflow does not start on another model than the policy plans with");
+    assert.match(v.json?.systemMessage ?? "", /^Zero-touch: the bug-fix workflow didn't start, because this chat is on Opus 5\.5, but you chose Opus 5 \+ Flash 3\.8/);
+    assert.equal(v.json?.systemMessage, e.json?.systemMessage, "the person reads the same line in both modes");
+  } finally { vendor.cleanup(); plan.cleanup(); }
+  const right = sandbox("existing", { routing_defaults: { auth: "vendor" } });
+  try {
+    await start(right, "v2", "claude-opus-5");
+    assert.match(context(await prompt(right, "v2", JOB)), /"mmo:bugfix", args "\[zero-touch policy=opus-plus-flash-v38 auth=vendor\]/, "on the planning model it starts");
+    assert.equal((await skill(right, "v2", "mmo:bugfix", "x")).stdout, "");
+    const away = await run("pre-model-switch", { session_id: "v2", cwd: right.repo, from_model: "claude-opus-5", to_model: "claude-opus-5-5" }, right);
+    assert.equal(away.json?.hookSpecificOutput?.permissionDecision, "deny", "while it runs the chat stays on the model its helpers follow");
+  } finally { right.cleanup(); }
+});
+
 test("while a workflow zero-touch started runs, the chat stays on the model its helpers follow; a typed run and other chats are left alone", { skip: SKIP ?? false }, async () => {
   const s = sandbox("existing");
   try {
@@ -481,7 +507,7 @@ test("a workflow that cannot start says the real cause and the fix that works fo
   const vendor = sandbox("existing", { routing_defaults: { auth: "vendor" } });
   try {
     const c = context(await prompt(vendor, "k4", "fix the /login endpoint returning 500 on missing password"));
-    assert.match(c, /"mmo:bugfix"/, "under vendor the workflow skips its helpers'-model check, so routing does too");
+    assert.match(c, /"mmo:bugfix"/, "under vendor, as under estimated, a chat whose model is not known yet starts, and is checked again later");
     assert.match(c, /auth=vendor\]/);
   } finally { vendor.cleanup(); }
 });

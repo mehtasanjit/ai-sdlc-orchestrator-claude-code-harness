@@ -386,7 +386,7 @@ export function runNote({ job, policy, auth }) {
     `- Models: the policy ${policy}. Do not read or require a saved project choice (setup-policy.mjs --print-only, or default_policy in .sdlc/project.json), and do not stop because none is saved. Resolve it with load_policy and policy_path "${policyPath(policy)}" (an explicit file, which wins over a project's routing-policy.yaml), pass that same policy_path on every policy call, give the orchestrator policy ${policy} and that policy_path, and where the command shows the policy, show "${policy} (chosen for this run)".`,
     `- Cost recording: ${auth}. Show it where the command shows it, and do not ask.`,
   ];
-  if (auth !== "vendor") lines.push("- Do not ask the person to set CLAUDE_CODE_SUBAGENT_MODEL or to restart Claude Code: in this run the workflow's helpers run on this chat's own model, which zero-touch has checked against the policy, and the run's own model check is told so.");
+  lines.push("- Do not ask the person to set CLAUDE_CODE_SUBAGENT_MODEL or to restart Claude Code: in this run the workflow's helpers run on this chat's own model, which zero-touch has checked against the policy, and the run's own model check is told so.");
   if (job !== "greenfield") lines.push("- The job's description is the text after the tag.");
   else lines.push("- The brief: the person's message that asked for this app is the brief to build from. In the brief step, write it into ./brief.md in the Project Brief layout instead of offering the example briefs, and ask only for what that layout needs and the message does not say.");
   lines.push(`- ${STOP_NOTE}.`);
@@ -560,12 +560,13 @@ export function helperModel({ chatModel = null, env = process.env } = {}) {
  * (the policy uses Flash and there is no Google login), "not-built" (the plugin's pre-built server is missing),
  * "no-git" / "git-missing" (a change job), "chat-model" (the helpers would run on another model than the policy plans
  * with: the chat's own model, or the person's setting; `via` says which), "check" (the check itself failed, in its own
- * words). On success: `needed`, the policy's planning model (null under vendor), and `helper`, the model the helpers
+ * words). On success, in either auth mode: `needed`, the policy's planning model, and `helper`, the model the helpers
  * will run on, or null when Claude Code has not yet said which model the chat is on (a new chat's first message).
  * Then the start goes ahead, and the chat's model is checked again when the workflow's own command is called, by when
- * the chat has answered (hook.mjs "pre-skill"), and by the run's own check (hook.mjs stampRunCheck).
+ * the chat has answered (hook.mjs "pre-skill"), and by the run's own check (hook.mjs stampRunCheck). The auth mode
+ * decides nothing here: the workflow's own check is the same in both.
  */
-export function startProblem({ projectDir, policy, auth, job = null, chatModel = null, env = process.env }) {
+export function startProblem({ projectDir, policy, job = null, chatModel = null, env = process.env }) {
   // The models the person chose are not in this version of mmo: never swapped for others.
   if (!existsSync(policyPath(policy))) return { problem: { cause: "policy-missing" } };
   if (policyUsesGoogle(policy) && !googleLoggedIn(env)) return { problem: { cause: "google" } };
@@ -577,8 +578,9 @@ export function startProblem({ projectDir, policy, auth, job = null, chatModel =
   // A change workflow undoes its changes with git; a folder git does not track would stop it after it started. Checked
   // without running git where there is none (lib/git.mjs: no macOS install dialog). A new app needs no git.
   if (job && job !== "greenfield" && !gitRoot(projectDir)) return { problem: { cause: gitInstalled({ env }) ? "no-git" : "git-missing", projectDir } };
-  // Under vendor every call, the helpers' own included, goes through the model server: no helper model to match.
-  if (auth === "vendor") return { problem: null, policy, needed: null, helper: null };
+  // The helpers' model is checked in both auth modes, as the workflow's own run-start check is: under vendor too the
+  // helpers run in this chat, on its model or the person's setting (review: a vendor workflow skipped this and then
+  // stopped at its first step, and nothing held the chat on its model while it ran).
   const first = (err) => String(err?.stderr ?? "").trim().split("\n")[0] || "its run-start model check failed.";
   let needed;
   try {

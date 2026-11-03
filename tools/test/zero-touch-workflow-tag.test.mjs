@@ -63,7 +63,7 @@ test("the note given when a workflow zero-touch started loads: the tag's two cho
     assert.match(note, job === "greenfield" ? /is the brief to build from/ : /The job's description is the text after the tag\./, job);
     assert.match(note, /Keep the plugin, command names and model names out of what you say to the person\./);
   }
-  assert.doesNotMatch(R.runNote({ job: "bugfix", policy: "opus-plus-sonnet", auth: "vendor" }), /CLAUDE_CODE_SUBAGENT_MODEL/, "under vendor no helper model is checked");
+  assert.match(R.runNote({ job: "bugfix", policy: "opus-plus-sonnet", auth: "vendor" }), /Do not ask the person to set CLAUDE_CODE_SUBAGENT_MODEL/, "under vendor too: the helpers follow the chat's model, which zero-touch checked");
   // The early-stop script is zero-touch's own, and exists.
   assert.ok(R.STOP_NOTE.includes(`node "${R.WORKFLOW_STOPPED}"`));
   assert.ok(existsSync(R.WORKFLOW_STOPPED) && R.WORKFLOW_STOPPED.includes(join("scripts", "ambient")));
