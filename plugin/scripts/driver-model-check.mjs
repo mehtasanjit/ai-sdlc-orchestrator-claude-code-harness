@@ -86,14 +86,8 @@ export const JUDGMENT_PHASES = [
  */
 export const IN_SESSION_ADAPTERS = new Set(["builtin-anthropic", "claude-cli"]);
 
-/**
- * Route all judgment phases and require one model. Returns
- * { modelName, modelId, perPhase } or throws with a STOP-worthy message.
- * `routing` is the imported dist/routing.js module (injected so tests can
- * exercise derivation without spawning a process).
- */
-export function deriveDriverModel(policy, routing, overrides = {}) {
-  const perPhase = JUDGMENT_PHASES.map((phase) => {
+function routeJudgmentPhases(policy, routing, overrides) {
+  return JUDGMENT_PHASES.map((phase) => {
     // task_type/module are empty and retry_count 0: shipped policies match
     // judgment phases on `phase:` alone, and a rule that additionally
     // requires a task_type deliberately does not describe the phase-level
@@ -113,7 +107,16 @@ export function deriveDriverModel(policy, routing, overrides = {}) {
     }
     return { phase, modelId: model.id, modelName: model.model_name, adapter: model.adapter };
   });
+}
 
+/**
+ * Route all judgment phases and require one model. Returns
+ * { modelName, modelId, perPhase } or throws with a STOP-worthy message.
+ * `routing` is the imported dist/routing.js module (injected so tests can
+ * exercise derivation without spawning a process).
+ */
+export function deriveDriverModel(policy, routing, overrides = {}) {
+  const perPhase = routeJudgmentPhases(policy, routing, overrides);
   const names = [...new Set(perPhase.map((p) => p.modelName))];
   if (names.length > 1) {
     const table = perPhase.map((p) => `  ${p.phase} → ${p.modelName} (${p.modelId})`).join("\n");
@@ -136,6 +139,35 @@ export function deriveDriverModel(policy, routing, overrides = {}) {
   }
 
   return { modelName: first.modelName, modelId: first.modelId, perPhase };
+}
+
+/**
+ * Under `vendor` a thinking step whose rule names a non-Claude agent runs on that agent (execute_judgment), and
+ * everything else runs in this session: the Claude-routed thinking steps, discovery, the orchestrator itself and any
+ * step handed back from an agent. That is one Claude model: the one the Claude-routed steps name, or the policy's
+ * `driver:` block when none names Claude. Throws when there is none or more than one.
+ */
+export function deriveVendorDriverModel(policy, routing, overrides = {}) {
+  const perPhase = routeJudgmentPhases(policy, routing, overrides);
+  const claude = perPhase.filter((p) => IN_SESSION_ADAPTERS.has(p.adapter));
+  const names = [...new Set([...claude.map((p) => p.modelName), ...(policy.driver ? [policy.driver.model_name] : [])])];
+  if (names.length === 0) {
+    throw new Error(
+      `policy '${policy.name}' routes every thinking step to a non-Claude model and has no driver: block. ` +
+        `This session still drives the run, runs discovery, and runs any step handed back from the agent; ` +
+        `name its Claude model in a top-level driver: { model_name: <claude model> } block.`
+    );
+  }
+  if (names.length > 1) {
+    const table = claude.map((p) => `  ${p.phase} → ${p.modelName} (${p.modelId})`).join("\n");
+    throw new Error(
+      `policy '${policy.name}' asks this session to run ${names.length} Claude models (${names.join(", ")}):\n${table}` +
+        `${policy.driver ? `\n  driver → ${policy.driver.model_name}` : ""}\n` +
+        `CLAUDE_CODE_SUBAGENT_MODEL is a single value. Name one Claude model for every Claude-routed thinking step and the driver.`
+    );
+  }
+  const leaf = claude.find((p) => p.modelName === names[0]);
+  return { modelName: names[0], modelId: leaf?.modelId ?? "driver", perPhase };
 }
 
 /**
@@ -221,7 +253,7 @@ export function declarationNote(declaration, actual, expected, policyName) {
 }
 
 function parseArgs(argv) {
-  const args = { projectRoot: undefined, policy: undefined, policyPath: undefined, printOnly: false };
+  const args = { projectRoot: undefined, policy: undefined, policyPath: undefined, printOnly: false, auth: "estimated" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eat = (flag) => (a.startsWith(`${flag}=`) ? a.slice(flag.length + 1) : argv[++i]);
@@ -229,7 +261,11 @@ function parseArgs(argv) {
     else if (a === "--project-root" || a.startsWith("--project-root=")) args.projectRoot = eat("--project-root");
     else if (a === "--policy" || a.startsWith("--policy=")) args.policy = eat("--policy");
     else if (a === "--policy-path" || a.startsWith("--policy-path=")) args.policyPath = eat("--policy-path");
-    else throw new Error(`unknown argument '${a}' (expected --project-root, --policy, --policy-path, --print-only)`);
+    else if (a === "--auth" || a.startsWith("--auth=")) args.auth = eat("--auth");
+    else throw new Error(`unknown argument '${a}' (expected --project-root, --policy, --policy-path, --auth, --print-only)`);
+  }
+  if (args.auth !== "vendor" && args.auth !== "estimated") {
+    throw new Error(`--auth must be vendor or estimated, got '${args.auth}'`);
   }
   return args;
 }
@@ -256,7 +292,9 @@ export async function main(argv = process.argv.slice(2)) {
     ? policyMod.loadPolicyFromPath(resolve(args.policyPath))
     : policyMod.loadPolicy({ policyName: args.policy, projectRoot: args.projectRoot });
   const overrides = routingMod.parseSelectOverrides(process.env.MMO_SELECT);
-  const derived = deriveDriverModel(policy, routingMod, overrides);
+  const derived = args.auth === "vendor"
+    ? deriveVendorDriverModel(policy, routingMod, overrides)
+    : deriveDriverModel(policy, routingMod, overrides);
 
   if (args.printOnly) {
     console.log(derived.modelName);

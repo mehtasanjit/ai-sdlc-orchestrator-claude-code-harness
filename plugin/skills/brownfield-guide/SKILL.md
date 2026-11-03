@@ -185,8 +185,8 @@ template from `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md` (search for
 - **Stack** — top-detected from `baseline.stacks`. Ask if it's right; accept overrides.
 - **Test command** — `baseline.test_command_proposed`. Accept an override.
 - **Auth mode** — ask `vendor` (billed via API keys) or `estimated` (Claude Code subscription
-  auth, cost is an estimate). Required — the orchestrator aborts without it. `estimated` also
-  requires `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched (it is what
+  auth, cost is an estimate). Required — the orchestrator aborts without it. Both modes
+  require `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched (it is what
   the driver subagents execute on): from a terminal, exported or in the `env` block of the
   project's `.claude/settings.local.json`; from the desktop app, in the `env` block of
   `~/.claude/settings.json`, since the app ignores project settings files. The orchestrator's

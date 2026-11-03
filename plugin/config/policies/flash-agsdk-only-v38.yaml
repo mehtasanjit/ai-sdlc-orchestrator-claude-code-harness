@@ -2,14 +2,22 @@
 # Gemini 3.8 Flash via the Antigravity SDK agent adapter (Vertex ADC). Same shape as
 # flash-agsdk-only; only the model changes.
 #
-# IMPORTANT: the orchestrator subagent's OWN turns (planning, tool-calling,
-# Gate answers) still run on whatever model the Claude Code session is on —
-# subagents in this harness are Claude, unavoidably. Only the dispatched
-# `execute_with_model` calls this policy governs actually route to Flash.
-# The manifest.model_breakdown will still show a Claude row for the
-# orchestrator's session turns; that is expected and correct.
-version: 1
+# Thinking steps follow the rules below (plugin 0.10.0). Requirements, the architect
+# and both reviewers run on Flash as an agent through execute_judgment, in a scratch
+# copy of the project; only each step's own outputs come back. A step that still fails
+# its checks after one fix round is handed back to the session's Claude helper, and its
+# telemetry events carry judgment_fallback. Discovery, the orchestrator's own turns and
+# the gates run on the driver: model, which the driver check pins
+# (CLAUDE_CODE_SUBAGENT_MODEL) under both auth modes. Version 1 of this policy ran
+# under plugins before 0.10.0, where the session's own model planned and reviewed
+# whatever the rules said; version 2 keeps those runs apart in telemetry.
+version: 2
 name: flash-agsdk-only-v38
+
+# The session's model: the orchestrator, discovery, the gates, and any thinking step
+# handed back from the agent. Outside models: so no rule or typist ladder reaches it.
+driver:
+  model_name: claude-opus-5-5
 
 # Pricing blocks mirror the dated price list (plugin/mcp/model-dispatch/src/prices.ts),
 # which bills every dispatch and the orchestrator's transcript; test/prices.test.mjs

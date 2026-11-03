@@ -67,6 +67,7 @@ test("the server lists the pipeline's tools, the executor's and hand-off mode's,
   const names = (await listTools()).map((t) => t.name).sort();
   assert.deepEqual(names, [
     "execute_batch",
+    "execute_judgment",
     "execute_stage",
     "execute_with_model",
     "finalize_spec",

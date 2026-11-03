@@ -44,7 +44,8 @@ test("rule 0 runs the free driver-model check before the pre-flight call that pr
   const probe = RULE0.indexOf("probe_typists: true");
   assert.ok(check > 0 && probe > 0, "rule 0 names both");
   assert.ok(check < probe, "the driver-model check is given before the call that probes the typists");
-  assert.match(flat(RULE0), /Under `estimated`, run the driver-model check first, before you call `preflight_dispatch`/);
+  assert.match(flat(RULE0), /Run the driver-model check first, under both auth modes, before you call `preflight_dispatch`/);
+  assert.match(flat(RULE0), /driver-model-check\.mjs" --project-root "\$\(pwd\)" --auth=<auth_mode>/, "the check is told the run's auth mode");
   assert.match(flat(RULE0), /print the script's output verbatim and STOP/i, "the check still stops the run");
 });
 
@@ -53,7 +54,7 @@ test("the pipeline skill orders pre-flight the same way and never calls it free"
   assert.ok(machine, "the state machine's pre-flight line");
   assert.doesNotMatch(machine, /free, no API call/, "pre-flight is not free: it probes every typist");
   assert.match(machine, /one test call through each typist/);
-  assert.match(flat(PHASE_MINUS_1), /Under `estimated`, the orchestrator's driver-model check \(rule 0\) runs first/);
+  assert.match(flat(PHASE_MINUS_1), /Under both auth modes, the orchestrator's driver-model check \(rule 0\) runs first/);
   assert.doesNotMatch(flat(PHASE_MINUS_1), /still free to stop/, "the probe calls are paid by then");
 });
 

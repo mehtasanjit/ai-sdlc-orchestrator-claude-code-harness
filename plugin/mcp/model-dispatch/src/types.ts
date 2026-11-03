@@ -196,6 +196,10 @@ export interface TelemetryEvent {
    */
   model_id?: string;
   routed_by: "orchestrator" | "fallback" | "manual";
+  /** A thinking step run on a non-Claude agent (judgment.ts): the helper whose instructions it ran. */
+  judgment_role?: string;
+  /** Set when that step was handed back to the session's Claude helper: why. */
+  judgment_fallback?: string;
   /**
    * Which typist typed the call — `lean-opus` (a `claude -p` with no tools),
    * `flash-completion` (Gemini through the completion door) or `agy` (Gemini
@@ -553,6 +557,8 @@ export interface Policy {
   rules: Rule[];
   /** Optional; absent from policies written before slots existed. */
   select?: Record<string, SelectSlot>;
+  /** The Claude model the session drives the run on, for a policy whose thinking steps name no Claude model. */
+  driver?: { model_name: string; reason?: string };
 }
 
 export interface RoutingDecision {

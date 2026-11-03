@@ -189,11 +189,11 @@ phases that would have gone to the cheaper model.
 
 The run records tokens and cost in one of two modes. Present the choice; do not decide silently.
 
-- **Vendor** — every call goes through the bundled server, and the numbers are the ones the vendor
-  reports. Requires `ANTHROPIC_API_KEY`. Use this whenever the numbers will be shown to anyone.
+- **Vendor** — every dispatched call goes through the bundled server, and the numbers are the ones the
+  vendor reports. Requires `ANTHROPIC_API_KEY`. Use this whenever the numbers will be shown to anyone.
 - **Estimated** — the judgment-phase tokens are estimated from character counts. No API key needed;
   a Claude Code subscription covers the run. The mechanical-phase numbers are still vendor-reported.
-  This mode also requires `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched,
+  Both modes require `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched,
   to the policy's driver model: from a terminal, exported or in the `env` block of the project's
   `.claude/settings.local.json`; from the desktop app, in the `env` block of
   `~/.claude/settings.json` (the app ignores project settings files). The orchestrator's run-start

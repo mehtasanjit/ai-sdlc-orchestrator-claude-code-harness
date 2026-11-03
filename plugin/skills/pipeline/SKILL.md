@@ -153,7 +153,7 @@ Rules for executor mode:
 
 ## Phase -1 — preflight_dispatch (MANDATORY, before any phase)
 
-Under `estimated`, the orchestrator's driver-model check (rule 0) runs first: it is free, and a run it
+Under both auth modes, the orchestrator's driver-model check (rule 0) runs first: it is free, and a run it
 stops needs no test call to know it. Then call `preflight_dispatch` with the run's `auth_mode` and the
 same `policy_name` / `project_root` / `policy_path` you will use for the run, and **read the result
 before doing anything else**.

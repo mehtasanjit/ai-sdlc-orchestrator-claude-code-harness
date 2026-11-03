@@ -45,7 +45,7 @@ export const CONTRACT_SCRIPT = "write-contract.mjs";
  * The model-server tools that take a policy file: in a run zero-touch started, each is stamped with the person's
  * policy. tools/test/zero-touch-own-steps.test.mjs checks the list against the server's own.
  */
-export const STAMPED_TOOLS = /__(?:load_policy|preflight_dispatch|execute_with_model|execute_batch|simulate_policy)$/;
+export const STAMPED_TOOLS = /__(?:load_policy|preflight_dispatch|execute_with_model|execute_batch|execute_judgment|simulate_policy)$/;
 /**
  * The stamped tools that the zero-touch plugin's stamp hook (pre-dispatch) receives: exactly those its released
  * matcher names (zero-touch/hooks/hooks.json, kept as released). An installed zero-touch moves only through its own

@@ -632,9 +632,12 @@ test("the version notes have no section for a build that was never released, and
   }
 });
 
-test("the current version's note carries no run names, says how pre-flight events count, and which turns are command turns", () => {
-  const version = JSON.parse(read("plugin", ".claude-plugin", "plugin.json")).version;
-  const note = NOTES.slice(NOTES.indexOf(`### v${version}\n`)).split(/\n(?=### v)/)[0];
+/** One version's note, by its version. */
+const versionNote = (version) => NOTES.slice(NOTES.indexOf(`### v${version}\n`)).split(/\n(?=### v)/)[0];
+
+test("the v0.9.3 note carries no run names, says how pre-flight events count, and which turns are command turns", () => {
+  const version = "0.9.3";
+  const note = versionNote(version);
   assert.ok(note.length > 100, `a v${version} note`);
   assert.doesNotMatch(note, /\bLarge\d|\bRun \d+\b|first try/, "no run names or session history");
   assert.match(note, /`preflight`[^|]*`started_at`|`started_at`[^|]*`preflight`/, "pre-flight events never anchor a run's window");
@@ -645,10 +648,9 @@ test("the current version's note carries no run names, says how pre-flight event
   assert.match(note, /read from disk[^|]*brownfield packet/);
 });
 
-/** A row of the current version's note, by its first cell. */
-function noteRow(area) {
-  const version = JSON.parse(read("plugin", ".claude-plugin", "plugin.json")).version;
-  const note = NOTES.slice(NOTES.indexOf(`### v${version}\n`)).split(/\n(?=### v)/)[0];
+/** A row of a version's note (v0.9.3 unless named), by its first cell. */
+function noteRow(area, version = "0.9.3") {
+  const note = versionNote(version);
   const row = note.split("\n").find((l) => l.startsWith(`| ${area} |`));
   assert.ok(row, `the v${version} note has a "${area}" row`);
   return row;
@@ -660,7 +662,7 @@ function cacheTtl(agent) {
   return /^\s*cacheTtl:\s*(\S+)/m.exec(front)?.[1] ?? "5m";
 }
 
-test("the current version's note says each change as the code does it", async () => {
+test("the v0.9.3 note says each change as the code does it", async () => {
   // Waits: a stated number per attempt; past them a failure is the attempt's (apply.ts runApplyLoop).
   assert.match(APPLY, /waits < transport\.maxWaits/);
   assert.match(APPLY, /waits = 0;/, "each attempt starts its own waits");
@@ -820,4 +822,15 @@ test("each shipped brownfield example's documented scope passes plan-lint", () =
       }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
+});
+
+test("the v0.10.0 note says how thinking steps are routed, as judgment.ts does it", () => {
+  const judgment = read("plugin", "mcp", "model-dispatch", "src", "judgment.ts");
+  const row = noteRow("Thinking-step routing", "0.10.0");
+  assert.match(row, /`execute_judgment`/);
+  assert.match(row, /one fix round/);
+  assert.match(judgment, /export const JUDGMENT_FIX_ROUNDS = 1;/);
+  assert.match(row, /installed dependencies left out/);
+  assert.match(judgment, /CLONE_SKIP_DIRS = new Set\(\["node_modules"/);
+  assert.match(noteRow("Driver model", "0.10.0"), /`driver:`/);
 });

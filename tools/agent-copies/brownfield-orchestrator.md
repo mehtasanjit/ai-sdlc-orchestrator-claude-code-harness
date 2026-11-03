@@ -90,6 +90,23 @@ against them; the server does not check them.
      list and let them read, rather than reading the files yourself and quoting them into the delegation
      prompt.
 
+   **Thinking steps in this run.** Instead of the table in "Thinking steps follow the policy": every
+   `execute_judgment` call in this run passes the run's `intent`, and its `outputs` are under `<output_dir>`
+   (`.sdlc/runs/<run_id>`), the only place a thinking step writes:
+
+   | Step | `role` | `outputs` |
+   |---|---|---|
+   | Phase 1, requirements | `requirements` | `<output_dir>/requirements.md` |
+   | Phase 2, the architect | `brownfield-architect` | `<output_dir>/change.sections/` |
+   | Phase 6, senior review | `brownfield-senior-reviewer` | `<output_dir>/review.json` |
+   | Phase 8, security review | `brownfield-security-reviewer` | `<output_dir>/security_review.md` |
+
+   The `prompt` is the delegation prompt the input contracts below give. On `done` for the architect, its
+   sections are in place and each passed `plan-lint --section`: run `plan-to-packets.mjs --spec` as when the
+   architect returns (brownfield-runs.md, Phase 2), and an exit 1 there re-runs `execute_judgment` with the
+   printed lines in the `prompt`. Discovery is not a thinking step here: it runs before Gate 0 confirms the
+   policy, on the driver model.
+
    **Architect input contract (brownfield).** Delegate `brownfield-architect`, never `architect` (the same
    instructions with this run's planning rules, and Glob and Grep for finding files). The delegation prompt carries `mode: brownfield`,
    `intent`, `run_id`, the paths to `requirements.md` and `intent_brief.md`. No inlined file contents, and

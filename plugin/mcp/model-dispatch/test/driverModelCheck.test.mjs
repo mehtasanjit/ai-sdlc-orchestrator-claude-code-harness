@@ -313,3 +313,57 @@ test("no stranded-value note appears when the project has no settings file", () 
   });
 });
 
+
+// Under vendor, thinking steps routed to an agent run there (execute_judgment); the session is still checked, against
+// the policy's Claude-routed thinking steps or its driver: block.
+const AGENT_WITH_DRIVER = NON_ANTHROPIC_POLICY.replace("name: check-agentic\n", "name: check-agentic\ndriver:\n  model_name: claude-opus-5-5\n");
+
+test("vendor: a policy whose thinking steps all name an agent is checked against its driver: block", () => {
+  withPolicy(AGENT_WITH_DRIVER, (root) => {
+    const ok = run(["--project-root", root, "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(ok.code, 0, ok.stderr);
+    const wrong = run(["--project-root", root, "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5" });
+    assert.equal(wrong.code, 1);
+    assert.match(wrong.stderr, /claude-opus-5-5/);
+  });
+});
+
+test("vendor: an agent-only policy with no driver: block is refused, naming the block to add", () => {
+  withPolicy(NON_ANTHROPIC_POLICY, (root) => {
+    const r = run(["--project-root", root, "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /no driver: block/);
+  });
+});
+
+test("vendor: a Claude-routed policy pins the session to that model, as estimated does", () => {
+  withPolicy(UNIFIED_POLICY, (root) => {
+    assert.equal(run(["--project-root", root, "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-4-8" }).code, 0);
+    assert.equal(run(["--project-root", root, "--auth=vendor"]).code, 1);
+  });
+});
+
+test("vendor: a driver: block that disagrees with the Claude-routed thinking steps is refused", () => {
+  const yaml = UNIFIED_POLICY.replace("name: check-unified\n", "name: check-unified\ndriver:\n  model_name: claude-opus-5-5\n");
+  withPolicy(yaml, (root) => {
+    const r = run(["--project-root", root, "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-4-8" });
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /2 Claude models/);
+  });
+});
+
+test("estimated still refuses a thinking tier no Claude Code subagent can run, driver: block or not", () => {
+  withPolicy(AGENT_WITH_DRIVER, (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /--auth=vendor/);
+  });
+});
+
+test("every shipped policy whose thinking steps name Gemini carries a driver: block the vendor check accepts", () => {
+  const dir = join(HERE, "..", "..", "..", "config", "policies");
+  for (const name of ["flash-agsdk-only", "flash-agsdk-only-v38", "argon4-agsdk-only", "argon4-plus-flash38", "argon4-plus-sonnet55"]) {
+    const r = run(["--policy-path", join(dir, `${name}.yaml`), "--auth=vendor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(r.code, 0, `${name}: ${r.stderr}`);
+  }
+});

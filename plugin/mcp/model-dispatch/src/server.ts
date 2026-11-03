@@ -16,6 +16,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 
@@ -64,6 +65,7 @@ import { leanOpusCliProblem } from "./executor/typists.js";
 import { probeEvents, probeTypists, runTypingLeaves } from "./typistProbe.js";
 import { runCard } from "./runCard.js";
 import { PLUGIN_ROOT } from "./paths.js";
+import { JUDGMENT_ROLES, executeJudgment, type JudgmentDeps } from "./judgment.js";
 
 /**
  * Cheap up-front schema validation for TaskPacket inputs to execute_with_model.
@@ -400,11 +402,13 @@ interface DispatchOptions {
   force?: { modelId: string; reason: string; ruleIndex: number; selection?: any };
   /** The run the call belongs to (runFor): how it is billed, for the typist. */
   run?: ServerRun;
+  /** The caller writes the events itself, with its own fields (execute_judgment). */
+  noAppend?: boolean;
 }
 
 /** Route one packet, run it, log it; append its telemetry unless the apply loop records it (forApply). */
 async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, opts: DispatchOptions = {}): Promise<DispatchOnce> {
-  const { forApply = false, force, run = runState } = opts;
+  const { forApply = false, force, run = runState, noAppend = false } = opts;
   const decision = force ?? pickModel(routeContext(packet), policy, selectOverrides());
   log("info", "route.decide", {
     packet_id: packet.id,
@@ -568,7 +572,7 @@ async function dispatchOnce(packet: TaskPacket, policy: Policy, a: any, opts: Di
     // and unlogged tokens stay in the true total (review finding M4).
     transcript_logged_cost_usd: att.transcript_logged_cost_usd,
   }));
-  if (a.telemetry_path && !forApply) {
+  if (a.telemetry_path && !forApply && !noAppend) {
     for (const ev of events) appendEvent(a.telemetry_path, ev);
     log("debug", "telemetry.append", { telemetry_path: a.telemetry_path, events_written: events.length });
   }
@@ -976,6 +980,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: "execute_judgment",
+      description:
+        "Run one thinking step (requirements, the architect, the senior or security reviewer) where the run's policy " +
+        "routes its phase. A Claude model: the reply is route 'claude' and nothing is spent; run the step in this " +
+        "session as before. An agent leaf (antigravity-worker): the agent runs the helper's own instructions in a " +
+        "scratch clone of the project, code checks its outputs (each exists, each JSON file parses, the architect's " +
+        "sections are handed over and checked), sends back problems for one fix round, and copies only `outputs` " +
+        "into the project; the reply is route 'done'. A step that still fails, or a leaf that cannot run as an agent, " +
+        "replies route 'claude' with fallback: true and the reason: run the step in this session.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          role: { type: "string", enum: Object.keys(JUDGMENT_ROLES), description: "The helper: 'requirements' for Phase 1, else the subagent you would delegate." },
+          prompt: { type: "string", description: "Exactly what you would put in the helper's delegation prompt (for 'requirements': the brief's path and the job's Phase 1 rules)." },
+          outputs: { type: "array", items: { type: "string" }, description: "Paths relative to project_root the step writes: a file, or a folder ending in '/' (the architect's spec.sections/ or change.sections/). In a brownfield run each must be under .sdlc/." },
+          project_root: { type: "string" },
+          run_id: { type: "string" },
+          intent: { type: "string", description: "Brownfield: the run's job, as Gate 0 recorded it." },
+          spec_dir: { type: "string", description: "Greenfield architect: the run's output directory, where the spec is assembled." },
+          requirements_path: { type: "string", description: "Greenfield architect: requirements.md, for finalize_spec's coverage check." },
+          policy_name: { type: "string" },
+          policy_path: { type: "string" },
+          telemetry_path: { type: "string" },
+        },
+        required: ["role", "prompt", "outputs", "project_root"],
+      },
+    },
     ...EXECUTOR_TOOLS,
     // Zero-touch's four hand-off tools (handoff/tools.ts), the only tools zero-touch adds: its workflow routing
     // needs none. Listed only where a Hand-off chat can use them (above); a call is refused unless the plugin's hook
@@ -1045,6 +1077,45 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         } finally {
           await progress?.stop();
         }
+      }
+      case "execute_judgment": {
+        const a = args as any;
+        const { policy, run } = runFor(a);
+        const executorCtx = {
+          run: () => runState,
+          policy: (r: any) => ensurePolicy(r.policyName, r.projectRoot, r.policyPath),
+          overrides: selectOverrides(),
+        };
+        const replyOf = (r: any) => { try { return JSON.parse(r.content[0].text); } catch { return {}; } };
+        const deps: JudgmentDeps = {
+          pluginRoot: PLUGIN_ROOT,
+          route: (phase) => {
+            const d = pickModel({ phase, task_type: "judgment", module: String(a.role), retry_count: 0, intent: a.intent }, policy, selectOverrides());
+            return { model: getModel(policy, d.modelId), reason: d.reason };
+          },
+          dispatch: async (packet, workDir) => {
+            const one = await dispatchOnce(packet, policy, { ...a, work_dir: workDir }, { run, noAppend: true });
+            return { result: one.result, events: one.events };
+          },
+          record: (evs) => { if (a.telemetry_path) for (const ev of evs) appendEvent(a.telemetry_path, ev); },
+          submitSection: async (specDir, section, file) => {
+            const r = replyOf(await handleExecutorTool("submit_spec_section", { spec_dir: specDir, section, file }, executorCtx));
+            return { ok: !!r.ok, problems: (r.errors ?? []).map((e: any) => `${e.path ?? "/"} ${e.message ?? e}`) };
+          },
+          finalizeSpec: async (specDir, requirementsPath) => {
+            const r = replyOf(await handleExecutorTool("finalize_spec", { spec_dir: specDir, requirements_path: requirementsPath }, executorCtx));
+            const missing: string[] = r.missing_coverage ?? [];
+            return { ok: !!r.ok, problems: missing.length ? [`no unit covers ${missing.join(", ")}`] : r.ok ? [] : [JSON.stringify(r.errors ?? r)] };
+          },
+          lintSection: (file, runId, projectRoot) => {
+            const lint = spawnSync(process.execPath, [join(PLUGIN_ROOT, "scripts", "plan-lint.mjs"), "--section", file, "--run-id", runId, "--project-root", projectRoot, ...(a.intent ? ["--intent", String(a.intent)] : [])], { cwd: projectRoot, encoding: "utf8" });
+            const lines = `${lint.stdout ?? ""}\n${lint.stderr ?? ""}`.split("\n").map((l) => l.trim()).filter(Boolean);
+            return { ok: lint.status === 0, problems: lint.status === 0 ? [] : lines };
+          },
+          log: (level, event, fields) => log(level, event, fields),
+        };
+        const out = await executeJudgment(a, deps);
+        return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
       }
       case "execute_batch": {
         const a = args as any;

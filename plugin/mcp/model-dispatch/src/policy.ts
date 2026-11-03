@@ -97,6 +97,7 @@ function validatePolicy(raw: any): Policy {
     log("warn", "policy.setting_ignored", { policy: raw.name, key: "hard_cost_cap_usd", value: raw.hard_cost_cap_usd, applies: "no cost cap: nothing stops a run for its cost" });
     delete raw.hard_cost_cap_usd;
   }
+  validateDriver(raw);
   const modelIds = new Set<string>(raw.models.map((m: ModelConfig) => m.id));
   const slotNames = validateSelect(raw, modelIds);
   // Every rule references a known model id or a declared slot; check at load
@@ -112,6 +113,19 @@ function validatePolicy(raw: any): Policy {
     }
   });
   return raw as Policy;
+}
+
+/**
+ * The optional `driver:` block names the Claude model the session runs on (the orchestrator, discovery, and any
+ * thinking step handed back from a non-Claude agent). It sits outside `models:` so no rule and no typist ladder ever
+ * reaches it.
+ */
+function validateDriver(raw: any): void {
+  if (raw.driver === undefined) return;
+  const d = raw.driver;
+  if (!d || typeof d !== "object" || Array.isArray(d) || typeof d.model_name !== "string" || !d.model_name.startsWith("claude-")) {
+    throw new Error("Policy: 'driver' must be { model_name: <a Claude model id, e.g. claude-opus-5-5> }");
+  }
 }
 
 /**
