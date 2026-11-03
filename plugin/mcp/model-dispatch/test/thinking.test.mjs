@@ -133,6 +133,33 @@ test("a revise carries on the step's saved conversation with the changes asked f
   assert.doesNotMatch(calls.dispatch[1].packet.instruction, /The helper's instructions/, "a resumed conversation already holds them");
 });
 
+test("a greenfield architect's revise hands the whole spec in again, as its instructions say; other steps hand in what changed", async () => {
+  const root = project();
+  const { d, calls } = deps(AGENT, () => result({ result: { done: true, missing: [], accepted: ["header.json", "units-001.json", "finalize"], conversation_id: "c1" } }));
+  const architect = (over) => args(root, { role: "architect", intent: undefined, output_dir: "out", ...over });
+  const config = () => JSON.parse(readFileSync(join(root, "out", "thinking", "architect.tools.json"), "utf8"));
+  await runThinkingStep(architect({}), d);
+  assert.equal(config().revise, false);
+  // A header after finalize opens a new spec, so a revise that hands in only its changed file would drop the rest.
+  await runThinkingStep(architect({ revise: "U02: also return 409 on a duplicate title" }), d);
+  const resumed = calls.dispatch[1].packet.instruction;
+  assert.match(resumed, /then every units file in order, changed or not/);
+  assert.match(resumed, /its name alone/);
+  assert.match(resumed, /finalize's drop/);
+  assert.doesNotMatch(resumed, /hand each changed one in again/);
+  assert.equal(config().revise, true, "the tools hold the step to the approved spec");
+  // With no saved conversation the revise starts over, told the same.
+  const fresh = project();
+  const f = deps(AGENT, () => result({ result: { done: true, missing: [], accepted: [] } }));
+  await runThinkingStep(args(fresh, { role: "architect", intent: undefined, output_dir: "out", revise: "U02: also return 409" }), f.d);
+  assert.match(f.calls.dispatch[0].packet.instruction, /## Changes asked for[\s\S]*then every units file in order, changed or not/);
+  // A brownfield architect's sections stay on disk between calls: it hands in only what changed.
+  const b = deps(AGENT, () => result());
+  await runThinkingStep(args(root), b.d);
+  await runThinkingStep(args(root, { revise: "split U02" }), b.d);
+  assert.match(b.calls.dispatch[1].packet.instruction, /hand each changed one in again/);
+});
+
 test("a brownfield step writes only in the run's folder under .sdlc", () => {
   assert.match(outputDirProblem("/p", "src", true), /outside \.sdlc/);
   assert.equal(outputDirProblem("/p", ".sdlc/runs/r1", true), null);

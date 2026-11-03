@@ -131,3 +131,54 @@ test("a Gemini architect's spec holds only its own run's units, as submit_spec_s
   const other = earlierRun();
   assert.match((await architect(other, "this-run").call("submit_section", { name: "units-001.json", json: JSON.stringify([unit("U02", "src/todo.py")]) })).error, /earlier run's spec/);
 });
+
+test("a revise keeps every unit of the approved spec, or removes one only by name; an unchanged section goes by its name alone", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-revise-"));
+  mkdirSync(join(root, "out"));
+  const header = {
+    stack: ["Python 3.13", "FastAPI", "pytest"],
+    commands: [{ name: "backend tests", run: "pytest -q", cwd: "backend", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 600 }],
+    no_audit_reason: "a test", decisions: [{ topic: "ids", choice: "integer", rejected: ["uuid"], reason: "simplest" }],
+    shared: { conventions: ["snake_case"], data_model: [{ name: "Todo", fields: [{ name: "id", type: "int", constraints: "primary key" }] }], api: [{ method: "POST", path: "/todos", access: "any", request: "TodoCreate", response: "Todo", success_status: 201, error_statuses: [422] }] },
+  };
+  const unit = (id, path, behaviour) => ({ id, path, phase: "codegen", import_line: "", exports: [{ name: "Todo", kind: "class", params: [], returns: "Todo" }], behaviour, depends_on: [], style_from: { reason: "first file of its kind" }, covers: ["FR-1.1"], tests: [{ name: "valid", given: "a title", expect: "a Todo" }], approx_lines: 20 });
+  // Each run_thinking_step call is a new tools process; a revise is told so in its config.
+  const architect = (revise) => new ThinkingTools({ role: "architect", project_root: root, run_id: "r1", output_dir: "out", outputs: { sections_dir: "out/spec.sections" }, spec_dir: "out", run_token: "run-1", revise });
+  const hand = (t, name, value) => t.call("submit_section", { name, json: value === undefined ? "" : JSON.stringify(value) });
+  const specUnits = () => JSON.parse(readFileSync(join(root, "out", "spec.json"), "utf8")).units.map((u) => `${u.id}: ${u.behaviour}`);
+
+  const first = architect(false);
+  await hand(first, "header.json", header);
+  await hand(first, "units-001.json", [unit("U01", "backend/app/models.py", "the models")]);
+  await hand(first, "units-002.json", [unit("U02", "backend/app/api.py", "the routes")]);
+  assert.match((await first.call("finalize", {})).result, /finalized: 2 unit/);
+
+  // The revise changes U02 only. Its header opens a new spec; U01 must go in again.
+  const revise = architect(true);
+  assert.match((await hand(revise, "header.json", header)).result, /accepted header\.json: 0 unit/);
+  assert.match((await hand(revise, "units-002.json", [unit("U02", "backend/app/api.py", "the routes; 409 on a duplicate title")])).result, /1 unit/);
+  const owed = JSON.parse((await revise.call("status", {})).result);
+  assert.equal(owed.done, false);
+  assert.ok(owed.missing.some((m) => /U01 \(backend\/app\/models\.py\) of the approved spec/.test(m)), owed.missing.join("; "));
+  assert.match((await revise.call("finalize", {})).error, /U01 \(backend\/app\/models\.py\)/, "a revise that would drop an approved unit is not finalized");
+  // The unchanged file goes again by its name alone, as it stands.
+  assert.match((await hand(revise, "units-001.json")).result, /accepted units-001\.json: 2 unit/);
+  assert.match((await hand(revise, "units-009.json")).error, /no units-009\.json/);
+  assert.match((await revise.call("finalize", {})).result, /finalized: 2 unit/);
+  assert.deepEqual(specUnits(), ["U02: the routes; 409 on a duplicate title", "U01: the models"]);
+  assert.equal(JSON.parse((await revise.call("status", {})).result).done, true);
+
+  // A revise that removes a unit names it.
+  const removal = architect(true);
+  await hand(removal, "header.json", header);
+  await hand(removal, "units-001.json");
+  assert.match((await removal.call("finalize", { drop: ["U01"] })).error, /drop names only/, "U01 is in this spec: it is not dropped");
+  assert.match((await removal.call("finalize", { drop: ["U02"] })).result, /finalized: 1 unit.*removed from the approved spec: U02/);
+  assert.deepEqual(specUnits(), ["U01: the models"]);
+
+  // A first call (no revise) is a new design: nothing earlier holds it.
+  const again = architect(false);
+  await hand(again, "header.json", header);
+  await hand(again, "units-002.json", [unit("U02", "backend/app/api.py", "the routes")]);
+  assert.match((await again.call("finalize", {})).result, /finalized: 1 unit/);
+});

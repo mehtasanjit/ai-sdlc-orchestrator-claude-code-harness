@@ -94,7 +94,7 @@ const HEARTBEAT = /^@mmo-heartbeat (\{.*\})\s*$/;
  * worker wrote: `beats` (heartbeats as read here), `sent` (heartbeats as written, on the worker's clock: {mono, wall,
  * hb}), and the stand-in's `log`.
  */
-export async function runWorker(kind, { script, args = [], timeout = 30, env = {}, killAfterMs, killSignal = "SIGTERM", limitMs = 60_000, brief = "Write src/a.ts.", answerSchema, role = "requirements", outputs = { requirements: "out/requirements.md" } } = {}) {
+export async function runWorker(kind, { script, args = [], timeout = 30, env = {}, killAfterMs, killSignal = "SIGTERM", limitMs = 60_000, brief = "Write src/a.ts.", answerSchema, role = "requirements", outputs = { requirements: "out/requirements.md" }, config = {}, setup } = {}) {
   const dir = mkdtempSync(join(tmpdir(), `agy-${kind}-`));
   try {
     const work = join(dir, "work");
@@ -113,11 +113,13 @@ export async function runWorker(kind, { script, args = [], timeout = 30, env = {
         "--model", "gemini-3.8-flash", "--region", "global", "--workdir", work, "--out", out, "--thinking", "LOW", "--max-model-calls", "3",
         "--timeout", String(timeout), "--api-retries", "6", "--api-retry-initial-ms", "2000", ...args];
     } else if (kind === "thinking") {
-      // A thinking step: the project is `work`, with the step's real tools (thinking-tools.mjs) over it.
+      // A thinking step: the project is `work`, with the step's real tools (thinking-tools.mjs) over it. `setup` puts
+      // what an earlier call left in the project; `config` adds to the tools config the server writes.
       writeFileSync(join(dir, "task.md"), brief);
       mkdirSync(join(work, "out"), { recursive: true });
+      await setup?.(work);
       const toolsConfig = join(dir, "tools.json");
-      writeFileSync(toolsConfig, JSON.stringify({ role, project_root: work, run_id: "r1", output_dir: "out", outputs }));
+      writeFileSync(toolsConfig, JSON.stringify({ role, project_root: work, run_id: "r1", output_dir: "out", outputs, ...config }));
       argv = [THINKING_WORKER, "--task-file", join(dir, "task.md"), "--model", "gemini-3.8-flash", "--region", "global", "--workdir", work,
         "--out-dir", dir, "--usage-file", out, "--role", role, "--tools-config", toolsConfig, "--save-dir", join(dir, "save"),
         "--summary-file", join(dir, "summary.json"), "--node", process.execPath, "--tools-script", THINKING_TOOLS,

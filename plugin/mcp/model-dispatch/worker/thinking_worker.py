@@ -92,14 +92,16 @@ def tools_for(host: ToolHost, role: str) -> list:
         text. Checked at once; a refusal lists every problem. Send the same name again to replace a refused section."""
         return host.text("write_section", name=name, json=section_json)
 
-    def submit_section(name: str, section_json: str) -> str:
-        """Hand in one build-spec section file (header.json first, then units-001.json, ...): the file's JSON text.
-        Checked at once; a refusal lists every problem and stores nothing."""
+    def submit_section(name: str, section_json: str = "") -> str:
+        """Hand in one build-spec section file (header.json first, then units-001.json, ...): the file's JSON text, or
+        the name alone to hand in the file as it stands (a revise's unchanged file). Checked at once; a refusal lists
+        every problem and stores nothing."""
         return host.text("submit_section", name=name, json=section_json)
 
-    def finalize() -> str:
-        """Assemble the build spec from the accepted sections and check every requirement is covered."""
-        return host.text("finalize")
+    def finalize(drop: list[str] | None = None) -> str:
+        """Assemble the build spec from the accepted sections and check every requirement is covered. On a revise,
+        drop names the approved spec's unit ids the changes remove; every other approved unit must be handed in again."""
+        return host.text("finalize", drop=drop or [])
 
     def registry_versions(ecosystem: str, name: str) -> str:
         """The published versions of a package: ecosystem 'npm' or 'pypi'."""

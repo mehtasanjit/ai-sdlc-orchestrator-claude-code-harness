@@ -53,7 +53,7 @@ export class ThinkingTools {
   /**
    * cfg: {role, project_root, run_id, intent, output_dir (relative to project_root), outputs: {requirements,
    * sections_dir, review, security_review, discovery}, spec_dir, requirements_path, code_dir, run_token (the token the
-   * spec store knows the run's pre-flight by)}
+   * spec store knows the run's pre-flight by), revise (the step answers a gate's changes)}
    */
   constructor(cfg) {
     this.cfg = cfg;
@@ -208,12 +208,20 @@ export class ThinkingTools {
     return r.ok ? { result: r.lines.join("\n") } : { error: `refused:\n${r.lines.join("\n")}` };
   }
 
-  /** Greenfield: the build spec's section, handed to the spec store as submit_spec_section does. */
+  /**
+   * Greenfield: the build spec's section, handed to the spec store as submit_spec_section does. The name alone hands in
+   * the section file as it stands, as submitting the same file again does there: a revise sends every units file again,
+   * and an unchanged one need not be typed out again.
+   */
   async submit_section({ name, json }) {
     const n = this.sectionName(name);
     if (n.error) return { error: n.error };
-    try { JSON.parse(json); } catch (e) { return { error: `${name} is not valid JSON: ${e.message}` }; }
-    this.own(n.rel, json);
+    if (json === undefined || json === "") {
+      if (!existsSync(join(this.root, n.rel))) return { error: `no ${name} was handed in for this spec: hand it in with its JSON` };
+    } else {
+      try { JSON.parse(json); } catch (e) { return { error: `${name} is not valid JSON: ${e.message}` }; }
+      this.own(n.rel, json);
+    }
     const { specStore } = await loadServerLib();
     const specDir = join(this.root, this.cfg.spec_dir);
     const kind = name === "header.json" ? "header" : "units";
@@ -226,10 +234,47 @@ export class ThinkingTools {
     return { error: `refused:\n${r.errors.map((e) => `${e.path} ${e.message}`).join("\n")}` };
   }
 
-  async finalize() {
+  /**
+   * On a design revise, the units of the spec the person reviewed: the newest spec this run finalized, still in the
+   * folder or moved aside by the revise's header. None when the step answers no revise, or this run finalized none.
+   */
+  approvedUnits(specStore) {
+    if (this.cfg.role !== "architect" || !this.cfg.revise) return [];
+    const specDir = join(this.root, this.cfg.spec_dir);
+    const previous = join(specDir, specStore.PREVIOUS_DIR);
+    // Newest first: each folder under previous/ is named by the time its spec was moved aside.
+    const folders = [specDir, ...(existsSync(previous) ? readdirSync(previous).sort().reverse().map((d) => join(previous, d)) : [])];
+    for (const f of folders) {
+      if (!existsSync(join(f, "spec.json")) || specStore.openedSpec(f)?.run !== this.cfg.run_token) continue;
+      return JSON.parse(readFileSync(join(f, "spec.json"), "utf8")).units.map((u) => ({ id: u.id, path: u.path }));
+    }
+    return [];
+  }
+
+  /**
+   * The approved spec's units the spec being written does not hold. A header after finalize opens a new spec, so a
+   * revise that hands in only what changed would finalize without the rest (review: an approved unit was dropped).
+   */
+  unaccounted(specStore) {
+    const approved = this.approvedUnits(specStore);
+    if (!approved.length) return [];
+    const held = new Set(specStore.storedUnits(join(this.root, this.cfg.spec_dir)).map((u) => u.id));
+    return approved.filter((u) => !held.has(u.id));
+  }
+
+  /** `drop`: on a revise, the approved spec's units the changes remove, by id; every other approved unit must be in. */
+  async finalize({ drop } = {}) {
     const { specStore } = await loadServerLib();
+    const gone = this.unaccounted(specStore);
+    const dropped = Array.isArray(drop) ? drop.map(String) : [];
+    const notGone = dropped.filter((id) => !gone.some((u) => u.id === id));
+    if (notGone.length) return { error: `drop names only units of the approved spec that this spec leaves out; not one of them: ${notGone.join(", ")}` };
+    const owed = gone.filter((u) => !dropped.includes(u.id));
+    if (owed.length) {
+      return { error: `the approved spec's ${owed.map((u) => `${u.id} (${u.path})`).join(", ")} ${owed.length === 1 ? "is" : "are"} not in this spec: hand each one's units file in again (by its name alone if unchanged), or name the ones the changes remove in drop; then finalize again` };
+    }
     const r = specStore.finalizeSpec(join(this.root, this.cfg.spec_dir), this.cfg.requirements_path ? join(this.root, this.cfg.requirements_path) : undefined);
-    if (r.ok) { this.accepted.set("finalize", true); return { result: `finalized: ${r.units} unit(s); design.md rendered` }; }
+    if (r.ok) { this.accepted.set("finalize", true); return { result: `finalized: ${r.units} unit(s); design.md rendered${dropped.length ? `; removed from the approved spec: ${dropped.join(", ")}` : ""}` }; }
     return { error: r.missing_coverage?.length ? `no unit covers ${r.missing_coverage.join(", ")}: add a new units file that covers them, then finalize again` : JSON.stringify(r.errors ?? r) };
   }
 
@@ -348,7 +393,7 @@ export class ThinkingTools {
   }
 
   /** What the step still owes. The step is done only when this is empty. */
-  missing() {
+  async missing() {
     const role = this.cfg.role;
     if (role === "requirements") return this.accepted.has("requirements") ? [] : ["requirements.md (write_requirements)"];
     if (role === "discovery") return ["discovery.md", "baseline.json"].filter((n) => !this.accepted.has(`discovery:${n}`)).map((n) => `the run's ${n} (write_discovery)`);
@@ -357,12 +402,16 @@ export class ThinkingTools {
     if (!this.accepted.has("header.json")) out.push("header.json, accepted");
     if (![...this.accepted.keys()].some((k) => k.startsWith("units-"))) out.push("at least one units file, accepted");
     for (const [name, lines] of this.refused) out.push(`${name} was refused: ${lines.slice(0, 3).join("; ")}`);
-    if (role === "architect" && !this.accepted.has("finalize")) out.push("finalize, after every section is accepted");
+    if (role === "architect") {
+      const { specStore } = await loadServerLib();
+      for (const u of this.unaccounted(specStore)) out.push(`${u.id} (${u.path}) of the approved spec, not in this spec yet: hand its units file in again (by its name alone if unchanged), or name it in finalize's drop if the changes remove it`);
+      if (!this.accepted.has("finalize")) out.push("finalize, after every section is accepted");
+    }
     return out;
   }
 
-  status() {
-    const missing = this.missing();
+  async status() {
+    const missing = await this.missing();
     return { result: JSON.stringify({ done: missing.length === 0, missing, accepted: [...this.accepted.keys()], written: [...this.written] }) };
   }
 

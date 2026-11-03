@@ -210,11 +210,23 @@ export function roleInstructions(pluginRoot: string, role: ThinkingRole): string
   return (heading + (next < 0 ? rest : rest.slice(0, next))).trim();
 }
 
+/**
+ * How a revise's pieces go in again. A greenfield architect's header after finalize opens a new spec (the store moves
+ * the approved one aside), so the whole spec goes again, as the architect's own instructions say, and its tools hold
+ * the revised spec to every approved unit (review: a revise told to hand in only what changed finalized the spec with
+ * an approved unit gone). Every other step's pieces stay where they were handed in.
+ */
+export function reviseHandIn(role: string): string {
+  return role === "architect"
+    ? "Hand in header.json again first, then every units file in order, changed or not: a changed one with its new JSON, an unchanged one by its name alone (its file goes as it stands). Then finalize. A unit of the approved spec that the changes remove: name it in finalize's drop."
+    : "Edit the pieces you handed in and hand each changed one in again.";
+}
+
 /** What Gemini reads before the helper's instructions: its tools, under their names here, and how it hands work in. */
 export function preface(role: string): string {
   const handIn: Record<string, string> = {
     requirements: "Hand in requirements.md with write_requirements (the whole document).",
-    architect: "Hand in each spec section with submit_section (header.json first, then units-001.json, …): where the instructions say to write a section file and call submit_spec_section, call submit_section with the file's JSON; then call finalize where they say finalize_spec. For a package version, use registry_versions.",
+    architect: "Hand in each spec section with submit_section (header.json first, then units-001.json, …): where the instructions say to write a section file and call submit_spec_section, call submit_section with the file's JSON; where they say to submit a file again as it stands, call submit_section with its name alone; then call finalize where they say finalize_spec. For a package version, use registry_versions.",
     "brownfield-architect": "Hand in each change-spec section with write_section (header.json first, then units-001.json, …): where the instructions say to write a section file and check it with plan-lint, call write_section with the file's JSON; it writes and checks it in one step.",
     "senior-reviewer": "Hand in the review JSON with write_review.",
     "brownfield-senior-reviewer": "Read the change with git_diff and read_provenance; run a file check only with run_file_check; hand in review.json with write_review.",
@@ -274,14 +286,14 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   writeFileSync(toolsConfig, JSON.stringify({
     role: args.role, project_root: resolve(args.project_root), run_id: args.run_id, intent: args.intent,
     output_dir: posix(args.output_dir), outputs, spec_dir: posix(args.output_dir), requirements_path: args.requirements_path, code_dir: args.code_dir,
-    run_token: deps.runToken,
+    run_token: deps.runToken, revise: !!args.revise,
   }, null, 2));
 
   const prior = readRecord(recordPath).conversation_id;
   const resumeId = args.revise && prior ? prior : undefined;
   const instruction = resumeId
-    ? `Changes asked for this step:\n\n${args.revise}\n\nEdit the pieces you handed in and hand each changed one in again.`
-    : `${preface(args.role)}\n\n## The helper's instructions\n\n${roleInstructions(deps.pluginRoot, role)}\n\n## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}` : ""}`;
+    ? `Changes asked for this step:\n\n${args.revise}\n\n${reviseHandIn(args.role)}`
+    : `${preface(args.role)}\n\n## The helper's instructions\n\n${roleInstructions(deps.pluginRoot, role)}\n\n## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}\n\n${reviseHandIn(args.role)}` : ""}`;
   const packet: TaskPacket = {
     id: `${args.run_id ?? "run"}-${key}`,
     phase: role.phase,
