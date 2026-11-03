@@ -90,6 +90,9 @@ to the user with pre-flight's other lines, before anything is spent. At each thi
   | Phase 6, senior review | `senior-reviewer` | `code_dir`, `review_path` (the path you would hand the reviewer) |
   | Phase 8, security review | `security-reviewer` | `code_dir` |
 
+  The plugin's hook refuses a delegation of the architect or a reviewer for such a phase, naming
+  `run_thinking_step`: the table holds wherever a phase's text says to delegate the helper.
+
 Act on the reply's `route`:
 
 - **`done`**: the policy's model did the step, and every piece is in place and accepted by the same check

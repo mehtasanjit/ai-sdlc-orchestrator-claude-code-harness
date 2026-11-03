@@ -51,7 +51,7 @@ function isPluginOrchestratorCopy(projectDir, name = "orchestrator") {
 }
 
 /** Whether the caller is one of this plugin's orchestrators: `mmo:orchestrator` or `mmo:brownfield-orchestrator`, or the clone route's copy. */
-function fromPluginOrchestrator(input, projectDir) {
+export function fromPluginOrchestrator(input, projectDir) {
   const caller = pipelineAgent(input.agent_type);
   if (!ORCHESTRATORS.has(caller?.name)) return false;
   return caller.prefixed || isPluginOrchestratorCopy(projectDir, caller.name);

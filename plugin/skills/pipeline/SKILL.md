@@ -82,7 +82,12 @@ Rules for executor mode:
 
 - **Skip** `cache_project_header` and `plan_task_packets`: the spec's units are the work list, and
   `execute_stage` builds each brief by code, shared part first.
-- **Architecture:** invoke the `architect` subagent with `requirements.md`, the output directory
+- **Architecture:** the route table decides who designs (orchestrator.md, "Thinking steps follow the policy").
+  When it gives `architecture_design` to a Gemini leaf (`engine, thinking`), call `run_thinking_step` with
+  `role: "architect"`, `requirements_path` and the brief as `inputs`: the step hands the same sections in to the
+  same checks and finalizes the spec, so Gate 2 shows the same design.md, and a Gate 2 `revise` goes back to it
+  as `revise`, with the comments. Otherwise, as before,
+  invoke the `architect` subagent with `requirements.md`, the output directory
   and the words "executor mode". It hands the spec over through `submit_spec_section` (header,
   then units in batches) and closes with `finalize_spec`, which writes `<output_dir>/spec.json`
   and `<output_dir>/design.md`. Gate 2 shows that design.md. If `finalize_spec` reports missing
@@ -245,9 +250,9 @@ Read `<brief.md>` (passed in $ARGUMENTS) and produce `<output_dir>/requirements.
 - **Acceptance criteria** (numbered, executable)
 - **Open questions for HITL** (if any)
 
-### Phase 2 — architecture_design (delegated to `architect` subagent)
+### Phase 2 — architecture_design (the `architect` subagent, or `run_thinking_step`, as the route table says)
 
-The orchestrator invokes the `architect` subagent passing `<output_dir>/requirements.md`. Architect writes `<output_dir>/design.md` (see architect.md for content spec).
+When the route table gives `architecture_design` to a Gemini leaf (`engine, thinking`), call `run_thinking_step` with `role: "architect"` (orchestrator.md, "Thinking steps follow the policy"); otherwise the orchestrator invokes the `architect` subagent passing `<output_dir>/requirements.md`, as before. Architect writes `<output_dir>/design.md` (see architect.md for content spec).
 
 ### Phase 4 — plan_task_packets
 
@@ -313,7 +318,7 @@ Write the returned file content to disk at the packet's stated `artifact_path`.
 
 ### Phase 6 — senior_code_review
 
-Invoke `senior-reviewer` subagent for each module. Collect refinement packets. Re-dispatch them via Phase 5 mechanics.
+For each module: when the route table gives `senior_code_review` to a Gemini leaf (`engine, thinking`), call `run_thinking_step` with `role: "senior-reviewer"`, `code_dir` and that module's `review_path`; otherwise invoke the `senior-reviewer` subagent, as before. Collect refinement packets. Re-dispatch them via Phase 5 mechanics.
 
 ### Phase 7 — test_run
 
@@ -351,7 +356,7 @@ On failure:
 
 ### Phase 8 — security_review
 
-Invoke `security-reviewer` subagent. Writes `<output_dir>/security_review.md`.
+When the route table gives `security_review` to a Gemini leaf (`engine, thinking`), call `run_thinking_step` with `role: "security-reviewer"` and `code_dir`; otherwise invoke the `security-reviewer` subagent, as before. Either writes `<output_dir>/security_review.md`.
 
 ### Phase 9 — generate_final_report
 
