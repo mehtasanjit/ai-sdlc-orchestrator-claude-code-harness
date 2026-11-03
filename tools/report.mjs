@@ -458,9 +458,15 @@ if (asMarkdown) {
 // packet's receipt describes the LAST attempt while telemetry's cost covers
 // ALL attempts; markers on the row flag the difference.
 const delegationDir = join(passDir, "delegation");
-const delegationFiles = existsSync(delegationDir)
+const allDelegationFiles = existsSync(delegationDir)
   ? readdirSync(delegationDir).filter((n) => n.startsWith("worker-delegation-") && n.endsWith(".json")).sort()
   : [];
+// A packet id dispatched again keeps its earlier records as worker-delegation-<packet>.<n>.json beside the newest,
+// plain-named one: the newest is the packet's row, and an earlier one would join the same telemetry a second time.
+const delegationFiles = allDelegationFiles.filter((n) => {
+  const earlier = /^(worker-delegation-.+)\.\d+\.json$/.exec(n);
+  return !(earlier && allDelegationFiles.includes(`${earlier[1]}.json`));
+});
 
 let unreadableReceipts = 0;
 const receipts = delegationFiles

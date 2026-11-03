@@ -154,7 +154,8 @@ test("every typist gets the same stated time limit and the agent door waits out 
   Object.assign(process.env, { GEMINI_BACKEND: "vertex", GOOGLE_CLOUD_PROJECT: "p", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: process.execPath });
   try {
     // A leaf's own worker_timeout_sec is for whole agent jobs; a typist types one file, so the executor's bound applies.
-    const agy = typistForLeaf({ ...byId("flash-agsdk-worker"), worker_timeout_sec: 1800 }, "estimated");
+    // The shipped leaf turns failover on, which has its own retry rule; without it, the executor's rule.
+    const agy = typistForLeaf({ ...byId("flash-agsdk-worker"), worker_timeout_sec: 1800, failover_locations: undefined }, "estimated");
     assert.equal(agy.opts.timeoutSec, 540);
     assert.equal(agy.opts.apiRetries, TRANSPORT.maxWaits);
     assert.equal(agy.opts.apiRetryInitialMs, TRANSPORT.baseMs);

@@ -34,9 +34,13 @@ so the user can see progress. Pause only when a step actually needs a human answ
 node "${CLAUDE_PLUGIN_ROOT}/scripts/verify-setup.mjs" --fix --project-root "$(pwd)"
 ```
 
-The MCP server ships pre-built inside the plugin, so on a normal install there is nothing to build
-and `--fix` does nothing. It repairs only a copy whose pre-built server is missing (it installs the
-server's npm deps and builds it). Report the one-line result and continue.
+The MCP server ships pre-built inside the plugin, so on a normal install there is no server to build:
+`--fix` repairs only a copy whose pre-built server is missing (it installs the server's npm deps and
+builds it). It also builds, or rebuilds, the Antigravity worker's Python
+environment when this project's policy (or `MMO_SELECT`) uses the Antigravity SDK, and checks that it
+holds the google-antigravity version `worker/requirements.txt` pins: a missing environment, or one with
+another version, is rebuilt here from that hash-locked file (Python 3.10 or newer is needed; about 50 MB is
+downloaded from PyPI, about 200 MB on disk). Report the one-line result and continue.
 
 If the script exits non-zero, print the error, its `fix:` field, and STOP. This is a blocking
 issue (Node < 20, missing Claude Code CLI, a missing pre-built server) and must be resolved before

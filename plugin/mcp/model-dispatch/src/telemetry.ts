@@ -6,6 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { dirname } from "node:path";
 import type { ModelPricing, PriceBasis, TelemetryEvent } from "./types.js";
 import type { AppliedModifiers, PeriodRef } from "./prices.js";
+import { log } from "./log.js";
 
 export function appendEvent(jsonlPath: string, ev: TelemetryEvent): void {
   mkdirSync(dirname(jsonlPath), { recursive: true });
@@ -37,10 +38,25 @@ export function normalizeDirectTierEvent(
   };
 }
 
+/**
+ * The events of a telemetry file. A last line with no newline that does not parse is an append cut short (a process
+ * stopped mid-write): it is skipped with a warning. A malformed line inside the file is not a cut, and still fails the
+ * read, because the events around it cannot be trusted either.
+ */
 export function readEvents(jsonlPath: string): TelemetryEvent[] {
   if (!existsSync(jsonlPath)) return [];
-  const lines = readFileSync(jsonlPath, "utf-8").split("\n").filter(Boolean);
-  return lines.map((l) => JSON.parse(l) as TelemetryEvent);
+  const text = readFileSync(jsonlPath, "utf-8");
+  const lines = text.split("\n");
+  const tail = text.endsWith("\n") ? null : lines.pop() ?? null;
+  const events = lines.filter(Boolean).map((l) => JSON.parse(l) as TelemetryEvent);
+  if (tail) {
+    try {
+      events.push(JSON.parse(tail) as TelemetryEvent);
+    } catch {
+      log("warn", "telemetry.cut_tail", { path: jsonlPath, bytes: Buffer.byteLength(tail) });
+    }
+  }
+  return events;
 }
 
 /** Token buckets of one orchestrator per_model / unpriced entry; the two cache-write buckets are disjoint. */

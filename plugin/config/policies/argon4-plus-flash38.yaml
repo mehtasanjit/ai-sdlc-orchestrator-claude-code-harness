@@ -17,8 +17,9 @@
 # one here would type files. With none, the last attempt follows the rules below.
 # Version 2: the greenfield passes on runs/argon4-pairings (ai-sdlc-multi-model-orchestration)
 # ran a different policy under this name as version 1 (other rules and model ids). Telemetry
-# records policy_name and policy_version, so this one is version 2 to keep the two apart.
-version: 2
+# records policy_name and policy_version, so this one started at version 2 to keep the two apart
+# (version 3 turns failover on).
+version: 3
 name: argon4-plus-flash38
 
 models:
@@ -40,6 +41,7 @@ models:
     # Vertex-only: the Antigravity SDK is ADC-only and has no API-key door, so
     # no `auth:` block.
     worker_timeout_sec: 540
+    failover_locations: [us, eu]  # a refused or held call carries on at us, then eu, billed +10% there
     # No `reasoning:`: every typist runs at low effort (executor/tools.ts
     # TYPIST_EFFORT), so a tier here would read as a setting and change nothing.
     # No max_output_tokens_absolute — agent sessions manage their own per-turn
@@ -61,6 +63,7 @@ models:
     # Pinned with Argon's leaf, so both models bill on the same endpoint.
     region: global
     worker_timeout_sec: 540
+    failover_locations: [us, eu]  # a refused or held call carries on at us, then eu, billed +10% there
 
 rules:
   # Judgment tier → Argon. The server is never asked to route these in a brownfield

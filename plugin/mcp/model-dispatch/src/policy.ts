@@ -180,6 +180,7 @@ function validateModel(m: any) {
         `Register new adapters in adapters/index.ts.`
     );
   }
+  validateAgsdkFields(m);
   // pricing_override is the only way a policy block is billed, so it must be
   // unambiguous: a string "yes" or a flag with nothing to bill is refused at
   // load, before any run could be priced on a misread intent.
@@ -208,6 +209,43 @@ function validateModel(m: any) {
   for (const k of ["input_cache_write", "input_cache_write_1h"]) {
     if (m.pricing[k] !== undefined && typeof m.pricing[k] !== "number") {
       throw new Error(`Policy model '${m.id}': pricing.${k} must be number`);
+    }
+  }
+}
+
+/** A Vertex location id as Vertex accepts it: lower case (it answers 400 to `GLOBAL` or `US`). */
+const LOCATION_ID = /^[a-z][a-z0-9-]*$/;
+export const STALL_SEC_MIN = 30;
+export const STALL_SEC_MAX = 1800;
+
+/**
+ * The two fields a study may set on an Antigravity leaf: `failover_locations` (the other locations a refused or held
+ * call moves to) and `stall_sec` (the most a call may go without receiving anything). Refused on any other adapter,
+ * whose calls do not read them, so a policy that sets one there would think it had failover it does not.
+ */
+function validateAgsdkFields(m: any) {
+  for (const key of ["failover_locations", "stall_sec"]) {
+    if (m[key] !== undefined && m.adapter !== "antigravity-worker") {
+      throw new Error(`Policy model '${m.id}': ${key} is read only by antigravity-worker leaves; '${m.adapter}' calls do not use it, so it is refused rather than ignored`);
+    }
+  }
+  const locs = m.failover_locations;
+  if (locs !== undefined) {
+    if (!Array.isArray(locs)) throw new Error(`Policy model '${m.id}': failover_locations must be a list of Vertex locations, e.g. [us, eu]; got ${JSON.stringify(locs)}`);
+    if (!locs.length) throw new Error(`Policy model '${m.id}': failover_locations is empty; list at least one location, or remove the field for no failover`);
+    for (const l of locs) {
+      if (typeof l !== "string" || !LOCATION_ID.test(l)) {
+        throw new Error(`Policy model '${m.id}': failover_locations entry ${JSON.stringify(l)} is not a lowercase Vertex location id (Vertex answers 400 to 'GLOBAL' or 'US'; write 'global', 'us', 'eu', 'us-central1')`);
+      }
+    }
+    const twice = locs.find((l: string, i: number) => locs.indexOf(l) !== i);
+    if (twice !== undefined) throw new Error(`Policy model '${m.id}': failover_locations lists '${twice}' twice; each location must be distinct`);
+  }
+  const stall = m.stall_sec;
+  if (stall !== undefined) {
+    if (typeof stall !== "number" || !Number.isInteger(stall)) throw new Error(`Policy model '${m.id}': stall_sec must be a whole number of seconds; got ${JSON.stringify(stall)}`);
+    if (stall < STALL_SEC_MIN || stall > STALL_SEC_MAX) {
+      throw new Error(`Policy model '${m.id}': stall_sec must be from ${STALL_SEC_MIN} to ${STALL_SEC_MAX.toLocaleString("en-US")} seconds; got ${stall}`);
     }
   }
 }
