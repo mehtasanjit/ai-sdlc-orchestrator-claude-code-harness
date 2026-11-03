@@ -206,7 +206,7 @@ function readContract(projectRoot: string): any | null {
  * The contract while it binds (active, and its run live by its own log: runLog.ts), with the run it binds, or null.
  * An ended run's contract binds nothing, exactly as one switched off, as the hook decides.
  */
-function bindingContract(projectRoot: string): { contract: any; runId: string | null } | null {
+export function bindingContract(projectRoot: string): { contract: any; runId: string | null } | null {
   const contract = readContract(projectRoot);
   try {
     if (contract?.active !== true || runEnded(projectRoot, contract.run_id)) return null;
@@ -267,7 +267,7 @@ function sameFileAsOffLimits(projectRoot: string, dev: number, ino: number, bind
 }
 
 /** A private key's own marker, in any file: such a file is never sent to a model, whatever its name. */
-function holdsPrivateKey(text: string): boolean {
+export function holdsPrivateKey(text: string): boolean {
   return /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/.test(text);
 }
 

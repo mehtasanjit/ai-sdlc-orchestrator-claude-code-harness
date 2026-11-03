@@ -149,6 +149,25 @@ test("a review_path outside the run's own folder is refused before anything is s
   assert.equal(calls.dispatch.length, 0);
 });
 
+test("a step's input files are copied into its run folder through the read rule, and the step is told where", async () => {
+  const root = project();
+  const outside = mkdtempSync(join(tmpdir(), "mmo-brief-"));
+  writeFileSync(join(outside, "brief.md"), "# Brief\n\nBuild a ping service.\n");
+  const { d, calls } = deps(AGENT, () => result({ result: { done: true, missing: [], accepted: ["requirements"], conversation_id: "c1" } }));
+  const r = await runThinkingStep(args(root, { role: "requirements", output_dir: "out", prompt: "The brief is at the path given.", inputs: [join(outside, "brief.md")] }), d);
+  assert.equal(r.route, "done");
+  assert.equal(readFileSync(join(root, "out", "inputs", "brief.md"), "utf8"), "# Brief\n\nBuild a ping service.\n");
+  assert.match(calls.dispatch[0].packet.instruction, /out\/inputs\/brief\.md/);
+  // An input that is missing, has a refused name, or holds a private key refuses the step before anything is sent.
+  writeFileSync(join(outside, ".env"), "KEY=1\n");
+  writeFileSync(join(outside, "notes.txt"), "-----BEGIN PRIVATE KEY-----\nk\n-----END PRIVATE KEY-----\n");
+  for (const bad of [join(outside, "missing.md"), join(outside, ".env"), join(outside, "notes.txt")]) {
+    const one = deps(AGENT, () => assert.fail("no dispatch"));
+    await assert.rejects(runThinkingStep(args(root, { role: "requirements", output_dir: "out", inputs: [bad] }), one.d), /input/, bad);
+    assert.equal(one.calls.dispatch.length, 0);
+  }
+});
+
 test("each role's hand-in paths are fixed under the run's folder", () => {
   const a = { output_dir: "out/" };
   assert.deepEqual(roleOutputs("requirements", a), { requirements: "out/requirements.md" });

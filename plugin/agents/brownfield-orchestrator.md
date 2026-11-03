@@ -85,8 +85,8 @@ to the user with pre-flight's other lines, before anything is spent. At each thi
 
   | Step | `role` | Also pass |
   |---|---|---|
-  | Phase 1, requirements | `requirements` | `prompt`: the brief's path and any job rules for Phase 1 |
-  | Phase 2, the architect | `architect` | `requirements_path` |
+  | Phase 1, requirements | `requirements` | `prompt`: the brief's path and any job rules for Phase 1; `inputs`: `[<the brief's path>]` |
+  | Phase 2, the architect | `architect` | `requirements_path`; `inputs`: `[<the brief's path>]` |
   | Phase 6, senior review | `senior-reviewer` | `code_dir`, `review_path` (the path you would hand the reviewer) |
   | Phase 8, security review | `security-reviewer` | `code_dir` |
 

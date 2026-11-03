@@ -10,8 +10,10 @@
  * no other model takes it over. A gate's revise carries on the same conversation.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+
+import { bindingContract, holdsPrivateKey, readOffLimits } from "./apply.js";
 
 import type { ExecutionResult, ModelConfig, Phase, RunContext, TaskPacket, TelemetryEvent } from "./types.js";
 
@@ -54,8 +56,13 @@ export interface ThinkingArgs {
   output_dir: string;
   code_dir?: string;
   requirements_path?: string;
-  /** Senior reviewer: the review.json path (default <output_dir>/review.json). */
+  /** Senior reviewer: the review.json path, inside output_dir (default <output_dir>/review.json). */
   review_path?: string;
+  /**
+   * Files the step reads that may lie outside the project (a greenfield brief): each is copied into
+   * <output_dir>/inputs/ through the read rule before the step, and the step is told where (stepInputsCopied).
+   */
+  inputs?: string[];
   /** A gate's revise, or a check's lines to fix: the step carries on its saved conversation with this. */
   revise?: string;
 }
@@ -106,6 +113,45 @@ export function reviewPathProblem(projectRoot: string, dir: string, reviewPath: 
     : "..";
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return `review_path '${String(reviewPath)}' must be a file inside output_dir ('${dir}'), given relative to project_root`;
   return null;
+}
+
+/** The largest input file a step is given, as the step's own read_file reads (thinking-tools.mjs MAX_FILE_BYTES). */
+const MAX_INPUT_BYTES = 2_000_000;
+
+/**
+ * The step's input files, copied into <output_dir>/inputs/ so a step that reads only the project can read them: a
+ * greenfield brief usually lies outside it, and the Gemini step could not read it and handed in requirements without it
+ * (review). Each must be a regular file the read rule allows by its name (a refused name such as .env, anywhere), by
+ * its size, and by its text (a private key's marker); else the step is refused before anything is sent. Returns the
+ * copies, relative to project_root, in the order given.
+ */
+export function stepInputsCopied(projectRoot: string, outputDir: string, inputs: unknown): string[] {
+  if (inputs === undefined) return [];
+  if (!Array.isArray(inputs) || inputs.some((p) => typeof p !== "string" || p === "")) throw new Error("run_thinking_step: inputs must be a list of file paths");
+  const dir = join(projectRoot, outputDir, "inputs");
+  const copies: string[] = [];
+  const names = new Set<string>();
+  for (const given of inputs as string[]) {
+    const abs = resolve(projectRoot, given);
+    const rel = posix(relative(resolve(projectRoot), abs));
+    const name = rel.startsWith("..") || isAbsolute(rel) ? abs.replace(/^\/+/, "") : rel;
+    // Inside the project the live contract's off_limits hold too; outside it, the always list by the path's names.
+    const refused = readOffLimits(posix(name), name === rel ? bindingContract(projectRoot) : null);
+    if (refused) throw new Error(`run_thinking_step: input '${given}' is never sent to a model (${refused})`);
+    let st;
+    try { st = statSync(abs); } catch { throw new Error(`run_thinking_step: input '${given}' does not exist`); }
+    if (!st.isFile()) throw new Error(`run_thinking_step: input '${given}' is not a file`);
+    if (st.size > MAX_INPUT_BYTES) throw new Error(`run_thinking_step: input '${given}' is ${st.size} bytes, over the ${MAX_INPUT_BYTES} a step reads`);
+    const text = readFileSync(abs, "utf8");
+    if (holdsPrivateKey(text)) throw new Error(`run_thinking_step: input '${given}' is never sent to a model: it holds a private key`);
+    let file = basename(abs);
+    for (let n = 2; names.has(file.toLowerCase()); n++) file = `${n}-${basename(abs)}`;
+    names.add(file.toLowerCase());
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, file), text);
+    copies.push(posix(join(outputDir, "inputs", file)));
+  }
+  return copies;
 }
 
 /** The fixed paths each role's hand-in tools write, all relative to project_root. */
@@ -176,6 +222,8 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const brownfield = args.role.startsWith("brownfield-") || args.role === "discovery" || deps.contractActive(args.project_root);
   const dirProblem = outputDirProblem(args.project_root, args.output_dir, brownfield) ?? reviewPathProblem(args.project_root, args.output_dir, args.review_path);
   if (dirProblem) throw new Error(`run_thinking_step: ${dirProblem}`);
+  // The step's inputs, through the read rule, before anything is routed or spent.
+  const inputCopies = stepInputsCopied(args.project_root, args.output_dir, args.inputs);
 
   const { model, reason } = deps.route(role.phase);
   const base = { role: args.role, phase: role.phase, model: model.model_name };
@@ -203,7 +251,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const resumeId = args.revise && prior ? prior : undefined;
   const instruction = resumeId
     ? `Changes asked for this step:\n\n${args.revise}\n\nEdit the pieces you handed in and hand each changed one in again.`
-    : `${preface(args.role)}\n\n## The helper's instructions\n\n${roleInstructions(deps.pluginRoot, role)}\n\n## This invocation\n\n${args.prompt}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}` : ""}`;
+    : `${preface(args.role)}\n\n## The helper's instructions\n\n${roleInstructions(deps.pluginRoot, role)}\n\n## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}` : ""}`;
   const packet: TaskPacket = {
     id: `${args.run_id ?? "run"}-${args.role}`,
     phase: role.phase,
