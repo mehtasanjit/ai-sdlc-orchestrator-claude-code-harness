@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { THINKING_ROLES, outputDirProblem, roleInstructions, roleOutputs, runThinkingStep, stepKey } from "../dist/thinking.js";
 import { AntigravityWorkerAdapter } from "../dist/adapters/AntigravityWorkerAdapter.js";
 import { alive, beat, fakeWorkerPython, flagValue, withEnv } from "./agyFakes.mjs";
+import { NO_PYTHON, PYTHON, STANDIN, step as standinStep, textAnswer } from "./agyStandin.mjs";
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const CLAUDE = { id: "opus", adapter: "builtin-anthropic", model_name: "claude-opus-5-5" };
@@ -658,7 +659,7 @@ test("through the agent door: a frozen worker is killed by the kill rule, and th
   const firstSession = { sdk_version: "0.1.22", vertex_location: "global", work_s: 1, usage: { prompt_token_count: 10 }, tries: [{ location: "global", ended_by: "answer", http_codes: [], s: 1, usage: { prompt_token_count: 10 } }] };
   const frozen = { writes: [{ atMs: 20, sidecar: firstSession, summary: kept }], beats: [{ atMs: 50, hb: beat({ work_s: 30, usage: { global: { prompt_token_count: 40 } } }) }], holdMs: "forever", ignoreTerm: true };
   const finishes = { holdMs: 50, sidecar: { sdk_version: "0.1.22", usage: { prompt_token_count: 10 } }, summary: { done: true, missing: [], accepted: ["header.json", "units-001.json"], conversation_id: "conv-1", text: "" } };
-  const step = async (runs) => {
+  const runStep = async (runs) => {
     const fake = fakeWorkerPython({ runs });
     const root = project();
     try {
@@ -674,7 +675,7 @@ test("through the agent door: a frozen worker is killed by the kill rule, and th
       fake.cleanup();
     }
   };
-  const { reply, runs } = await step([frozen, finishes]);
+  const { reply, runs } = await runStep([frozen, finishes]);
   assert.equal(reply.route, "done", JSON.stringify(reply));
   assert.equal(reply.resumed, true);
   assert.equal(runs.length, 2);
@@ -687,9 +688,55 @@ test("through the agent door: a frozen worker is killed by the kill rule, and th
   assert.equal(flagValue(second.args, "--timeout"), "14370", "the step's budget less the frozen worker's 30 s of work");
   assert.equal(second.toolsConfig.carry_on, true);
   // Frozen again after the carry-on: the step stops, naming the second kill.
-  const again = await step([frozen]);
+  const again = await runStep([frozen]);
   assert.equal(again.reply.route, "stopped", JSON.stringify(again.reply));
   assert.match(again.reply.reason, /killed twice/);
   assert.match(again.reply.reason, /no heartbeat/);
   assert.equal(again.runs.length, 2, "carried on once only");
+});
+
+// E-thinking-frozen (design section 13, the fake-Google cases for a thinking step): the real thinking worker, its real
+// tools and the SDK stand-in, under the agent door's own kill rule.
+test("a frozen thinking worker is killed, and the step goes on from its saved conversation with what its tools accepted", { skip: NO_PYTHON, timeout: 90_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "frozen-thinking-"));
+  // The first worker hands in discovery.md, is told baseline.json is still owed, and freezes in its next session; the
+  // second worker, carried on, hands in baseline.json. Each worker the engine starts reads its own script.
+  const first = { sessions: [
+    { turns: [[{ at: 0, step: standinStep.tool("write_discovery", "ACTIVE", { name: "discovery.md", content: "# Discovery\n" }, "d1") }, ...textAnswer(0, "Wrote discovery.md.", { prompt_token_count: 10 })]] },
+    { turns: [[{ at: 0.1, freeze: true }]] },
+  ] };
+  const second = { sessions: [{ turns: [[{ at: 0, step: standinStep.tool("write_discovery", "ACTIVE", { name: "baseline.json", content: "{}" }, "d2") }, ...textAnswer(0, "Wrote baseline.json.", { prompt_token_count: 10 })]] }] };
+  writeFileSync(join(dir, "script-1.json"), JSON.stringify(first));
+  writeFileSync(join(dir, "script-2.json"), JSON.stringify(second));
+  const log = join(dir, "standin.jsonl");
+  const python = join(dir, "python");
+  writeFileSync(python, `#!/bin/sh\nn=$(cat ${JSON.stringify(join(dir, "count"))} 2>/dev/null || echo 0); n=$((n + 1)); echo $n > ${JSON.stringify(join(dir, "count"))}\nexport PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${JSON.stringify(STANDIN)} AGY_STANDIN_SCRIPT=${JSON.stringify(dir)}/script-$n.json AGY_STANDIN_LOG=${JSON.stringify(log)}\nexec ${JSON.stringify(PYTHON)} "$@"\n`);
+  chmodSync(python, 0o755);
+  const root = project();
+  const events = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+  try {
+    const reply = await withEnv({ GEMINI_WORKER_PYTHON: python, GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global" }, async () => {
+      // The kill rule, shortened: no heartbeat for 4 s on two checks 2 s apart, then SIGKILL 1 s after SIGTERM.
+      const door = new AntigravityWorkerAdapter({ id: "flash", adapter: "antigravity-worker", model_name: "gemini-3.8-flash" }, { backstop: { noBeatS: 4, confirmS: 2, termGraceS: 1 } });
+      const { d } = deps(AGENT, () => assert.fail("dispatched through the agent door"), {
+        dispatch: async (packet, thinking) => ({ result: await door.execute(packet, undefined, { project_root: root, work_dir: root, telemetry_path: join(root, "t.jsonl"), thinking }), events: [] }),
+      });
+      return runThinkingStep(args(root, { role: "discovery", intent: undefined }), d);
+    });
+    assert.equal(reply.route, "done", JSON.stringify(reply));
+    assert.equal(reply.resumed, true);
+    assert.deepEqual(reply.accepted, ["discovery:discovery.md", "discovery:baseline.json"]);
+    const seen = events();
+    const pids = [...new Set(seen.filter((e) => e.ev === "agent").map((e) => e.pid))];
+    assert.equal(pids.length, 2, "two workers: the frozen one and the one carried on");
+    assert.ok(seen.some((e) => e.ev === "freeze" && e.pid === pids[0]), "the first worker froze");
+    assert.equal(alive(pids[0]), false, "the frozen worker was killed");
+    const later = seen.filter((e) => e.pid === pids[1]);
+    assert.equal(later.find((e) => e.ev === "agent").conversation_id, "standin-1", "the conversation the frozen worker kept");
+    assert.equal(later.find((e) => e.ev === "chat").message, "Please continue the task you were working on.");
+    assert.deepEqual(later.filter((e) => e.ev === "tool_run").map((e) => e.result), ["wrote .sdlc/runs/r1/baseline.json"], "only what was still owed is handed in again");
+    assert.equal(readFileSync(join(root, ".sdlc", "runs", "r1", "discovery.md"), "utf8"), "# Discovery\n");
+  } finally {
+    for (const e of events()) if (alive(e.pid)) { try { process.kill(e.pid, "SIGKILL"); } catch { /* gone */ } }
+  }
 });

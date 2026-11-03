@@ -439,3 +439,27 @@ test("a carried-on worker continues its saved conversation with the harness's wo
   assert.equal(none.sessions.length, 0, "no session was opened");
   assert.match(none.stderr, /--carry-on[^\n]*--resume-id/);
 });
+
+// E-thinking-stall (design section 13, the fake-Google cases for a thinking step). A call Google holds after the step's
+// tool ran is cut at its stall limit and the same session continued with the harness's own words, as on the agent door,
+// so the step finishes in its own conversation with its tools' state.
+test("a held call is cut at its stall limit and the step's own session continued; the step finishes", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  // The hand-in runs, its answer goes back (the tool step's DONE: the next request is out), and Google holds it.
+  const script = { sessions: [{ turns: [
+    [
+      { at: 0, step: step.tool("write_requirements", "ACTIVE", REQUIREMENTS, "w1") },
+      { at: 0, usage: { prompt_token_count: 10, candidates_token_count: 5 } },
+      { at: 0.05, step: step.tool("write_requirements", "DONE", REQUIREMENTS, "w1") },
+      { at: 0.05, hold: true },
+    ],
+    textAnswer(0, "Handed in.", { prompt_token_count: 10 }),
+  ] }] };
+  const r = await runWorker("thinking", { script, timeout: 30, limitMs: 45_000, args: ["--stall-sec", "1"] });
+  assert.equal(r.code, 0, tail(r));
+  assert.equal(r.summary.done, true, JSON.stringify(r.summary));
+  assert.equal(r.cancels.length, 1, "the held call was cut");
+  assert.equal(r.sessions.length, 1, "in the same session");
+  assert.equal(r.chats[1].message, "Please continue the task you were working on.");
+  assert.equal(r.sidecar.stall_cuts, 1);
+  assert.deepEqual(r.summary.accepted, ["requirements"]);
+});
