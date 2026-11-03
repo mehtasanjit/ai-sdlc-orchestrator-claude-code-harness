@@ -33,6 +33,15 @@ node policy-server.mjs --port 3000
 
 Open `http://127.0.0.1:3000`.
 
+## What a custom policy keeps of its base
+
+The page edits the models, each phase's model and thinking tier, and the per-job overrides. Everything else comes
+from the base policy unchanged (`customBase` in `policy-server.mjs`, for a save and a preview alike): its `version`,
+its `select` slots, the rules for phases the page does not show (a brownfield `discovery` or `change_plan` rule), the
+debug escalation, the default rule, and the two policy-level settings for thinking steps, `session_model` (the Claude
+model the session runs on) and `thinking_timeout_sec` (a thinking step's work budget). The summary the page reads
+(`GET /api/policies`) carries both settings, `null` when the base sets none, and the generated YAML shows them.
+
 ## Thinking tiers are per model — two different real vendor parameters
 
 Each phase's model dropdown and thinking-tier picker sit side by side, and the tier options change
