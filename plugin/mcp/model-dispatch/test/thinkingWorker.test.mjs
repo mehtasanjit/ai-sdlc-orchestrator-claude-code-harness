@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -256,10 +256,14 @@ test("the helper's instructions are the session's system instructions, and its f
     { turns: [textAnswer(0, "I have read the brief.", { prompt_token_count: 10 })] },
     { turns: [[{ at: 0, step: step.tool("write_requirements", "ACTIVE", REQUIREMENTS, "w5") }, ...textAnswer(0, "Handed in.", { prompt_token_count: 10 })]] },
   ] };
-  const r = await runWorker("thinking", { script, brief, timeout: 30, limitMs: 45_000, args: ["--system-file", join(dir, "system.md")] });
-  assert.equal(r.code, 0, tail(r));
-  assert.equal(r.chats[0].message, brief, "the first message is the task alone");
-  assert.deepEqual(r.sessions.map((s) => s.system_instructions), [system, system], "every session has them, the reminder's included");
+  try {
+    const r = await runWorker("thinking", { script, brief, timeout: 30, limitMs: 45_000, args: ["--system-file", join(dir, "system.md")] });
+    assert.equal(r.code, 0, tail(r));
+    assert.equal(r.chats[0].message, brief, "the first message is the task alone");
+    assert.deepEqual(r.sessions.map((s) => s.system_instructions), [system, system], "every session has them, the reminder's included");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // E-thinking-high. The engine starts every thinking step with --thinking HIGH (agyThinkingDispatch.test): the level
