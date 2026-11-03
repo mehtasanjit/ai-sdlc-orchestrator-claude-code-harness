@@ -115,7 +115,7 @@ test("a stopped step's reply names why its worker stopped, in plain words, and w
     "the gemini-4-argon step stopped: its own work time reached the policy's limit, thinking_timeout_sec (14400 s, the time Google held or refused its calls not counted); still owed: header.json, accepted");
   // Where the worker's own error says what happened, it follows.
   assert.equal((await stopped({ reason: "tool_dead" }, "The agent worker exited 1: the step's tool read_file gave no answer in 1800 s; the step stopped there")).reason,
-    "the gemini-4-argon step stopped: a tool of the step gave no answer in its time limit (The agent worker exited 1: the step's tool read_file gave no answer in 1800 s; the step stopped there); still owed: header.json, accepted");
+    "the gemini-4-argon step stopped: the step's tools failed (The agent worker exited 1: the step's tool read_file gave no answer in 1800 s; the step stopped there); still owed: header.json, accepted");
   // A worker that could not say why (killed before it could) stops the step with its dispatch's error, as before.
   assert.equal((await stopped({}, "The agent worker was stopped: no heartbeat for 60 s")).reason,
     "the gemini-4-argon step could not finish: The agent worker was stopped: no heartbeat for 60 s; still owed: header.json, accepted");

@@ -23,7 +23,7 @@ limit counting own work only) and its usage sidecar. stdout carries one JSON lin
 every turn: {done, missing, accepted, conversation_id, text, reason}. `reason` says why the step stopped: done (every
 piece accepted), budget (its own work time reached --timeout), no_progress (NO_PROGRESS_TURNS reminders in a row
 answered without progress), busy (Google could not serve the model for the run's busy window), tool_dead (a tool
-call, the status one included, gave no answer in its limit), stopped (the worker was stopped), error (the model's call
+call, the status one included, gave no answer in its limit, or the tools could not report the step's status), stopped (the worker was stopped), error (the model's call
 ended with another error); it is null in a summary kept while the step still runs. The worker exits 0 only when every
 piece is accepted and its last turn answered; otherwise it exits 1, and its stderr line "thinking_worker failed: ..."
 says why in plain words and what is still owed.
@@ -38,6 +38,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -81,7 +82,9 @@ class ToolHost:
 
     Every call has a time limit (--tool-call-timeout-sec): a tool that gives no answer in it ends the tool process, and
     `dead` says why; every later call answers that reason at once (review: no tool call had a limit, so one stuck call
-    held the step until its whole work budget was spent)."""
+    held the step until its whole work budget was spent). A call's answer is the line that carries its own id: anything
+    else the tools print goes to stderr and is never taken for an answer (review: a stray line would have been read as
+    the next call's answer, and one that is not JSON failed the worker)."""
 
     def __init__(self, node: str, script: str, config: str, call_timeout_s: float):
         self.p = subprocess.Popen([node, script, "--config", config], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -109,16 +112,24 @@ class ToolHost:
             except OSError:
                 self.dead = "the step's tools have stopped"
                 return {"ok": False, "error": self.dead}
-            try:
-                line = self.lines.get(timeout=self.call_timeout_s)
-            except queue.Empty:
-                self.dead = f"the step's tool {op} gave no answer in {self.call_timeout_s:g} s; the step stopped there"
-                self.p.kill()
-                return {"ok": False, "error": self.dead}
-            if line is None:
-                self.dead = "the step's tools have stopped"
-                return {"ok": False, "error": self.dead}
-        return json.loads(line)
+            deadline = time.monotonic() + self.call_timeout_s
+            while True:
+                try:
+                    line = self.lines.get(timeout=max(deadline - time.monotonic(), 0.001))
+                except queue.Empty:
+                    self.dead = f"the step's tool {op} gave no answer in {self.call_timeout_s:g} s; the step stopped there"
+                    self.p.kill()
+                    return {"ok": False, "error": self.dead}
+                if line is None:
+                    self.dead = "the step's tools have stopped"
+                    return {"ok": False, "error": self.dead}
+                try:
+                    answer = json.loads(line)
+                except ValueError:
+                    answer = None
+                if isinstance(answer, dict) and answer.get("id") == self.n:
+                    return answer
+                sys.stderr.write(f"thinking_worker: the step's tools printed a line that is not this call's answer: {line.rstrip()[:500]}\n")
 
     def text(self, op: str, **args) -> str:
         r = self.call(op, **args)
@@ -322,14 +333,16 @@ async def run(args):
             resume = s.conversation_id or resume
             summary["conversation_id"] = resume
             summary["text"] = s.text
-            raw = None if host.dead else host.text("status")
-            if host.dead:
-                # A tool call, the status one included, gave no answer in its limit: the step ends here, saying why.
+            answer = host.call("status")
+            if host.dead or not answer.get("ok"):
+                # A tool call, the status one included, gave no answer in its limit, or the tools could not say what
+                # the step owes: the step ends here, saying why (review: an error answer here failed the worker on
+                # reading it as the status).
                 s.ok = False
-                s.error = host.dead
+                s.error = host.dead or f"the step's tools could not report its status: {answer.get('error')}"
                 summary["reason"] = "tool_dead"
                 break
-            status = json.loads(raw)
+            status = json.loads(answer["result"])
             summary.update({k: status.get(k) for k in ("done", "missing", "accepted")})
             keep()
             if status.get("done"):

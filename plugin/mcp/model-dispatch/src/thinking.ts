@@ -381,7 +381,7 @@ const WORKER_STOPS: Readonly<Record<string, { words: (timeoutSec: number) => str
   budget: { words: (t) => `its own work time reached the policy's limit, thinking_timeout_sec (${t} s, the time Google held or refused its calls not counted)`, detail: false },
   no_progress: { words: () => `no progress for ${NO_PROGRESS_TURNS} turns in a row`, detail: false },
   busy: { words: () => "Google could not serve the model for the run's busy window", detail: true },
-  tool_dead: { words: () => "a tool of the step gave no answer in its time limit", detail: true },
+  tool_dead: { words: () => "the step's tools failed", detail: true },
   stopped: { words: () => "the worker was stopped", detail: true },
   error: { words: () => "its model call ended with an error", detail: true },
 };

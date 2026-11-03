@@ -305,6 +305,32 @@ rl.on("line", (l) => { const m = JSON.parse(l); if (n++ === 0) process.stdout.wr
   assert.notEqual(quiet.code, 0, tail(quiet));
   assert.equal(quiet.summary?.reason, "tool_dead", JSON.stringify(quiet.summary));
   assert.match(quiet.stderr, /thinking_worker failed: the step's tool status gave no answer in 2 s; the step stopped there/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("tools that answer the status with an error, or print a stray line, end the step with the tools' own reason", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  // Review: a status answered with an error (not a hang) made the worker fail on reading it as JSON, and a line the
+  // tools printed that is not an answer would have been read as the next call's answer.
+  const dir = mkdtempSync(join(tmpdir(), "erring-tools-"));
+  const erring = join(dir, "erring-tools.mjs");
+  writeFileSync(erring, `import { createInterface } from "node:readline";
+const rl = createInterface({ input: process.stdin });
+let n = 0;
+rl.on("line", (l) => {
+  const m = JSON.parse(l);
+  process.stdout.write("a stray line the tools printed\\n");
+  if (n++ === 0) process.stdout.write(JSON.stringify({ id: m.id, ok: true, result: JSON.stringify({ done: false, missing: ["requirements.md (write_requirements)"], accepted: [] }) }) + "\\n");
+  else process.stdout.write(JSON.stringify({ id: m.id, ok: false, error: "the spec store could not be read" }) + "\\n");
+});
+`);
+  try {
+    const r = await runWorker("thinking", { script: { sessions: [{ turns: [textAnswer(0, "Read.", { prompt_token_count: 10 })] }] }, timeout: 30, limitMs: 45_000, toolsScript: erring });
+    assert.notEqual(r.code, 0, tail(r));
+    assert.equal(r.summary?.reason, "tool_dead", JSON.stringify(r.summary));
+    assert.match(r.stderr, /thinking_worker failed: the step's tools could not report its status: the spec store could not be read/);
+    assert.doesNotMatch(r.stderr, /JSONDecodeError/);
+    assert.equal(r.sessions.length, 1, "no further model turn once the status cannot be read");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("tools that cannot start stop the step before any model call", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
