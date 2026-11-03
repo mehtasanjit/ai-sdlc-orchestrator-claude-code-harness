@@ -198,6 +198,17 @@ async def run(args):
     resume = args.resume_id or None
     message = task
     summary = {"done": False, "missing": [], "accepted": [], "conversation_id": resume, "text": ""}
+
+    def keep() -> None:
+        # The summary is the step's state (what is accepted and owed, the conversation to carry on): kept after every
+        # status and at the end, whatever the worker's exit, so a failed or stopped step never loses it.
+        if not args.summary_file:
+            return
+        tmp = f"{args.summary_file}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(summary, f)
+        os.replace(tmp, args.summary_file)
+
     s = None
     sup.start()
     try:
@@ -210,6 +221,7 @@ async def run(args):
             summary["text"] = s.text
             status = json.loads(host.text("status"))
             summary.update({k: status.get(k) for k in ("done", "missing", "accepted")})
+            keep()
             if not s.ok or status.get("done") or sup.stopped or sup.work_s() >= args.timeout:
                 break
             message = ("Not done yet. Still owed: " + "; ".join(status.get("missing") or []) +
@@ -219,6 +231,7 @@ async def run(args):
         await sup.close()
         if s is not None:
             s.write()
+        keep()
     return s, summary
 
 
@@ -230,6 +243,7 @@ def main():
     p.add_argument("--thinking", default="NONE")
     p.add_argument("--timeout", type=int, default=14400)
     p.add_argument("--resume-id", default=None)
+    p.add_argument("--summary-file", default=None)
     p.add_argument("--node", default="node")
     p.add_argument("--tools-script", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "scripts", "thinking-tools.mjs"))
     p.add_argument("--api-retries", type=int, default=None)

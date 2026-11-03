@@ -39,6 +39,7 @@ const finish = (which) => {
   const body = which === "term" ? plan.onTerm : plan;
   if (body && body.receipt !== undefined && outPath && body.receipt !== null) writeFileSync(outPath, JSON.stringify(body.receipt));
   if (body && body.sidecar !== undefined && outPath && body.sidecar !== null) writeFileSync(outPath, JSON.stringify(body.sidecar));
+  if (body && body.summary !== undefined && body.summary !== null && flag("--summary-file")) writeFileSync(flag("--summary-file"), JSON.stringify(body.summary));
   if (body && body.stdout) process.stdout.write(body.stdout);
   if (body && body.stderr) process.stderr.write(body.stderr);
   log("exit", { which, code: body && body.exitCode !== undefined ? body.exitCode : 0 });
@@ -57,7 +58,8 @@ else setTimeout(() => finish("done"), plan.holdMs || 0);
 
 /**
  * Makes the stand-in. `runs[i]` is the i-th run's plan: {beats: [{atMs, hb}], holdMs (number or "forever"),
- * receipt, sidecar, stdout, stderr, exitCode, ignoreTerm, onTerm: {receipt|sidecar, exitCode}}; the last plan
+ * receipt, sidecar, summary (a thinking worker's --summary-file), stdout, stderr, exitCode, ignoreTerm,
+ * onTerm: {receipt|sidecar, exitCode}}; the last plan
  * repeats. `version` is what the version query prints (null: the SDK is not installed).
  */
 export function fakeWorkerPython({ runs = [{}], version = "0.1.22" } = {}) {

@@ -1,7 +1,7 @@
 /**
- * Shared pieces for the tests that run the two Python workers (worker/typist_worker.py, worker/gemini_worker.py)
- * against the scripted stand-in SDK in test/fixtures/agy-standin: no harness, no Google, $0. Not a test file itself
- * (node --test runs test/*.test.mjs only).
+ * Shared pieces for the tests that run the three Python workers (worker/typist_worker.py, worker/gemini_worker.py,
+ * worker/thinking_worker.py) against the scripted stand-in SDK in test/fixtures/agy-standin: no harness, no Google,
+ * $0. Not a test file itself (node --test runs test/*.test.mjs only).
  *
  * A test writes a script of what each model call sends back (recorded 0.1.22 sequences from
  * fixtures/agy-standin/recorded.json where one exists), runs a worker with it, and reads what the worker wrote (its
@@ -22,6 +22,8 @@ export const STANDIN = join(HERE, "fixtures", "agy-standin");
 export const RECORDED = JSON.parse(readFileSync(join(STANDIN, "recorded.json"), "utf8"));
 export const TYPIST_WORKER = join(HERE, "..", "worker", "typist_worker.py");
 export const AGENT_WORKER = join(HERE, "..", "worker", "gemini_worker.py");
+export const THINKING_WORKER = join(HERE, "..", "worker", "thinking_worker.py");
+const THINKING_TOOLS = join(HERE, "..", "..", "..", "scripts", "thinking-tools.mjs");
 
 /** The first Python 3.10 or newer on PATH: the workers' own minimum (google-antigravity requires it). */
 export const PYTHON = ["python3", "python3.13", "python3.12", "python3.11", "python3.10"].find(
@@ -92,7 +94,7 @@ const HEARTBEAT = /^@mmo-heartbeat (\{.*\})\s*$/;
  * worker wrote: `beats` (heartbeats as read here), `sent` (heartbeats as written, on the worker's clock: {mono, wall,
  * hb}), and the stand-in's `log`.
  */
-export async function runWorker(kind, { script, args = [], timeout = 30, env = {}, killAfterMs, killSignal = "SIGTERM", limitMs = 60_000, brief = "Write src/a.ts.", answerSchema } = {}) {
+export async function runWorker(kind, { script, args = [], timeout = 30, env = {}, killAfterMs, killSignal = "SIGTERM", limitMs = 60_000, brief = "Write src/a.ts.", answerSchema, role = "requirements", outputs = { requirements: "out/requirements.md" } } = {}) {
   const dir = mkdtempSync(join(tmpdir(), `agy-${kind}-`));
   try {
     const work = join(dir, "work");
@@ -110,6 +112,16 @@ export async function runWorker(kind, { script, args = [], timeout = 30, env = {
       argv = [TYPIST_WORKER, "--brief-file", join(dir, "brief.md"), "--system-file", join(dir, "shared.txt"), "--answer-schema-file", schema,
         "--model", "gemini-3.8-flash", "--region", "global", "--workdir", work, "--out", out, "--thinking", "LOW", "--max-model-calls", "3",
         "--timeout", String(timeout), "--api-retries", "6", "--api-retry-initial-ms", "2000", ...args];
+    } else if (kind === "thinking") {
+      // A thinking step: the project is `work`, with the step's real tools (thinking-tools.mjs) over it.
+      writeFileSync(join(dir, "task.md"), brief);
+      mkdirSync(join(work, "out"), { recursive: true });
+      const toolsConfig = join(dir, "tools.json");
+      writeFileSync(toolsConfig, JSON.stringify({ role, project_root: work, run_id: "r1", output_dir: "out", outputs }));
+      argv = [THINKING_WORKER, "--task-file", join(dir, "task.md"), "--model", "gemini-3.8-flash", "--region", "global", "--workdir", work,
+        "--out-dir", dir, "--usage-file", out, "--role", role, "--tools-config", toolsConfig, "--save-dir", join(dir, "save"),
+        "--summary-file", join(dir, "summary.json"), "--node", process.execPath, "--tools-script", THINKING_TOOLS,
+        "--thinking", "NONE", "--timeout", String(timeout), ...args];
     } else {
       writeFileSync(join(dir, "task.md"), brief);
       argv = [AGENT_WORKER, "--task-file", join(dir, "task.md"), "--model", "gemini-3.8-flash", "--region", "global", "--workdir", work,
@@ -149,7 +161,7 @@ export async function runWorker(kind, { script, args = [], timeout = 30, env = {
       try { hb = m ? JSON.parse(m[1]) : null; } catch { /* a malformed line keeps hb null, as in beats */ }
       return { mono: e.mono, wall: e.wall, hb };
     });
-    return { ...r, elapsedMs: Date.now() - started, startedWall: started / 1000, [kind === "typist" ? "receipt" : "sidecar"]: read(out), log, sent, sessions: log.filter((e) => e.ev === "agent"), chats: log.filter((e) => e.ev === "chat"), cancels: log.filter((e) => e.ev === "cancel") };
+    return { ...r, elapsedMs: Date.now() - started, startedWall: started / 1000, [kind === "typist" ? "receipt" : "sidecar"]: read(out), summary: read(join(dir, "summary.json")), log, sent, sessions: log.filter((e) => e.ev === "agent"), chats: log.filter((e) => e.ev === "chat"), cancels: log.filter((e) => e.ev === "cancel") };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -34,3 +34,30 @@ test("a thinking step that runs past one progress interval sends progress before
     cleanup(bin, root);
   }
 });
+
+// E-thinking-summary.
+test("a thinking step's summary is read whatever its worker's exit: all accepted is done, pieces owed is stopped with them", { timeout: 60_000 }, async () => {
+  const sidecar = { sdk_version: "0.1.22", usage: { prompt_token_count: 10 } };
+  const fake = fakeWorkerPython({ runs: [
+    { holdMs: 100, sidecar, exitCode: 1, stderr: "thinking_worker failed: Interrupted\n", summary: { done: true, missing: [], accepted: ["requirements"], conversation_id: "conv-1", text: "" } },
+    { holdMs: 100, sidecar, exitCode: 1, stderr: "thinking_worker failed: budget\n", summary: { done: false, missing: ["requirements"], accepted: [], conversation_id: "conv-2", text: "" } },
+  ] });
+  const bin = standInClaude([receipt({})]);
+  const root = project({ contract: false });
+  writeFileSync(join(root, "policy.yaml"), "version: 1\nname: agy-think\nmodels:\n  - id: flash\n    adapter: antigravity-worker\n    model_name: gemini-3.8-flash\nrules:\n  - default: flash\n");
+  const policy_path = join(root, "policy.yaml");
+  try {
+    await withServer({ bin, home: root, env: { GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", GEMINI_WORKER_PYTHON: fake.python } }, async (call) => {
+      assert.equal((await call("preflight_dispatch", { auth_mode: "estimated", policy_path, project_root: root, run_id: "r1" })).json?.ok, true);
+      const step = { role: "requirements", prompt: "The brief is in brief.md.", project_root: root, output_dir: "out", run_id: "r1", policy_path };
+      const done = await call("run_thinking_step", step);
+      assert.equal(done.json?.route, "done", done.text);
+      const owed = await call("run_thinking_step", step);
+      assert.equal(owed.json?.route, "stopped", owed.text);
+      assert.deepEqual(owed.json?.missing, ["requirements"]);
+    });
+  } finally {
+    fake.cleanup();
+    cleanup(bin, root);
+  }
+});

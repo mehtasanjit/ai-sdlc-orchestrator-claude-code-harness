@@ -26,6 +26,15 @@ class _Config:
     def model_dump(self, **_):
         return dict(self.kwargs)
 
+    def model_copy(self, update=None, **_):
+        """A copy with some fields replaced, as pydantic's model_copy: the SDK's configuration classes are pydantic
+        models, and a worker builds one configuration from another this way (thinking_worker.py)."""
+        new = copy.copy(self)
+        new.kwargs = {**self.kwargs, **dict(update or {})}
+        for k, v in dict(update or {}).items():
+            setattr(new, k, v)
+        return new
+
     def __repr__(self):
         return f"{type(self).__name__}({self.kwargs!r})"
 

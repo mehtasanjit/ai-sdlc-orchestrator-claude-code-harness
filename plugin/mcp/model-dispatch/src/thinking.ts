@@ -70,7 +70,7 @@ export interface ThinkingArgs {
 export type ThinkingReply =
   | { route: "session"; role: string; phase: Phase; model: string; reason: string }
   | { route: "done"; role: string; phase: Phase; model: string; accepted: string[]; cost_usd: number; tokens: ExecutionResult["tokens"]; resumed: boolean }
-  | { route: "stopped"; role: string; phase: Phase; model: string; reason: string; missing?: string[]; cost_usd: number }
+  | { route: "stopped"; role: string; phase: Phase; model: string; reason: string; missing?: string[]; accepted?: string[]; cost_usd: number }
   | { route: "halt"; role: string; phase: Phase; model: string; reason: string; cost_usd: number };
 
 export interface ThinkingDeps {
@@ -283,7 +283,7 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
 
   const stop = (why: string, missing?: string[]): ThinkingReply => {
     deps.log("warn", "thinking.stopped", { role: args.role, phase: role.phase, model: model.model_name, reason: why });
-    return { ...base, route: "stopped", reason: why, ...(missing?.length ? { missing } : {}), cost_usd: result.cost_usd };
+    return { ...base, route: "stopped", reason: why, ...(missing?.length ? { missing } : {}), ...(summary.accepted?.length ? { accepted: summary.accepted } : {}), cost_usd: result.cost_usd };
   };
   if (result.halt) {
     deps.log("warn", "thinking.halt", { role: args.role, phase: role.phase, model: model.model_name, reason: result.halt });
@@ -294,8 +294,11 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   const own = [posix(args.output_dir).replace(/\/+$/, "") + "/", ".sdlc/"];
   const changed = (result.workspace_changes ?? []).map(posix).filter((p) => !own.some((o) => p.startsWith(o)));
   if (changed.length) return stop(`project files changed while the step ran: ${changed.slice(0, 10).join(", ")}${changed.length > 10 ? ` and ${changed.length - 10} more` : ""}`);
-  if (!result.success) return stop(`the ${model.model_name} step could not finish: ${result.error ?? "no reason given"}`, summary.missing);
+  if (!result.success && !summary.done) return stop(`the ${model.model_name} step could not finish: ${result.error ?? "no reason given"}`, summary.missing);
   if (!summary.done) return stop(`the ${model.model_name} step ended with pieces still owed`, summary.missing);
+  // Every piece is handed in and accepted by the checks a Claude helper's hand-over runs: the step is done, even when
+  // its last turn ended with an error (review: a fully accepted step was reported stopped and its work thrown away).
+  if (!result.success) deps.log("warn", "thinking.done_after_error", { role: args.role, phase: role.phase, model: model.model_name, reason: result.error });
   deps.log("info", "thinking.end", { role: args.role, phase: role.phase, model: model.model_name, accepted: (summary.accepted ?? []).length, cost_usd: result.cost_usd });
   return { ...base, route: "done", accepted: summary.accepted ?? [], cost_usd: result.cost_usd, tokens: result.tokens, resumed: !!resumeId };
 }

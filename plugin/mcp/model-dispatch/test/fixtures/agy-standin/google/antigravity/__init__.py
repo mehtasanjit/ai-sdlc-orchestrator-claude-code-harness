@@ -113,9 +113,12 @@ def _attr(obj, name, default=None):
 class Conversation:
     """The session's history, usage and current turn, with the SDK's public names."""
 
-    def __init__(self, session: int, script: dict):
+    def __init__(self, session: int, script: dict, tools=None):
         self._session = session
         self._script = script
+        # The worker's own tools (its configuration's `tools`, plain functions), run when a step calls one by name.
+        self._tools = {getattr(f, "__name__", ""): f for f in (tools or []) if callable(f)}
+        self._ran = set()
         self._steps: list = []
         self._max = int(_script().get("max_history", 10_000))
         self._usage = types.UsageMetadata()
@@ -217,6 +220,16 @@ class Conversation:
                     self._steps.append(step)
                     if self._max and len(self._steps) > self._max:
                         self._steps = self._steps[len(self._steps) - self._max:]
+                    # A call of one of the worker's own tools runs it, once per call id, as the SDK's harness does.
+                    for call in step.tool_calls:
+                        fn = self._tools.get(call.name)
+                        key = call.id or f"{call.name}#{len(self._steps)}"
+                        if fn is not None and key not in self._ran:
+                            self._ran.add(key)
+                            out = fn(**call.args)
+                            if asyncio.iscoroutine(out):
+                                out = await out
+                            log("tool_run", session=self._session, turn=self._turns, name=call.name, result=str(out)[:2000])
                     yield step
                 if "usage" in ev:
                     self._usage = self._usage + types.UsageMetadata(**ev["usage"])
@@ -275,7 +288,7 @@ class Agent:
             conversation_id=_attr(cfg, "conversation_id"), save_dir=_attr(cfg, "save_dir"),
             no_proxy=os.environ.get("NO_PROXY"), no_proxy_lower=os.environ.get("no_proxy"),
             https_proxy=os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"))
-        self.conversation = Conversation(self._n, self._script)
+        self.conversation = Conversation(self._n, self._script, _attr(cfg, "tools"))
 
     async def __aenter__(self):
         log("aenter_start", session=self._n)

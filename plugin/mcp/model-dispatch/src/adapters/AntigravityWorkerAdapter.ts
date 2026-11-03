@@ -331,6 +331,8 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     const taskFile = join(outDir, `worker-task-${stem}.md`);
     const usageFile = join(outDir, `worker-usage-${stem}.json`);
     const recordFile = join(outDir, `worker-delegation-${stem}.json`);
+    // A thinking step's summary (accepted, owed, its conversation), which its worker keeps whatever its exit.
+    const summaryFile = join(outDir, `worker-summary-${stem}.json`);
 
     try {
       mkdirSync(outDir, { recursive: true });
@@ -368,6 +370,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       args.push("--role", thinking.role, "--tools-config", thinking.toolsConfig, "--save-dir", thinking.saveDir,
         "--node", process.execPath, "--tools-script", THINKING_TOOLS);
       if (thinking.resumeId) args.push("--resume-id", thinking.resumeId);
+      args.push("--summary-file", summaryFile);
     }
 
     // Inventoried as late as possible so nothing this adapter wrote appears
@@ -500,6 +503,9 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     });
 
     const record = bill ? { gemini: bill.gemini, ...(bill.unpriced_models.length ? { unpriced_models: bill.unpriced_models } : {}) } : {};
+    // A thinking step's summary, read whatever the worker's exit: a step that failed or ran out of its budget still says
+    // what was accepted and owed, and which conversation to carry on.
+    const summary = thinking ? readJsonIfPresent(summaryFile) ?? null : null;
     if (!run.ok) {
       const attempt: AttemptRecord = {
         attempt_number: 1,
@@ -516,7 +522,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         ...record,
       };
       return {
-        result: null,
+        result: summary,
         tokens,
         cost_usd: cost,
         latency_ms: latency,
@@ -532,11 +538,13 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     // Worker prints the final message on stdout. `{ raw }` fallback matches
     // the model tier's shape.
     const text = run.stdout.trim();
-    let parsed: any;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = { raw: text };
+    let parsed: any = summary;
+    if (parsed === null) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = { raw: text };
+      }
     }
 
     const attempt: AttemptRecord = {
@@ -713,15 +721,16 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
 function keepEarlierDispatch(outDir: string, stem: string): void {
   const record = join(outDir, `worker-delegation-${stem}.json`);
   const usage = join(outDir, `worker-usage-${stem}.json`);
-  if (!existsSync(record) && !existsSync(usage)) return;
-  const taken = new RegExp(`^worker-(?:delegation|usage)-${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.(\\d+)\\.json$`);
+  const summary = join(outDir, `worker-summary-${stem}.json`);
+  if (!existsSync(record) && !existsSync(usage) && !existsSync(summary)) return;
+  const taken = new RegExp(`^worker-(?:delegation|usage|summary)-${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.(\\d+)\\.json$`);
   let n = 0;
   for (const name of readdirSync(outDir)) {
     const m = taken.exec(name);
     if (m) n = Math.max(n, Number(m[1]));
   }
   n += 1;
-  for (const [from, prefix] of [[record, "worker-delegation"], [usage, "worker-usage"]] as const) {
+  for (const [from, prefix] of [[record, "worker-delegation"], [usage, "worker-usage"], [summary, "worker-summary"]] as const) {
     if (existsSync(from)) renameSync(from, join(outDir, `${prefix}-${stem}.${n}.json`));
   }
   log("info", "agsdk.record.kept", { stem, as: n });

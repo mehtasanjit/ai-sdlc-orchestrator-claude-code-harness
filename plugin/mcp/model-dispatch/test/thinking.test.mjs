@@ -186,6 +186,23 @@ test("per-module reviews are separate steps: each keeps its own files, conversat
   assert.equal(again.calls.dispatch[0].thinking.resumeId, "conv-m1");
 });
 
+test("a step whose worker stopped after every piece was accepted is done; one with pieces owed says what is owed and what was kept", async () => {
+  const root = project();
+  const failed = (summary) => deps(AGENT, () => result({ success: false, error: "The agent worker exited 1: the step's own work time reached the policy's limit", result: summary }));
+  const done = failed({ done: true, missing: [], accepted: ["header.json", "units-001.json"], conversation_id: "c9" });
+  const r = await runThinkingStep(args(root), done.d);
+  assert.equal(r.route, "done", JSON.stringify(r));
+  const owed = failed({ done: false, missing: ["units-002.json, refused: U03.path is outside the allowlist"], accepted: ["header.json"], conversation_id: "c7" });
+  const s = await runThinkingStep(args(root), owed.d);
+  assert.equal(s.route, "stopped");
+  assert.deepEqual(s.missing, ["units-002.json, refused: U03.path is outside the allowlist"]);
+  assert.deepEqual(s.accepted, ["header.json"]);
+  // Its conversation is kept, so a revise carries it on.
+  const again = deps(AGENT, () => result());
+  await runThinkingStep(args(root, { revise: "fix U03" }), again.d);
+  assert.equal(again.calls.dispatch[0].thinking.resumeId, "c7");
+});
+
 test("each role's hand-in paths are fixed under the run's folder", () => {
   const a = { output_dir: "out/" };
   assert.deepEqual(roleOutputs("requirements", a), { requirements: "out/requirements.md" });
