@@ -1083,8 +1083,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           prompt: { type: "string", description: "Exactly what you would put in the helper's delegation prompt (for 'requirements': the brief's path and the job's Phase 1 rules)." },
           project_root: { type: "string" },
           output_dir: { type: "string", description: "The run's own folder, relative to project_root: .sdlc/runs/<run_id> in brownfield, the run's output_dir in greenfield." },
-          run_id: { type: "string" },
-          intent: { type: "string", description: "Brownfield: the run's job, as Gate 0 recorded it." },
+          run_id: { type: "string", description: "The run, as its preflight_dispatch recorded it: the step is routed by that run's policy and job." },
+          intent: { type: "string", description: "Brownfield: the run's job, as Gate 0 recorded it (the run's pre-flight's job; another is refused)." },
           code_dir: { type: "string", description: "Greenfield: the generated app's folder, relative to project_root." },
           requirements_path: { type: "string", description: "The run's requirements.md, relative to project_root (the greenfield architect's coverage check)." },
           review_path: { type: "string", description: "Senior reviewer: where review.json goes, relative to project_root and inside output_dir (default <output_dir>/review.json)." },
@@ -1094,7 +1094,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           policy_path: { type: "string" },
           telemetry_path: { type: "string" },
         },
-        required: ["role", "prompt", "project_root", "output_dir"],
+        required: ["role", "prompt", "project_root", "output_dir", "run_id"],
       },
     },
     ...EXECUTOR_TOOLS,
@@ -1172,7 +1172,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         // The worker's brief and evidence are staged beside telemetry_path; the worker runs from another folder, so a
         // path relative to the project is made absolute first.
         const a0j = args as any;
-        const a = a0j?.telemetry_path && a0j.project_root ? { ...a0j, telemetry_path: resolvePath(a0j.project_root, a0j.telemetry_path) } : a0j;
+        const a1 = a0j?.telemetry_path && a0j.project_root ? { ...a0j, telemetry_path: resolvePath(a0j.project_root, a0j.telemetry_path) } : a0j;
+        // A thinking step is routed by the run its pre-flight recorded, never by its own call's arguments: with no
+        // recorded run the call's own policy (or the default) would route it, and with no job the run's job-scoped
+        // rules would not apply (review: either turned a step the route table gave Gemini into the session's, on Claude).
+        const recorded = typeof a1?.run_id === "string" && a1.run_id ? runStates.get(runKey(a1.project_root, a1.run_id)) : undefined;
+        if (!recorded) {
+          throw new Error(`run_thinking_step: no pre-flight of run '${a1?.run_id ?? ""}' for ${a1?.project_root ?? "this project"}. Call preflight_dispatch with the run's run_id first: a thinking step is routed by the run its pre-flight checked, and nothing was sent.`);
+        }
+        if (typeof a1.intent === "string" && a1.intent !== "" && a1.intent !== (recorded.intent ?? "")) {
+          throw new Error(`run_thinking_step: run ${a1.run_id}'s pre-flight recorded the job '${recorded.intent ?? "(none)"}', and this call names '${a1.intent}'. A step runs under its run's job; nothing was sent.`);
+        }
+        const a = { ...a1, intent: recorded.intent };
         const { policy, run } = runFor(a);
         const deps: ThinkingDeps = {
           pluginRoot: PLUGIN_ROOT,
