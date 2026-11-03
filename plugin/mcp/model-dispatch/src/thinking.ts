@@ -11,10 +11,10 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { bindingContract, holdsPrivateKey, readOffLimits } from "./apply.js";
+import { holdsPrivateKey, modelReadOf } from "./apply.js";
 
 import type { ExecutionResult, ModelConfig, Phase, RunContext, TaskPacket, TelemetryEvent } from "./types.js";
 
@@ -166,15 +166,21 @@ export function stepInputsCopied(projectRoot: string, outputDir: string, inputs:
   const copies: string[] = [];
   const names = new Set<string>();
   for (const given of inputs as string[]) {
-    const abs = resolve(projectRoot, given);
-    const rel = posix(relative(resolve(projectRoot), abs));
-    const name = rel.startsWith("..") || isAbsolute(rel) ? abs.replace(/^\/+/, "") : rel;
-    // Inside the project the live contract's off_limits hold too; outside it, the always list by the path's names.
-    const refused = readOffLimits(posix(name), name === rel ? bindingContract(projectRoot) : null);
-    if (refused) throw new Error(`run_thinking_step: input '${given}' is never sent to a model (${refused})`);
-    let st;
-    try { st = statSync(abs); } catch { throw new Error(`run_thinking_step: input '${given}' does not exist`); }
-    if (!st.isFile()) throw new Error(`run_thinking_step: input '${given}' is not a file`);
+    // Judged as every file a model is sent is judged (apply.ts modelReadOf): by the path given, by the file it reaches
+    // through links, and by its other names in the project; an input may lie outside the project (a greenfield brief).
+    // Review: an input judged by the name given let a link or a hard link to .env be copied in, and then read.
+    const read = modelReadOf(projectRoot, given, { outside: true });
+    if ("refused" in read) {
+      const r = read.refused;
+      switch (r.kind) {
+        case "missing": throw new Error(`run_thinking_step: input '${given}' does not exist`);
+        case "not-a-file": throw new Error(`run_thinking_step: input '${given}' is not a file`);
+        case "hard-link": throw new Error(`run_thinking_step: input '${given}' is never sent to a model: it is the same file as an off-limits one, under another name (a hard link)`);
+        case "off-limits": throw new Error(`run_thinking_step: input '${given}' is never sent to a model (${r.why}${r.via ? `, reached through a symbolic link as ${r.via}` : ""})`);
+        default: throw new Error(`run_thinking_step: input '${given}' cannot be read`);
+      }
+    }
+    const { abs, st } = read;
     if (st.size > MAX_INPUT_BYTES) throw new Error(`run_thinking_step: input '${given}' is ${st.size} bytes, over the ${MAX_INPUT_BYTES} a step reads`);
     const text = readFileSync(abs, "utf8");
     if (holdsPrivateKey(text)) throw new Error(`run_thinking_step: input '${given}' is never sent to a model: it holds a private key`);

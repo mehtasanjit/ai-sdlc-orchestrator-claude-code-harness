@@ -10,7 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -226,6 +226,23 @@ test("a step's input files are copied into its run folder through the read rule,
     const one = deps(AGENT, () => assert.fail("no dispatch"));
     await assert.rejects(runThinkingStep(args(root, { role: "requirements", output_dir: "out", inputs: [bad] }), one.d), /input/, bad);
     assert.equal(one.calls.dispatch.length, 0);
+  }
+});
+
+test("a step's input is judged by the file it reads: a link or a second name for a refused file is refused, inside the project or out", async () => {
+  const root = project();
+  writeFileSync(join(root, ".env"), "STRIPE_KEY=sk_live_secret\n");
+  symlinkSync(".env", join(root, "notes.txt"));
+  linkSync(join(root, ".env"), join(root, "hard.txt"));
+  const outside = mkdtempSync(join(tmpdir(), "mmo-brief-"));
+  mkdirSync(join(outside, ".aws"));
+  writeFileSync(join(outside, ".aws", "credentials"), "aws_secret_access_key = x\n");
+  symlinkSync(join(outside, ".aws", "credentials"), join(outside, "brief.md"));
+  for (const [bad, why] of [["notes.txt", /never sent to a model/], ["hard.txt", /hard link/], [join(outside, "brief.md"), /never sent to a model/]]) {
+    const one = deps(AGENT, () => assert.fail("no dispatch"));
+    await assert.rejects(runThinkingStep(args(root, { role: "requirements", output_dir: "out", inputs: [bad] }), one.d), why, bad);
+    assert.equal(one.calls.dispatch.length, 0);
+    assert.equal(existsSync(join(root, "out", "inputs")), false, "nothing was copied");
   }
 });
 

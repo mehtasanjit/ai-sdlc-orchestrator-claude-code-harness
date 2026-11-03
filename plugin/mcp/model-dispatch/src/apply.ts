@@ -309,49 +309,81 @@ export function sliceSection(text: string, heading: string): string | null {
  * file (readOffLimits), a missing file or a slice over MAX_SLICE_BYTES throws — those are planner bugs the
  * orchestrator should see, not silently empty inputs, and an off-limits file is the person's decision.
  */
+/** Why the read rule refuses a model's read of one file (modelReadOf). */
+export type ModelReadRefusal =
+  | { kind: "outside"; throughLink: boolean }
+  | { kind: "off-limits"; why: string; via?: string }
+  | { kind: "missing" }
+  | { kind: "not-a-file" }
+  | { kind: "hard-link" };
+
+/**
+ * The file a model's read of `given` (relative to project_root, or absolute) reaches, or why the read rule refuses it,
+ * judged as everything a model is sent is judged: by the path as written, by the file it reaches through links, and by
+ * every other name that file has in the project (a hard link to `.env` is `.env`'s bytes). Inside the project the live
+ * contract's off_limits hold too; outside it, the always list holds, by the path's names. A path outside the project,
+ * or one that leads out of it through a link, is refused unless `outside` allows it (a thinking step's input, such as
+ * a greenfield brief: thinking.ts stepInputsCopied).
+ */
+export function modelReadOf(
+  projectRoot: string,
+  given: string,
+  opts: { outside?: boolean; binding?: { contract: any; runId: string | null } | null } = {},
+): { refused: ModelReadRefusal } | { abs: string; real: string; st: import("node:fs").Stats } {
+  const binding = opts.binding === undefined ? bindingContract(projectRoot) : opts.binding;
+  const abs = resolve(projectRoot, given);
+  const rel = toPosix(relative(projectRoot, abs));
+  // A path outside the project is judged by its own names against the always list (no contract covers it).
+  const nameOf = (r: string, a: string) => (escapes(r) ? { name: toPosix(a).replace(/^\/+/, ""), contract: null } : { name: r, contract: binding });
+  const given0 = nameOf(rel, abs);
+  if (escapes(rel) && !opts.outside) return { refused: { kind: "outside", throughLink: false } };
+  // The path as written is judged before the disk is asked whether it exists, so the answer is the same on every
+  // disk: on a case-sensitive one (Linux's) `.ENV` is not `.env`'s file and may not exist, and an off-limits path
+  // refused as "does not exist" would also tell the caller whether an off-limits file is there.
+  const why = readOffLimits(given0.name, given0.contract);
+  if (why) return { refused: { kind: "off-limits", why } };
+  if (!existsSync(abs)) return { refused: { kind: "missing" } };
+  // Real paths as the disk spells them: realpathSync keeps the spelling it is given, and macOS opens `.MCP.JSON` or
+  // `.mcp.jſon` as `.mcp.json`.
+  const realRoot = realpathSync.native(projectRoot);
+  const real = realpathSync.native(abs);
+  const realRel = toPosix(relative(realRoot, real));
+  if (escapes(realRel) && !opts.outside) return { refused: { kind: "outside", throughLink: true } };
+  const st = statSync(real);
+  if (!st.isFile()) return { refused: { kind: "not-a-file" } };
+  // And the file it reaches through links, once it is known to be one, and every other name it has.
+  const reached = nameOf(realRel, real);
+  if (reached.name !== given0.name) {
+    const whyReached = readOffLimits(reached.name, reached.contract);
+    if (whyReached) return { refused: { kind: "off-limits", why: whyReached, via: reached.name } };
+  }
+  if (st.nlink > 1 && sameFileAsOffLimits(realRoot, st.dev, st.ino, binding)) return { refused: { kind: "hard-link" } };
+  return { abs, real, st };
+}
+
 export function hydrateInputs(packet: TaskPacket, projectRoot: string): { packet: TaskPacket; hydrated: string[] } {
   const hydrated: string[] = [];
-  let realRoot: string | null = null;
   let binding: { contract: any; runId: string | null } | null | undefined;
   const inputs: FileSlice[] = packet.inputs.map((s) => {
     if (typeof s.content === "string") return s;
-    const abs = resolve(projectRoot, s.path);
-    const rel = toPosix(relative(projectRoot, abs));
-    if (escapes(rel)) {
-      throw new Error(`execute_with_model: input slice "${s.path}" resolves outside project_root.`);
-    }
     if (binding === undefined) binding = bindingContract(projectRoot);
-    const offLimits = (r: string) => {
-      const why = readOffLimits(r, binding ?? null);
-      if (why) {
-        throw new Error(
-          `execute_with_model: input slice "${s.path}" is never sent to a model (${why}${r !== rel ? `, reached through a symbolic link as ${r}` : ""}). ` +
-            "Whether a model may read it is the person's decision: stop and tell the person which file the work needs and why.",
-        );
+    const read = modelReadOf(projectRoot, s.path, { binding });
+    if ("refused" in read) {
+      const r = read.refused;
+      const where = `execute_with_model: input slice "${s.path}"`;
+      switch (r.kind) {
+        case "outside": throw new Error(`${where} resolves outside project_root${r.throughLink ? " through a symbolic link" : ""}.`);
+        case "off-limits":
+          throw new Error(
+            `${where} is never sent to a model (${r.why}${r.via ? `, reached through a symbolic link as ${r.via}` : ""}). ` +
+              "Whether a model may read it is the person's decision: stop and tell the person which file the work needs and why.",
+          );
+        case "missing": throw new Error(`${where} does not exist under project_root (${projectRoot}).`);
+        case "not-a-file": throw new Error(`${where} is not a file.`);
+        case "hard-link": throw new Error(`${where} is never sent to a model: it is the same file as an off-limits one, under another name (a hard link).`);
       }
-    };
-    // The path as written is judged before the disk is asked whether it exists, so the answer is the same on every
-    // disk: on a case-sensitive one (Linux's) `.ENV` is not `.env`'s file and may not exist, and an off-limits path
-    // refused as "does not exist" would also tell the caller whether an off-limits file is there.
-    offLimits(rel);
-    if (!existsSync(abs)) {
-      throw new Error(`execute_with_model: input slice "${s.path}" does not exist under project_root (${projectRoot}).`);
     }
-    // Real paths as the disk spells them: realpathSync keeps the spelling it is given, and macOS opens `.MCP.JSON` or
-    // `.mcp.jſon` as `.mcp.json`.
-    realRoot ??= realpathSync.native(projectRoot);
-    const real = realpathSync.native(abs);
-    const realRel = toPosix(relative(realRoot, real));
-    if (escapes(realRel)) {
-      throw new Error(`execute_with_model: input slice "${s.path}" resolves outside project_root through a symbolic link.`);
-    }
-    const st = statSync(real);
-    if (!st.isFile()) throw new Error(`execute_with_model: input slice "${s.path}" is not a file.`);
-    // And the file it reaches through links, once it is known to be one, and every other name it has.
-    if (realRel !== rel) offLimits(realRel);
-    if (st.nlink > 1 && sameFileAsOffLimits(realRoot, st.dev, st.ino, binding ?? null)) {
-      throw new Error(`execute_with_model: input slice "${s.path}" is never sent to a model: it is the same file as an off-limits one, under another name (a hard link).`);
-    }
+    const abs = read.abs;
     const text = readFileSync(abs, "utf8");
     if (holdsPrivateKey(text)) throw new Error(`execute_with_model: input slice "${s.path}" is never sent to a model: it holds a private key.`);
     let content: string;
