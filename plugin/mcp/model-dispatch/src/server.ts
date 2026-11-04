@@ -1229,8 +1229,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             const lastAttempt = one.result.attempts?.[one.result.attempts.length - 1];
             if (lastAttempt?.unavailable) {
               // The worker waited out the busy model for the run's window, carrying on the step; the run's ledger
-              // counts the stretch from its first unserved call, never from the step's start.
-              const stop = ledger.unavailable(leafName, lastAttempt.unavailable, unservedSince(lastAttempt, sentAt));
+              // counts the stretch from its first unserved call, never from the step's start. A worker that produced
+              // output was served until then, and the ledger learns it first, so a stretch an earlier batch left open
+              // does not run on across a step Google kept serving (review of 0.10.1).
+              const since = unservedSince(lastAttempt, sentAt);
+              if (one.result.tokens.output > 0) ledger.served(leafName, since);
+              const stop = ledger.unavailable(leafName, lastAttempt.unavailable, since);
               if (stop) one.result.halt = `${stop}; the run stopped here. Run it again when Google serves again`;
             } else if (one.result.success || one.result.tokens.output > 0) ledger.served(leafName);
             return { result: one.result, events: one.events };

@@ -144,10 +144,24 @@ test("a project file that changed while the step ran stops it; the step's own fo
   assert.doesNotMatch(r.reason, /header\.json/);
 });
 
-test("Google serving nothing for the busy window is a halt", async () => {
+test("Google serving nothing for the busy window is a halt, for a step with work still owed", async () => {
   const root = project();
-  const { d } = deps(AGENT, () => result({ success: false, halt: "nothing served for 300 s" }));
+  const owed = { done: false, missing: ["units-001.json"], accepted: ["header.json"], conversation_id: "c1" };
+  const { d } = deps(AGENT, () => result({ success: false, halt: "nothing served for 300 s", result: owed }));
   assert.equal((await runThinkingStep(args(root), d)).route, "halt");
+});
+
+test("a step whose every piece is accepted is done, even when Google held its closing call and the busy window said halt", async () => {
+  // Review of 0.10.1: after the last accepted hand-in, Google held the model's closing call; the worker stopped with
+  // reason "done", but its receipt still carried the unserved stretch, and the step was answered halt: the run stopped
+  // and the step's work, all accepted, was thrown away. The busy window is the run's, kept in its ledger, so the run's
+  // next call still halts if Google is not serving.
+  const root = project();
+  const { d } = deps(AGENT, () => result({ success: false, halt: "Google could not serve gemini-4-argon: refused; no call of it was served for 300 s" }));
+  const r = await runThinkingStep(args(root), d);
+  assert.equal(r.route, "done", JSON.stringify(r));
+  assert.deepEqual(r.accepted, ["header.json", "units-001.json"]);
+  // A project file that changed still stops it, and a halt with work owed is still a halt (the tests above and below).
 });
 
 test("a revise carries on the step's saved conversation with the changes asked for", async () => {
@@ -512,10 +526,12 @@ test("files git ignores (a test runner's cache) do not stop a step; a tracked fi
   assert.equal(source.route, "stopped");
   assert.match(source.reason, /src\/a\.ts/);
   assert.doesNotMatch(source.reason, /pytest_cache/);
-  // Outside git the worker's own inventory decides, and nothing says what is ignored.
+  // Outside git the worker's own inventory decides, and nothing says what is ignored: a file a .gitignore would name
+  // counts. A tool's own cache is no change with git or without (CACHE_FILES).
   const plain = project();
   const step = (changes) => runThinkingStep(args(plain), deps(AGENT, () => result({ workspace_changes: changes })).d);
-  assert.equal((await step([".pytest_cache/.gitignore", ".pytest_cache/v/cache/nodeids"])).route, "stopped", "with no git to say what is ignored, every change counts");
+  assert.equal((await step(["dist/bundle.js"])).route, "stopped", "with no git to say what is ignored, every change counts");
+  assert.equal((await step([".pytest_cache/.gitignore", ".pytest_cache/v/cache/nodeids"])).route, "done", "a tool's cache is not the project's, with git or without");
 });
 
 test("the change check sees what git sees: a build folder it does not ignore, a large file of the same size, any number of files", async () => {
@@ -606,6 +622,59 @@ test("the dispatch's evidence is the step's own where the dispatch writes it, be
   for (const f of [`${d}/delegation/worker-summary-r1-requirements.json`, ".sdlc/delegation/worker-summary-r1-requirements.json"]) {
     assert.match((await step(f)).reason, /delegation\/worker-summary/, `${f}: not where this step's dispatch writes`);
   }
+});
+
+test("the code under review is checked even where git ignores it, as 0.10.0's walk checked it; the step's own records there stay its own", async () => {
+  // Review of 0.10.1: this repo's .gitignore ignores examples/*/passes/*/, the /mmo:pass layout with the code under
+  // review inside it, so with git's view alone an edit to that code during a review went unseen.
+  const root = await gitProject({ ".gitignore": "examples/*/passes/*/\n", "README.md": "# r\n" });
+  const d = "examples/s/passes/r1";
+  put(root, `${d}/src/app.ts`, "export const app = 1;\n");
+  const review = (edit) => runThinkingStep(args(root, { role: "senior-reviewer", intent: undefined, output_dir: d, code_dir: `${d}/src` }), changing(() => { put(root, `${d}/review.json`, "{}\n"); edit(); }));
+  assert.equal((await review(() => {})).route, "done", "its own review, in the ignored folder, is its own");
+  const edited = await review(() => put(root, `${d}/src/app.ts`, "export const app = 2;\n"));
+  assert.equal(edited.route, "stopped");
+  assert.match(edited.reason, /src\/app\.ts/);
+  const added = await review(() => put(root, `${d}/src/extra.ts`, "export const x = 1;\n"));
+  assert.match(added.reason ?? "", /src\/extra\.ts/);
+  // What the walk skips there is skipped: an install's folder is not the code under review.
+  assert.equal((await review(() => put(root, `${d}/src/node_modules/dep/index.js`, "x\n"))).route, "done");
+});
+
+test("the caches a check's tools write beside the code (Python's bytecode, a test runner's or type checker's cache, TypeScript's build info) are not the project's, where git does not ignore them; a source file still is", async () => {
+  // Review of 0.10.1: in a repo with no __pycache__/ rule, or a TypeScript repo whose incremental build writes
+  // tsconfig.tsbuildinfo, a reviewer's own check wrote its cache and the finished review was stopped and discarded.
+  const root = await gitProject({ "src/a.py": "x = 1\n", "tsconfig.json": "{}\n" });
+  const caches = () => {
+    put(root, "src/__pycache__/a.cpython-312.pyc", "\0");
+    put(root, "src/b.pyc", "\0");
+    put(root, ".pytest_cache/v/cache/nodeids", "[]\n");
+    put(root, ".mypy_cache/3.12/a.data.json", "{}\n");
+    put(root, ".ruff_cache/0.5/1", "\0");
+    put(root, "tsconfig.tsbuildinfo", "{}\n");
+    put(root, ".eslintcache", "[]\n");
+    put(root, "node_modules/.cache/jest/x", "\0");
+  };
+  assert.equal((await runThinkingStep(args(root), changing(caches))).route, "done", "no cache file is the project's");
+  const source = await runThinkingStep(args(root), changing(() => { caches(); put(root, "src/a.py", "x = 2\n"); }));
+  assert.equal(source.route, "stopped");
+  assert.match(source.reason, /src\/a\.py/);
+  assert.doesNotMatch(source.reason, /pycache|tsbuildinfo|pytest_cache|eslintcache/);
+  // A file only named like a cache folder's is still the project's.
+  assert.match((await runThinkingStep(args(root), changing(() => put(root, "src/pycache_notes.md", "x\n")))).reason ?? "", /pycache_notes\.md/);
+});
+
+test("what a step is told reaches the model without what the read rule keeps from models, whatever the session wrote into its prompt", async () => {
+  // Review of 0.10.1: an acceptance failure's output, a revise or the prompt can carry a protected file's value into
+  // the task the worker sends; the task leaves without it (apply.ts withoutProtectedText).
+  const root = project();
+  writeFileSync(join(root, ".env"), "DB_URL=postgres://u:pw@db\nSECRET=hunter2\n");
+  const { d, calls } = deps(AGENT, () => result());
+  await runThinkingStep(args(root, { role: "requirements", intent: undefined, output_dir: "out", prompt: "Write the requirements. The test run printed: connecting to postgres://u:pw@db with SECRET=hunter2" }), d);
+  const { task, system } = calls.dispatch[0].thinking;
+  for (const secret of ["hunter2", "postgres://u:pw@db"]) assert.ok(!task.includes(secret) && !system.includes(secret), `${secret} reached the model`);
+  assert.match(task, /kept from you by the read rule/);
+  assert.match(task, /Write the requirements/);
 });
 
 test("a run folder written ./out is the same folder; an operating system's own files are not the project's", async () => {

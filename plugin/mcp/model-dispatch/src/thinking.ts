@@ -18,8 +18,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, posix as posixPath, relative, resolve, sep } from "node:path";
 
-import { holdsPrivateKey, modelReadOf } from "./apply.js";
-import { evidenceDir } from "./delegation/evidence.js";
+import { holdsPrivateKey, modelReadOf, withoutProtectedText } from "./apply.js";
+import { evidenceDir, takeInventory } from "./delegation/evidence.js";
 import { loggerTouched } from "./log.js";
 import { round6 } from "./pricing.js";
 import { openedSpec, PREVIOUS_DIR, SPEC_RECORDS } from "./spec/store.js";
@@ -206,7 +206,7 @@ export function stepInstructions(pluginRoot: string, role: ThinkingRole, project
  * (review: the walked inventory passed changes under build/, past 20,000 files, and same-size ones over 2 MB).
  */
 export interface ProjectSnapshot { head: string | null; files: Map<string, string> }
-export function projectSnapshot(projectRoot: string): ProjectSnapshot | null {
+export function projectSnapshot(projectRoot: string, walk: string[] = []): ProjectSnapshot | null {
   const git = (args: string[]) => spawnSync("git", ["-C", projectRoot, ...args], { encoding: "buffer", timeout: 120_000, maxBuffer: 512_000_000 });
   const tree = git(["rev-parse", "--is-inside-work-tree", "--show-prefix"]);
   const [isTree, prefix = ""] = tree.status === 0 ? tree.stdout.toString("utf8").split("\n") : [];
@@ -223,6 +223,13 @@ export function projectSnapshot(projectRoot: string): ProjectSnapshot | null {
     try { hash = createHash("sha256").update(readFileSync(join(projectRoot, rel))).digest("hex"); } catch { /* deleted, or not a file */ }
     files.set(rel, `${entry.slice(0, 2)}:${hash}`);
   }
+  // The code under review is the project's whatever git ignores: a folder of it that git ignores (this repo's own
+  // /mmo:pass layout, examples/*/passes/*/) is walked as 0.10.0 walked every step's project, skipping what the walk
+  // skips (an install's node_modules, caches), so a change to that code during a review is seen (review of 0.10.1).
+  for (const folder of walk) {
+    if (!folder || folder === "." || git(["check-ignore", "-q", "--", folder]).status !== 0) continue;
+    for (const e of takeInventory(join(projectRoot, folder)).entries) files.set(posixPath.join(folder, e.path), `walked:${e.digest}`);
+  }
   return { head: head.status === 0 ? head.stdout.toString("utf8").trim() : null, files };
 }
 
@@ -238,6 +245,14 @@ export function snapshotChanges(before: ProjectSnapshot, after: ProjectSnapshot)
 
 /** Files an operating system writes on its own beside a project's (a file browser's folder records): never its content. */
 const OS_FILES = /(^|\/)(\.DS_Store|\._[^/]+|Thumbs\.db|desktop\.ini|Icon\r)$/i;
+
+/**
+ * Caches a check's tools write on their own beside the code, never its content: Python's bytecode, the caches of pytest,
+ * mypy, ruff and Hypothesis, TypeScript's build info, ESLint's cache and the tools' cache under node_modules. A step's
+ * own checks write them, in a repo whose .gitignore may not name them (review of 0.10.1: a reviewer's check wrote one
+ * and the finished review was stopped). A source file a check changes is still a change.
+ */
+const CACHE_FILES = /(^|\/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis)\/|(^|\/)node_modules\/\.cache\/|\.py[co]$|\.tsbuildinfo$|(^|\/)\.eslintcache$/;
 
 /**
  * What a step itself writes, which its change check spares, each named by the code that writes it: in brownfield the
@@ -273,12 +288,12 @@ export function stepOwnPaths(args: ThinkingArgs, outputs: Record<string, string>
 
 /**
  * Whether a path the change check found is the step's own (stepOwnPaths): under one of its folders, one of its files,
- * an operating system's own file, or a file the plugin's logger touched while the server ran (log.ts loggerTouched): its
+ * an operating system's own file, a cache a check's tools write (CACHE_FILES), or a file the plugin's logger touched while the server ran (log.ts loggerTouched): its
  * log, the pieces it rotated out, its lock. The logger is asked rather than its names copied (live test of 0.10.1: the
  * log it wrote beside the run's telemetry stopped a step whose requirements were accepted).
  */
 export function stepOwns(own: string[], p: string, projectRoot: string): boolean {
-  return OS_FILES.test(p) || own.some((o) => (o.endsWith("/") ? p.startsWith(o) : p === o)) || loggerTouched(join(projectRoot, p));
+  return OS_FILES.test(p) || CACHE_FILES.test(p) || own.some((o) => (o.endsWith("/") ? p.startsWith(o) : p === o)) || loggerTouched(join(projectRoot, p));
 }
 
 /**
@@ -647,9 +662,11 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
   // whatever it trims from a long conversation (review: as the first user message, a long step's trimmed history could
   // drop them); the task is the first message. A resumed conversation is given the same system text again.
   const system = `${preface(args.role)}\n\n## The helper's instructions\n\n${instructions}`;
-  const task = resumeId
+  // What the step is told leaves for the model here: the read rule's text never goes with it, whatever the session
+  // wrote into the prompt, a revise or an acceptance failure's output (review of 0.10.1; apply.ts withoutProtectedText).
+  const task = withoutProtectedText(args.project_root, resumeId
     ? (fix ? `Acceptance fix: ${fix}` : `Changes asked for this step:\n\n${args.revise}\n\n${reviseHandIn(args.role)}`)
-    : `## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}\n\n${reviseHandIn(args.role)}` : ""}${fix ? `\n\n## Acceptance fix\n\n${fix}` : ""}`;
+    : `## This invocation\n\n${args.prompt}${inputCopies.length ? `\n\n## The step's input files\n\nCopied into the project for you, in the order given (read each with read_file):\n${inputCopies.map((c) => `- ${c}`).join("\n")}` : ""}${args.revise ? `\n\n## Changes asked for\n\n${args.revise}\n\n${reviseHandIn(args.role)}` : ""}${fix ? `\n\n## Acceptance fix\n\n${fix}` : ""}`);
   // The packet's instruction is the whole text, as before: the step's record of what the model is told. Only how it
   // reaches the SDK changed (thinking.system and thinking.task, below).
   const instruction = resumeId ? task : `${system}\n\n${task}`;
@@ -668,7 +685,9 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
   };
 
   deps.log("info", "thinking.start", { role: args.role, phase: role.phase, model: model.model_name, resumed: !!resumeId });
-  const before = projectSnapshot(args.project_root);
+  // The code under review is walked where git ignores it (projectSnapshot).
+  const reviewed = typeof args.code_dir === "string" && args.code_dir ? [runFolder(args.code_dir)] : [];
+  const before = projectSnapshot(args.project_root, reviewed);
   // Gemini has no tool that writes the project; any change outside what the step itself writes means something else
   // did, or a tool misbehaved: nothing from the step is used. In a git work tree the check is git's own view of the
   // project, before and after; what git ignores is not the project's (a test runner's cache: review, pytest's cache
@@ -678,7 +697,7 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
   const dispatched: ExecutionResult[] = [];
   let checkedByGit = false;
   const changedSince = (): string[] => {
-    const after = before ? projectSnapshot(args.project_root) : null;
+    const after = before ? projectSnapshot(args.project_root, reviewed) : null;
     checkedByGit = before !== null && after !== null;
     const seen = before && after ? snapshotChanges(before, after) : notIgnoredByGit(args.project_root, dispatched.flatMap((r) => r.workspace_changes ?? []).map((p) => runFolder(p)));
     return seen.filter((p) => !mine(p));
@@ -713,7 +732,12 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
   };
   const changeCheck = checkedByGit ? "git" : "partial: not a git work tree, so the worker's walk of the project is the check; it skips dependency, build and cache folders, compares files over 2 MB by size, and stops at 20,000 files";
   const changedText = changed.length ? `project files changed while the step ran: ${changed.slice(0, 10).join(", ")}${changed.length > 10 ? ` and ${changed.length - 10} more` : ""}` : "";
-  if (result.halt) {
+  // Every piece accepted, nothing changed: the step is done, even when Google held its closing call and the busy window
+  // then said halt. The window is the run's, kept in its ledger, so the run's next call halts if Google still serves
+  // nothing; this step's work is in (review of 0.10.1: a finished step was answered halt, and its accepted work lost).
+  const finished = summary.done === true && !changed.length && summary.reason !== "setup";
+  if (result.halt && finished) deps.log("warn", "thinking.done_after_halt", { role: args.role, phase: role.phase, model: model.model_name, reason: result.halt });
+  if (result.halt && !finished) {
     // A halt still names what changed (review: it returned before the check, and the files were never named).
     const reason = changedText ? `${result.halt}; ${changedText}` : result.halt;
     deps.log("warn", "thinking.halt", { role: args.role, phase: role.phase, model: model.model_name, reason });

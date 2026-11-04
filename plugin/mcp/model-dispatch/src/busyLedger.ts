@@ -44,10 +44,15 @@ export class BusyLedger {
     return this.now();
   }
 
-  /** A call of `model` was served (Google answered it, whatever the answer's own verdict). */
-  served(model: string): void {
+  /**
+   * A call of `model` was served (Google answered it, whatever the answer's own verdict), at `at` on the ledger's clock
+   * (default: now). A worker that answered many calls tells when it was last served (the start of its own unserved
+   * stretch), so the stretch after it counts from then. A served time never moves the last one back, nor ahead of now.
+   */
+  served(model: string, at?: number): void {
     const a = this.account(model);
-    a.lastServedAt = this.now();
+    const t = Math.min(at ?? this.now(), this.now());
+    if (a.lastServedAt === null || t >= a.lastServedAt) a.lastServedAt = t;
     a.unavailableSince = null;
   }
 

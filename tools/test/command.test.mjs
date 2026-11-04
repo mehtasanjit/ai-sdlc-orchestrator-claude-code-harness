@@ -395,4 +395,13 @@ test("a headless run's gates are answered by --gates=auto-approve alone, in both
   for (const doc of ["docs/running.md", "docs/logging.md"]) {
     assert.doesNotMatch(read(doc), /run end to end without stopping/, `${doc}: the flag alone, no sentence after the brief`);
   }
+  // The setup script prints headless runs too, and they must run as the docs' do (review of 0.10.1: without the flag
+  // a headless run stops at Gate 1).
+  const setup = read("tools/setup.mjs");
+  const headless = setup.match(/claude --print "\/mmo:pass [^"]*"[^\n]*\n[^\n]*/g) ?? [];
+  assert.ok(headless.length >= 2, "the setup script prints its headless runs");
+  for (const h of headless) {
+    assert.match(h, /--gates=auto-approve/, h);
+    assert.match(h, /--allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch"/, h);
+  }
 });

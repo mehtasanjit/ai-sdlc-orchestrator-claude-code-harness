@@ -506,3 +506,128 @@ test("the tools keep their state in the step's state file: a carried-on step hol
   writeFileSync(stateFile, "{not json");
   assert.throws(() => architect({ state_file: stateFile, carry_on: true }), /state .*cannot be read/);
 });
+
+// Review of 0.10.1, each proved with a probe: what a file the read rule keeps from models holds never reaches one,
+// whichever tool would carry it.
+const BF_HEADER = (run = "test -s {path}") => ({ conventions: ["two-space indent"], decisions: [{ topic: "x", choice: "y", reason: "FR-1" }], file_checks: [{ id: "lint", run, timeout_s: 45 }], project_checks: [{ id: "types", run: "true" }] });
+const SECRETS = ["hunter2", "postgres://u:pw@db", "npm_TOKEN123", "MIIEowIBAAKCAQEA", "BEGIN RSA PRIVATE KEY"];
+const PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7FAKEFAKEFAKEFAKEFAKE\n-----END RSA PRIVATE KEY-----\n";
+function secretProject() {
+  const root = project();
+  writeFileSync(join(root, ".env"), "DB_URL=postgres://u:pw@db\nSECRET=hunter2\n");
+  writeFileSync(join(root, ".npmrc"), "//registry.npmjs.org/:_authToken=npm_TOKEN123\n");
+  writeFileSync(join(root, "src", "key.ts"), `export const k = \`\n${PEM}\`;\n`);
+  return root;
+}
+const noSecret = (said) => { for (const s of SECRETS) assert.ok(!String(said).includes(s), `${s} reached the model: ${said}`); };
+
+test("a hand-in never quotes a file the read rule keeps from models: an edit there is refused, with nothing of the file in the refusal", async () => {
+  // The brownfield architect's site check answered `line 2 of .env reads "SECRET=hunter2"` and quoted .npmrc's token,
+  // though read_file refuses both; a site over several lines quoted its last line too.
+  const root = secretProject();
+  const t = tools(root, "brownfield-architect", { spec_dir: ".sdlc/runs/r1" });
+  assert.match((await t.call("write_section", { name: "header.json", json: JSON.stringify(BF_HEADER()) })).result, /accepted/);
+  const edit = (id, path, from, to = from) => ({ id, path, action: "edit", phase: "codegen", behaviour: "add a key", sites: [{ id: "S1", at: "replace", from, to, first_line: "x", rule: "r" }], depends_on: [], checks: ["lint"] });
+  const r = await t.call("write_section", { name: "units-001.json", json: JSON.stringify([edit("U01", ".env", 2), edit("U02", ".npmrc", 1), edit("U03", "src/key.ts", 2, 4)]) });
+  const said = r.error ?? r.result;
+  noSecret(said);
+  for (const p of [".env", ".npmrc", "src/key.ts"]) assert.match(said, new RegExp(`${p.replace(".", "\\.")}`), p);
+  assert.match(said, /src\/key\.ts.*private key/);
+  // A file the model may read is quoted as before, so the architect can correct its site.
+  const ok = await t.call("write_section", { name: "units-001.json", json: JSON.stringify([edit("U04", "src/a.ts", 1)]) });
+  assert.match(ok.error ?? ok.result, /line 1 of src\/a\.ts reads "export const a = 1;"/);
+});
+
+test("a check command never carries what the read rule keeps from models: one naming such a file is refused, and no check's output holds their text", async () => {
+  // A Gemini architect's header check `cat .env && test -s {path}` was accepted, and the reviewer's run_file_check
+  // answered `exit 0\nSECRET=hunter2`: under --gates=auto-approve no person reads the plan before its checks run.
+  // No person's settings are read here: their deny rules would refuse the indirect command below before it ran.
+  const cfgDir = mkdtempSync(join(tmpdir(), "mmo-nosettings-"));
+  const saved = { c: process.env.CLAUDE_CONFIG_DIR, m: process.env.MMO_MANAGED_SETTINGS };
+  process.env.CLAUDE_CONFIG_DIR = cfgDir; process.env.MMO_MANAGED_SETTINGS = join(cfgDir, "managed.json");
+  try {
+  const root = secretProject();
+  const arch = tools(root, "brownfield-architect", { spec_dir: ".sdlc/runs/r1" });
+  for (const run of ["cat .env && test -s {path}", "head -1 .npmrc; test -s {path}", "cat src/key.ts {path}"]) {
+    const r = await arch.call("write_section", { name: "header.json", json: JSON.stringify(BF_HEADER(run)) });
+    assert.match(r.error ?? "", /read rule/, `${run}: ${JSON.stringify(r)}`);
+    noSecret(r.error);
+  }
+  // At run time too, whatever the plan on disk says: a plan approved before this check, or changed by hand.
+  const spec = (run) => writeFileSync(join(root, ".sdlc", "runs", "r1", "change-spec.json"), JSON.stringify({ header: BF_HEADER(run) }));
+  const rev = tools(root, "brownfield-senior-reviewer", { spec_dir: ".sdlc/runs/r1" });
+  spec("cat .env && test -s {path}");
+  const named = await rev.call("run_file_check", { path: "src/a.ts", check_id: "lint" });
+  assert.match(named.error ?? "", /read rule/); noSecret(JSON.stringify(named));
+  // A command that reaches such a file without naming it: its output reaches the model without their text.
+  spec("cat \"$(printf '.e%s' nv)\" .\"npm\"rc; echo kept-line; test -s {path}");
+  const indirect = await rev.call("run_file_check", { path: "src/a.ts", check_id: "lint" });
+  noSecret(JSON.stringify(indirect));
+  assert.match(indirect.result ?? "", /kept-line/, "the rest of the output is untouched");
+  assert.match(indirect.result ?? "", /kept from you by the read rule/);
+  // A check that touches nothing protected answers exactly as before.
+  spec("echo fine && test -s {path}");
+  assert.equal((await rev.call("run_file_check", { path: "src/a.ts", check_id: "lint" })).result, "exit 0\nfine");
+  // A check of a file that holds a private key is refused, as reading it is.
+  assert.match((await rev.call("run_file_check", { path: "src/key.ts", check_id: "lint" })).error ?? "", /private key/);
+  } finally {
+    for (const [k, v] of [["CLAUDE_CONFIG_DIR", saved.c], ["MMO_MANAGED_SETTINGS", saved.m]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test("git_diff never carries a file that holds a private key, created or edited by the run, whole or in a folder", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const root = project();
+  const git = (...a) => execFileSync("git", ["-C", root, ...a], { encoding: "utf8" });
+  git("init", "-q"); git("config", "user.email", "t@t"); git("config", "user.name", "t");
+  writeFileSync(join(root, "src", "app.js"), "console.log(1)\n");
+  writeFileSync(join(root, "src", "ok.js"), "a\n");
+  git("add", "src"); git("commit", "-qm", "init");
+  const head = git("rev-parse", "HEAD").trim();
+  writeFileSync(join(root, "src", "jwt_fixture.txt"), PEM);
+  writeFileSync(join(root, "src", "app.js"), "console.log(1)\n" + PEM);
+  writeFileSync(join(root, "src", "ok.js"), "b\n");
+  writeFileSync(join(root, ".sdlc", "runs", "r1", "provenance.json"), JSON.stringify({ git_head_before: head, files_touched: ["src/jwt_fixture.txt", "src/app.js", "src/ok.js"] }));
+  const t = tools(root, "brownfield-senior-reviewer", { spec_dir: ".sdlc/runs/r1" });
+  for (const path of ["", "src", "src/app.js", "src/jwt_fixture.txt"]) {
+    const d = await t.call("git_diff", { path });
+    noSecret(JSON.stringify(d));
+    if (path === "" || path === "src") assert.match(d.result ?? "", /ok\.js/, `${path || "(all)"}: the other changes are still shown`);
+    else assert.match(d.error ?? "", /private key/, path);
+  }
+  // A key the run removed: the file's earlier text holds it, so its diff (which shows the removed lines) is refused too.
+  git("add", "-A"); git("commit", "-qm", "with key");
+  const head2 = git("rev-parse", "HEAD").trim();
+  writeFileSync(join(root, "src", "app.js"), "console.log(1)\n");
+  writeFileSync(join(root, ".sdlc", "runs", "r1", "provenance.json"), JSON.stringify({ git_head_before: head2, files_touched: ["src/app.js"] }));
+  const gone = await tools(root, "brownfield-senior-reviewer", { spec_dir: ".sdlc/runs/r1" }).call("git_diff", { path: "src/app.js" });
+  noSecret(JSON.stringify(gone)); assert.match(gone.error ?? "", /private key/);
+});
+
+test("a project folder named in another spelling than the disk's (another case, or Unicode composed differently) is read as the same folder", async () => {
+  // The root kept the spelling it was given while each file took the disk's, so every read answered "leads outside
+  // the project" for MyProject named myproject, or Résumé named composed while the disk keeps it decomposed.
+  const base = mkdtempSync(join(tmpdir(), "mmo-spelling-"));
+  const make = (name) => { mkdirSync(join(base, name, "src"), { recursive: true }); writeFileSync(join(base, name, "src", "a.txt"), "hello\n"); };
+  make("MyProject");
+  make("Résumé");
+  const caseFolds = existsSync(join(base, "myproject"));
+  const read = (root) => new ThinkingTools({ role: "senior-reviewer", project_root: root, output_dir: "out", outputs: { review: "out/review.json" }, spec_dir: "out" }).read_file({ path: "src/a.txt" });
+  assert.match(read(join(base, "MyProject")).result ?? "", /hello/);
+  if (caseFolds) assert.match(read(join(base, "myproject")).result ?? "", /hello/, "another case");
+  if (existsSync(join(base, "Résumé"))) assert.match(read(join(base, "Résumé")).result ?? "", /hello/, "composed, where the disk keeps it decomposed");
+});
+
+test("every tool's answer leaves without what the read rule keeps from models: a log a check wrote that echoes a secret is read without it", async () => {
+  // The tools' one exit (call): a file the rule lets the model read (a check's log in the run folder) can still hold
+  // a protected file's value; it reaches the model without it.
+  const root = secretProject();
+  writeFileSync(join(root, ".sdlc", "runs", "r1", "acceptance.log"), "npm test\nconnecting to postgres://u:pw@db\nSECRET=hunter2\n1 failing\n");
+  const t = tools(root, "requirements");
+  const r = await t.call("read_file", { path: ".sdlc/runs/r1/acceptance.log" });
+  noSecret(JSON.stringify(r));
+  assert.match(r.result, /1 failing/);
+  assert.match(r.result, /kept from you by the read rule/);
+  // A file with nothing protected in it reads exactly as before.
+  assert.equal((await t.call("read_file", { path: "src/a.ts" })).result, "1\texport const a = 1;\n2\tconst token = 'x';\n3\t");
+});

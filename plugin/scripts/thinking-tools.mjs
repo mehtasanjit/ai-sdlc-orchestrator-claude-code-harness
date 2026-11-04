@@ -26,7 +26,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { deniedBy } from "./ambient/lib/bash-rules.mjs";
-import { readRefusal, runFileCheck } from "./lib/change-spec.mjs";
+import { readRefusal, runFileCheck, withoutProtectedText } from "./lib/change-spec.mjs";
 import { holdsPrivateKey } from "./lib/off-limits.mjs";
 import { loadServerLib } from "./lib/server-lib.mjs";
 
@@ -76,7 +76,10 @@ export class ThinkingTools {
    */
   constructor(cfg) {
     this.cfg = cfg;
-    this.root = realpathSync(cfg.project_root);
+    // The disk's own spelling of the project folder, as every file it holds is resolved (readable): realpathSync keeps
+    // the spelling it is given, so a folder named in another case, or with its accents composed another way, was not
+    // the folder its files resolved into, and every read answered "leads outside the project" (review of 0.10.1).
+    this.root = realpathSync.native(cfg.project_root);
     this.accepted = new Map();
     this.refused = new Map();
     this.written = new Set();
@@ -537,6 +540,16 @@ export class ThinkingTools {
     } else {
       files = touched.filter(allowed);
     }
+    // The read rule judges a file's text as well as its name: a file that holds a private key, now or in the commit the
+    // run started from, is never diffed, since its diff carries the key's lines either way (review of 0.10.1: git_diff
+    // sent a key that read_file refuses). Named alone it is refused; in a folder, or the whole run, it is left out.
+    const keyHeld = (rel) => {
+      try { if (holdsPrivateKey(readFileSync(join(this.root, rel), "utf8"))) return true; } catch { /* deleted by the run */ }
+      const before = spawnSync("git", [...git, "show", `${head}:./${rel}`], { cwd: this.root, encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, maxBuffer: 20_000_000 });
+      return before.status === 0 && holdsPrivateKey(before.stdout);
+    };
+    if (path && files.length === 1 && keyHeld(files[0])) return { error: `${path} holds a private key: the read rule keeps it from models` };
+    files = files.filter((f) => !keyHeld(f));
     if (!files.length) return { result: "nothing to show: no changed file here is one the read rule lets you see" };
     // As the reviewers' own command runs it (git diff --ignore-cr-at-eol <git_head_before> -- <files>). A file the run
     // created is not tracked, and git diff shows nothing for it (review: a new endpoint's code never reached the
@@ -576,6 +589,8 @@ export class ThinkingTools {
   async run_file_check({ path, check_id }) {
     const r = this.readable(path);
     if (r.error) return { error: r.error };
+    // A check prints what it finds in the file, so the file is held to the read rule's text check, as read_file is.
+    try { if (holdsPrivateKey(readFileSync(r.abs, "utf8"))) return { error: `${path} holds a private key: the read rule keeps it from models` }; } catch { /* a folder or a special file: the check itself answers */ }
     let header;
     try { header = JSON.parse(readFileSync(join(this.root, this.cfg.output_dir, "change-spec.json"), "utf8")); } catch { return { error: "this run has no change-spec.json" }; }
     const check = (header.file_checks ?? header.header?.file_checks ?? []).find((c) => c.id === check_id);
@@ -655,6 +670,11 @@ export class ThinkingTools {
       await (this.loading ??= this.loadAccepted());
       out = await this[op](args ?? {});
     } catch (e) { out = { error: e?.message ?? String(e) }; }
+    // Every answer leaves for the model here, so the read rule's text holds for every tool at once: what the files it
+    // keeps from models hold never reaches the model, whichever tool would carry it (a log a check wrote, a search hit,
+    // a diff, a check's output) (review of 0.10.1; lib/change-spec.mjs withoutProtectedText).
+    if (typeof out?.result === "string") out = { ...out, result: withoutProtectedText(this.root, out.result) };
+    if (typeof out?.error === "string") out = { ...out, error: withoutProtectedText(this.root, out.error) };
     // Kept before the answer goes back, so a worker killed after its hand-in was answered loses nothing accepted. A
     // state that cannot be kept never undoes a hand-in: a carry-on would owe that piece again, and the stderr says why.
     try { this.keep(); } catch (e) { process.stderr.write(`thinking-tools: the step's state could not be kept in ${this.cfg.state_file}: ${e?.message ?? e}\n`); }

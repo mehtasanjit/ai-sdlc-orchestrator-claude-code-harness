@@ -268,3 +268,34 @@ test("execute_with_model with an apply packet sends progress when asked for it",
     cleanup(bin, root);
   }
 });
+
+// Review of 0.10.1: a check is the plan's command, written by a model, and a failed check's output goes into the
+// typist's next attempt. A command that prints what a protected file holds without naming it (a test that prints its
+// configuration) sends nothing of it: the read rule's text is put out of the retry (apply.ts withoutProtectedText).
+test("a failed check's output reaches the typist's next attempt without what the files the read rule keeps from models hold", async () => {
+  const bin = standInClaude([
+    receipt({ path: "src/a.txt", content: "BAD\n" }),
+    receipt({ path: "src/a.txt", content: "GOOD\n" }),
+  ]);
+  const root = project();
+  writeFileSync(join(root, "policy.yaml"), SOLO);
+  writeFileSync(join(root, ".env"), "DB_URL=postgres://u:pw@db\nSECRET=hunter2\n");
+  const telemetry_path = join(root, "telemetry.jsonl");
+  try {
+    await withServer({ bin, home: root }, async (call) => {
+      assert.equal((await preflight(call, root)).json?.ok, true);
+      const check = { id: "good", run: "cat \"$(printf '.e%s' nv)\"; echo kept-line; grep -q GOOD {path}" };
+      const p = packet("tp_codegen_U01", "src/a.txt", { apply: { write: true, checks: [check] } });
+      const r = await call("execute_batch", { packets: [p], policy_path: join(root, "policy.yaml"), project_root: root, run_id: "r1", telemetry_path });
+      assert.equal(r.json?.counts?.applied, 1, r.text);
+    });
+    const prompts = readFileSync(join(bin, "prompts.log"), "utf8").split("\n=====\n").filter(Boolean);
+    assert.equal(prompts.length, 2, "one retry after the failed check");
+    for (const secret of ["hunter2", "postgres://u:pw@db"]) assert.ok(!prompts[1].includes(secret), `${secret} reached the typist`);
+    assert.match(prompts[1], /verify failed/);
+    assert.match(prompts[1], /kept-line/, "the rest of the check's output still reaches the typist");
+    assert.match(prompts[1], /kept from you by the read rule/);
+  } finally {
+    cleanup(bin, root);
+  }
+});

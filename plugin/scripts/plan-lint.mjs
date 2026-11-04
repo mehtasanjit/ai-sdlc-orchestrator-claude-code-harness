@@ -79,7 +79,7 @@ export async function checkSection(projectRoot, runId, file, { intent, runComman
   if (kind === "header") {
     const schemaErrors = specSchema.validate(headerSchema, value);
     if (schemaErrors.length) return { ok: false, lines: schemaErrors.map((e) => `${name} ${e.path}: ${e.message}`) };
-    const own = [...headerErrors(value), ...(job ? headerJobErrors(value, job) : [])];
+    const own = [...headerErrors(value, { projectRoot: resolve(projectRoot), runId }), ...(job ? headerJobErrors(value, job) : [])];
     if (own.length) return { ok: false, lines: own.map((e) => `${name} ${e}`) };
     // A header sent again after units were accepted: their checks run under its commands now, so a changed command
     // is tried on every file it will judge before the header replaces the one they were accepted under.

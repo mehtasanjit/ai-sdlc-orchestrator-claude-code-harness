@@ -277,6 +277,103 @@ export function holdsPrivateKey(text: string): boolean {
   return /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/.test(text);
 }
 
+/**
+ * Text the read rule keeps from models, put out of what goes to one, as the plugin's tools do it (the same steps as
+ * plugin/scripts/lib/change-spec.mjs withoutProtectedText, and the same answer for the same input: test/protectedText
+ * .test.mjs holds them equal). A check's command is the plan's, written by a model, and it can print what a protected
+ * file holds without naming it (a test that prints its configuration); a failed check's output goes into the typist's
+ * next attempt, and an acceptance failure into the architect's task (review of 0.10.1).
+ */
+export const KEPT_BY_READ_RULE = "[kept from you by the read rule]";
+
+export function withoutProtectedText(projectRoot: string, text: string): string {
+  let out = String(text).replace(/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|$)/g, KEPT_BY_READ_RULE);
+  for (const v of protectedValues(projectRoot)) if (out.includes(v)) out = out.split(v).join(KEPT_BY_READ_RULE);
+  return out;
+}
+
+const protectedCache = new Map<string, { listedAt: number; files: string[]; stamp: string | null; values: string[] }>();
+function protectedValues(projectRoot: string): string[] {
+  let c = protectedCache.get(projectRoot);
+  if (!c || Date.now() - c.listedAt > 30_000) {
+    c = { listedAt: Date.now(), files: [...protectedFiles(projectRoot)].sort(), stamp: null, values: [] };
+    protectedCache.set(projectRoot, c);
+  }
+  const stamp = c.files.map((f) => { try { const st = statSync(f); return `${st.size}:${st.mtimeMs}`; } catch { return "-"; } }).join("|");
+  if (stamp !== c.stamp) { c.values = valuesOf(c.files); c.stamp = stamp; }
+  return c.values;
+}
+
+/** The files whose text the read rule keeps from models and a command run in the project could print. */
+function protectedFiles(projectRoot: string): Set<string> {
+  const files = new Set([join(projectRoot, ".git", "config")]);
+  const listed = spawnSync("git", ["-C", projectRoot, "ls-files", "-z", "--cached", "--others", "--exclude=node_modules", "--", ...READ_OFF_LIMITS.flatMap((g) => [`:(glob)${g}`, `:(glob)**/${g}`])], { encoding: "utf8", timeout: 30_000, maxBuffer: 50_000_000 });
+  if (listed.status === 0) for (const f of listed.stdout.split("\0").filter(Boolean)) files.add(join(projectRoot, f));
+  else walkFiles(projectRoot, (rel) => READ_OFF_LIMITS.some((g) => matchesAtAnyDepth(rel, g)), files);
+  // In the home folder, the files that hold credentials themselves (HOME_SECRET_FILES), never a whole folder.
+  const home = homedir();
+  for (const f of HOME_SECRET_FILES) files.add(join(home, f));
+  for (const dir of [".config/gcloud/legacy_credentials", ".azure"]) walkFiles(join(home, dir), (rel) => /\.json$/i.test(rel), files, [], 1);
+  return files;
+}
+
+/** The home folder's files that hold credentials, each one READ_OFF_LIMITS protects (as change-spec.mjs keeps them). */
+export const HOME_SECRET_FILES = [".npmrc", ".pypirc", ".netrc", ".git-credentials", ".vault-token", ".terraformrc", ".yarnrc.yml", ".docker/config.json", ".kube/config", ".aws/credentials", ".config/gcloud/application_default_credentials.json", ".claude/settings.json"];
+
+function walkFiles(root: string, keep: (rel: string) => boolean, into: Set<string>, skip: string[] = [], depth = 8): void {
+  const SKIP = new Set(["node_modules", ".git", ...skip]);
+  let seen = 0;
+  const walk = (dir: string, rel: string, left: number): void => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (++seen > 20_000) return;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { if (left > 0 && !SKIP.has(e.name)) walk(join(dir, e.name), r, left - 1); }
+      else if (e.isFile() && keep(r)) into.add(join(dir, e.name));
+    }
+  };
+  walk(root, "", depth);
+}
+
+const SECRET_KEY = /(secret|passw|passphrase|pwd|token|api[_-]?key|access[_-]?key|key[_-]?data|private|credential|auth|client[_-]?id|session|salt|signing|encrypt|cookie|bearer|(^|[_.-])key$)/i;
+const URL_LOGIN = /[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:([^\s/@]+)@[^\s/"']+[^\s"']*/gi;
+const tokenLike = (v: string): boolean => v.length >= 16 && /[A-Za-z]/.test(v) && /\d/.test(v) && /^[\x21-\x7e]+$/.test(v);
+
+/** What the protected files hold that output must not carry, longest first: each secret value (as change-spec.mjs). */
+export function valuesOf(files: Iterable<string>): string[] {
+  const values = new Set<string>();
+  const add = (raw: unknown): void => { const v = String(raw).trim().replace(/^["']|["'],?$/g, ""); if (v.length >= 4) values.add(v); };
+  for (const f of files) {
+    let text: string;
+    try { if (statSync(f).size > 1_000_000) continue; text = readFileSync(f, "utf8"); } catch { continue; }
+    for (const m of text.matchAll(URL_LOGIN)) { values.add(m[0]); add(m[1]); }
+    const name = basename(f);
+    if (/\.(json|tfstate|tfstate\.backup)$/i.test(name)) {
+      let data: unknown = null;
+      try { data = JSON.parse(text); } catch { /* not JSON after all */ }
+      const walk = (x: unknown, key: string): void => {
+        if (typeof x === "string") { if (SECRET_KEY.test(key)) add(x); }
+        else if (Array.isArray(x)) for (const y of x) walk(y, key);
+        else if (x && typeof x === "object") for (const [k, v] of Object.entries(x as Record<string, unknown>)) walk(v, k);
+      };
+      walk(data, "");
+      continue;
+    }
+    if (name === ".vault-token") { add(text); continue; }
+    if (name === ".netrc") { for (const m of text.matchAll(/\bpassword\s+(\S+)/g)) add(m[1]); continue; }
+    for (const line of text.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#") || t.startsWith(";")) continue;
+      const kv = t.match(/^(?:export\s+)?([^=\s][^=]*?)\s*=\s*(.*)$/) ?? t.match(/^([\w.-]+)\s*:\s+(.+)$/);
+      if (!kv) continue;
+      const v = kv[2].trim().replace(/^["']|["'],?$/g, "");
+      if (SECRET_KEY.test(kv[1]) || tokenLike(v)) add(v);
+    }
+  }
+  return [...values].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0));
+}
+
 // ---------------------------------------------------------------------------
 // Input hydration
 // ---------------------------------------------------------------------------
@@ -2035,7 +2132,8 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
       // typing events can say only whether the answer was usable, because its checks run later as their own stage; a
       // brownfield attempt is judged here, before its event, so its event carries the full verdict and a rollup of
       // successful calls never counts an answer its file's checks refused.
-      failure = verify.ok ? "" : `verify failed: ${verify.failed_command} (${exitText(verify)})\n${verify.output_tail ?? ""}`;
+      // The check's output goes into the typist's next attempt: the read rule's text never goes with it.
+      failure = verify.ok ? "" : withoutProtectedText(projectRoot, `verify failed: ${verify.failed_command} (${exitText(verify)})\n${verify.output_tail ?? ""}`);
       settle(verify.ok, failure, attemptReason);
       if (verify.ok) return finish("applied");
       if (editsBase !== null) writeFileSync(abs, editsBase, "utf8");
