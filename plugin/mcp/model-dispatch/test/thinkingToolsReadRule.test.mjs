@@ -135,7 +135,9 @@ const unitB = [{ id: "U01", path: "src/b.ts", action: "create", phase: "codegen"
 test("a Gemini architect's hand-in runs no command it wrote: nothing runs, nothing comes back, the baseline waits for dispatch", async () => {
   const { root } = handInProject();
   const t = architectFor(root);
-  assert.ok((await t.call("write_section", { name: "header.json", json: JSON.stringify(headerWith("cat .env; touch ran.txt; false {path}")) })).result);
+  // A command naming a file the read rule protects is refused at hand-in (thinkingTools.test.mjs); this one names
+  // none, and still nothing it would do happens at hand-in.
+  assert.ok((await t.call("write_section", { name: "header.json", json: JSON.stringify(headerWith("cat \"$(printf '.e%s' nv)\"; touch ran.txt; false {path}")) })).result);
   const u = await t.call("write_section", { name: "units-001.json", json: JSON.stringify(unitB) });
   assert.doesNotMatch(text(u), new RegExp(SECRET), "the check's output came back to the model");
   assert.equal(existsSync(join(root, "ran.txt")), false, "a command the model wrote ran at hand-in");
