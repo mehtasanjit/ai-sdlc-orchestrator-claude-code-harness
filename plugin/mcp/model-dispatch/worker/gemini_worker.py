@@ -31,7 +31,8 @@ Contract:
                      between tries are not counted
   --api-retries N, --api-retry-initial-ms MS   the harness's own retry of a
                      busy answer; unset, the SDK's unstated defaults
-  --locations, --stall-sec, --stall-tries, --busy-budget-sec, --heartbeat-sec
+  --locations, --stall-sec, --stall-tries, --busy-budget-sec, --heartbeat-sec,
+  --watch-stdin, --term-grace-sec
                      the call supervisor's settings (agy_supervisor.py)
 
 stdout carries the reply, and only on success (exit 0); a failed session exits
@@ -336,7 +337,7 @@ async def run(args) -> AgentSession:
     sup = sv.Supervisor(
         model=args.model, locations=locations, stall_sec=args.stall_sec, stall_tries=args.stall_tries,
         busy_budget_s=args.busy_budget_sec, heartbeat_s=args.heartbeat_sec, timeout_s=args.timeout,
-        sdk_version=SDK_VERSION,
+        sdk_version=SDK_VERSION, watch_stdin=args.watch_stdin, term_grace_s=args.term_grace_sec,
         retry_initial_s=args.api_retry_initial_ms / 1000 if args.api_retries is not None and args.api_retry_initial_ms else None,
         work_limit_reason=(f"the session's own work time reached the policy's limit (worker_timeout_sec): {args.timeout} s, "
                            "the time Google held or refused its calls not counted"),
@@ -370,6 +371,10 @@ def main():
     p.add_argument("--stall-tries", type=int, default=2)
     p.add_argument("--busy-budget-sec", type=int, default=120)
     p.add_argument("--heartbeat-sec", type=int, default=10)
+    # The engine holds this worker's stdin open; once it closes, the worker stops as the engine's kill rule would, its
+    # SIGKILL --term-grace-sec after its SIGTERM (agy_supervisor.py).
+    p.add_argument("--watch-stdin", action="store_true")
+    p.add_argument("--term-grace-sec", type=float, default=10)
     args = p.parse_args()
     try:
         s = asyncio.run(run(args))

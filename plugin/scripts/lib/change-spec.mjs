@@ -685,10 +685,17 @@ export function checkEnv(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([k]) => !CREDENTIAL_VARS.includes(k) && !/_API_KEY$/.test(k)));
 }
 
+/** The process a check runs under (check-supervisor.mjs), which owns the check's process group and its time limit. */
+const CHECK_SUPERVISOR = join(dirname(fileURLToPath(import.meta.url)), "check-supervisor.mjs");
+
 /**
  * One check command, as the server runs its checks: a shell in the project root, its output kept to the last
  * `tailChars`, and at its time limit the whole process group is stopped (spawned detached, killed by the negative pid),
- * so a runner's own children cannot hold it past the limit. Resolves { ok, exit, timedOut, output }.
+ * so a runner's own children cannot hold it past the limit. The check runs under a supervisor of its own, which keeps
+ * that limit and stops the check's group at once when this process ends, however it ends: this process can end with
+ * its worker's process group, and a limit kept here ended with it (review: a check ran on with no limit). The
+ * supervisor's stdin is a pipe this process holds open and never writes, so its end is this process's. Resolves
+ * { ok, exit, timedOut, output }.
  */
 function runCheck(cmd, cwd, timeoutSec, tailChars) {
   return new Promise((done) => {
@@ -699,22 +706,23 @@ function runCheck(cmd, cwd, timeoutSec, tailChars) {
     const keep = (d) => { output += d; if (output.length > tailChars * 2) output = output.slice(-tailChars); };
     let child;
     try {
-      child = spawn(cmd, { cwd, shell: true, detached: true, env: checkEnv(), stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(process.execPath, [CHECK_SUPERVISOR, String(timeoutSec), cwd, cmd], { detached: true, env: checkEnv(), stdio: ["pipe", "pipe", "pipe"] });
     } catch (e) {
       finish({ ok: false, exit: null, timedOut: false, output: String(e?.message ?? e) });
       return;
     }
-    child.stdout.on("data", keep);
+    // The supervisor relays the check's output on its stderr, and says on its stdout how the check ended.
+    let verdict = "";
+    child.stdout.on("data", (d) => { verdict += d; });
     child.stderr.on("data", keep);
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
-      child.stdout.destroy();
-      child.stderr.destroy();
-    }, timeoutSec * 1000);
-    child.on("error", (e) => { clearTimeout(timer); finish({ ok: false, exit: null, timedOut, output: String(e?.message ?? e) }); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
+    child.on("error", (e) => { finish({ ok: false, exit: null, timedOut, output: String(e?.message ?? e) }); });
+    child.on("close", () => {
+      let code = null;
+      try {
+        const v = JSON.parse(verdict.trim().split("\n").pop());
+        code = Number.isInteger(v.code) ? v.code : null;
+        timedOut = v.timedOut === true;
+      } catch { /* no verdict: the supervisor ended before the check did, so the check could not run */ }
       finish({ ok: code === 0 && !timedOut, exit: timedOut ? null : code, timedOut, output: withoutProtectedText(cwd, output.trim().slice(-tailChars)) });
     });
   });

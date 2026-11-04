@@ -145,6 +145,8 @@ test("the agent door hands its worker the leaf's locations, stall limit, call bu
     assert.deepEqual([flagValue(flash, "--api-retries"), flagValue(flash, "--api-retry-initial-ms")], ["6", "2000"], "the executor's rule, not the SDK's unstated default");
     assert.equal(flagValue(flash, "--timeout"), "600", "worker_timeout_sec keeps its meaning and value");
     for (const f of ["--stall-tries", "--busy-budget-sec", "--heartbeat-sec"]) assert.ok(flash.includes(f), `${f} passed`);
+    assert.ok(flash.includes("--watch-stdin"), "the worker watches the stdin the server holds open");
+    assert.equal(flagValue(flash, "--term-grace-sec"), "10", "and once its server is gone it stops as the kill rule does, with the kill rule's grace");
   } finally {
     fake.cleanup();
     rmSync(dir, { recursive: true, force: true });

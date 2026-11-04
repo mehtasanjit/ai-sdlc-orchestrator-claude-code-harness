@@ -21,7 +21,7 @@ The agent worker (gemini_worker.py) with five differences:
     (--busy-window-sec) is open, as a batch waits out a busy model for a typing call.
 
 Everything else is the agent worker's: the call supervisor (stall cuts, failover, busy budget, heartbeat, the time
-limit counting own work only) and its usage sidecar. stdout carries one JSON line, also kept in --summary-file after
+limit counting own work only, the end with its engine) and its usage sidecar. stdout carries one JSON line, also kept in --summary-file after
 every turn: {done, missing, accepted, conversation_id, answered, text, reason}; `answered`: a session of this
 worker's own answered, so its conversation holds a turn that ended in a harness that closed, which is what a carry-on
 resumes. `reason` says why the step stopped: done (every
@@ -294,7 +294,7 @@ async def run(args):
     sup = sv.Supervisor(
         model=args.model, locations=locations, stall_sec=args.stall_sec, stall_tries=args.stall_tries,
         busy_budget_s=args.busy_budget_sec, heartbeat_s=args.heartbeat_sec, timeout_s=args.timeout,
-        sdk_version=gw.SDK_VERSION,
+        sdk_version=gw.SDK_VERSION, watch_stdin=args.watch_stdin, term_grace_s=args.term_grace_sec,
         retry_initial_s=args.api_retry_initial_ms / 1000 if args.api_retries is not None and args.api_retry_initial_ms else None,
         work_limit_reason=(f"the step's own work time reached the policy's limit (thinking_timeout_sec): {args.timeout} s, "
                            "the time Google held or refused its calls not counted"),
@@ -434,6 +434,10 @@ def main():
     # This dispatch carries on one the engine's kill rule stopped (thinking.ts): the saved conversation (--resume-id) is
     # continued with the harness's own words, never sent the task again.
     p.add_argument("--carry-on", action="store_true")
+    # The step lock's token of the call this worker works for (src/thinking.ts takeStepLock), never read here: it is on
+    # the command line so a call that takes the lock over after the server stopped can tell this worker from a process
+    # that took its id.
+    p.add_argument("--lock-token", default=None)
     p.add_argument("--summary-file", default=None)
     # The session's system instructions (how the step runs, the helper's instructions); --task-file is then the task.
     p.add_argument("--system-file", default=None)
@@ -449,6 +453,10 @@ def main():
     # 0: it does not wait, and its first unavailable call ends it.
     p.add_argument("--busy-window-sec", type=int, default=0)
     p.add_argument("--heartbeat-sec", type=int, default=10)
+    # The engine holds this worker's stdin open; once it closes, the worker stops as the engine's kill rule would, its
+    # SIGKILL --term-grace-sec after its SIGTERM (agy_supervisor.py).
+    p.add_argument("--watch-stdin", action="store_true")
+    p.add_argument("--term-grace-sec", type=float, default=10)
     # One tool call's limit: a last guard above every tool's own limit (a command's 300 s, a declared check's timeout_s).
     p.add_argument("--tool-call-timeout-sec", type=float, default=1800)
     args = p.parse_args()

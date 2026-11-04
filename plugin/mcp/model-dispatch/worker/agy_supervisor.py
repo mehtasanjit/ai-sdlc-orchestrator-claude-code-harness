@@ -30,6 +30,10 @@ Worker flags, both workers, each optional:
   --busy-budget-sec N    seconds a call may keep meeting refusals (default 120)
   --heartbeat-sec N      heartbeat interval (default 10)
   The agent worker also takes --api-retries N and --api-retry-initial-ms N, as the typist worker already did.
+  The agent door's workers (gemini_worker.py, thinking_worker.py) also take --watch-stdin and --term-grace-sec N: the
+  engine holds the worker's stdin open while it waits on the worker, and once it closes (the engine is gone, however
+  it ended) the worker stops its process group as the engine's kill rule would, SIGTERM, then SIGKILL N s later
+  (default 10, the kill rule's own wait) if it still runs.
 
 Receipt (typist) and usage sidecar (agent): every key they had before, plus
   tries          one entry per session (typist) or per segment of a session (agent door), in order:
@@ -58,6 +62,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 
 # How often a turn's steps are read. The harness re-sends an empty answer at once (5 to 40 ms apart against a fast
@@ -325,8 +330,12 @@ class _Trajectory:
 class Supervisor:
     def __init__(self, *, model: str, locations, stall_sec: float, stall_tries: int, busy_budget_s: float,
                  heartbeat_s: float, timeout_s: float, work_limit_reason: str, sdk_version: str = "unknown",
-                 retry_initial_s: float = None, clock: Clock = None, stream=None):
+                 retry_initial_s: float = None, clock: Clock = None, stream=None, watch_stdin: bool = False,
+                 term_grace_s: float = 10.0):
         self.model = model
+        # --watch-stdin: this worker's stdin is a pipe the engine holds open, so its end is the engine's (_watch_engine).
+        self.watch_stdin = watch_stdin
+        self.term_grace_s = float(term_grace_s)
         # The harness's own retry of a refused request (ModelAPIRetryConfig, multiplier 2): its first wait, or None
         # when the SDK's unstated default applies.
         self.retry_initial_s = retry_initial_s
@@ -446,6 +455,36 @@ class Supervisor:
         except (NotImplementedError, RuntimeError, ValueError):  # a loop without signal handlers
             pass
         self._beat_task = asyncio.ensure_future(self._beat())
+        if self.watch_stdin:
+            threading.Thread(target=self._watch_engine, name="engine-pipe", daemon=True).start()
+
+    def _watch_engine(self) -> None:
+        """Waits, off the event loop, for the engine's end of this worker's stdin to close: the engine is gone however
+        it ended (a SIGKILL included), and nothing would stop this worker, so it stops itself as the engine's kill rule
+        stops it (src/executor/stall.ts watchWorker): SIGTERM to its process group, which this worker answers by ending
+        its call and writing its receipt, and its tools and the SDK's harness end with it; then SIGKILL term_grace_s
+        later if it still runs, which a worker whose event loop is blocked needs. A group this worker does not lead is
+        never signalled: then the signals are its own."""
+        try:
+            os.set_blocking(0, True)
+            while os.read(0, 65536):
+                pass
+        except OSError:  # no stdin to read: there is no engine's end to wait for
+            pass
+        lead = os.getpgrp() == os.getpid()
+
+        def send(sig) -> None:
+            try:
+                if lead:
+                    os.killpg(os.getpid(), sig)
+                else:
+                    os.kill(os.getpid(), sig)
+            except OSError:
+                pass
+
+        send(signal.SIGTERM)
+        time.sleep(self.term_grace_s)
+        send(signal.SIGKILL)
 
     def request_stop(self) -> None:
         self.stopped = True

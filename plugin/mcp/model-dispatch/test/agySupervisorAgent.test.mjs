@@ -290,6 +290,16 @@ describe("the agent worker's call supervisor", { skip: NO_PYTHON, concurrency: 4
     assert.ok(r.elapsedMs < 6_000);
   });
 
+  // W-engine-gone. Review: a worker outlived its engine, calling Gemini up to its budget with nobody to record it. The
+  // engine holds the worker's stdin open (--watch-stdin), so the pipe's end is the engine's, however the engine ended.
+  test("an agent worker whose engine's end of its stdin closes stops as on SIGTERM: it cancels its session and writes its sidecar", async () => {
+    const r = await runWorker("agent", { script: { sessions: [{ turns: [toolThenHeld()] }] }, args: ["--watch-stdin", "--term-grace-sec", "10"], closeStdinAfterMs: 1500 });
+    assert.ok(r.sidecar, `no sidecar after the engine's end closed: ${tail(r)}`);
+    assert.deepEqual(tokensOf(r.sidecar.usage), tokensOf(TOOL_USAGE));
+    assert.equal(r.cancels.length, 1, `the call in flight was cancelled: ${tail(r)}`);
+    assert.ok(r.elapsedMs < 6_000, `stopped at once, not at the call's stall limit: ${r.elapsedMs} ms`);
+  });
+
   // W-sleep-resend, agent door.
   test("a sleep of 5 s or more during an agent call cuts it at once and sends it again", { skip: NOT_MACOS }, async () => {
     const r = await runWorker("agent", { script: { sessions: [holding([{ at: 0.5, os_sleep: 600 }]), answering(0.2)] }, args: ["--stall-sec", "60"] });

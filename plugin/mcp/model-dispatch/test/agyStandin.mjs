@@ -90,11 +90,12 @@ const HEARTBEAT = /^@mmo-heartbeat (\{.*\})\s*$/;
 /**
  * Runs one worker against `script` and collects what it left. `kind` is "typist" or "agent"; `args` are added to
  * the command line the engine built before the supervisor's flags (agyWorkerArgs, buildWorkerArgs); `killAfterMs` sends `killSignal` to the
- * worker that long after it started. Everything is in a scratch folder removed afterwards. Returns, besides what the
- * worker wrote: `beats` (heartbeats as read here), `sent` (heartbeats as written, on the worker's clock: {mono, wall,
- * hb}), and the stand-in's `log`.
+ * worker that long after it started; `closeStdinAfterMs` gives it a stdin pipe and closes this end of it that long after it
+ * started, as the engine's end closes when the engine is gone. Everything is in a scratch folder removed afterwards.
+ * Returns, besides what the worker wrote: `beats` (heartbeats as read here), `sent` (heartbeats as written, on the
+ * worker's clock: {mono, wall, hb}), and the stand-in's `log`.
  */
-export async function runWorker(kind, { script, args = [], timeout = 30, env = {}, killAfterMs, killSignal = "SIGTERM", limitMs = 60_000, brief = "Write src/a.ts.", answerSchema, role = "requirements", outputs = { requirements: "out/requirements.md" }, config = {}, setup, toolsScript = THINKING_TOOLS } = {}) {
+export async function runWorker(kind, { script, args = [], timeout = 30, env = {}, killAfterMs, killSignal = "SIGTERM", closeStdinAfterMs, limitMs = 60_000, brief = "Write src/a.ts.", answerSchema, role = "requirements", outputs = { requirements: "out/requirements.md" }, config = {}, setup, toolsScript = THINKING_TOOLS } = {}) {
   const dir = mkdtempSync(join(tmpdir(), `agy-${kind}-`));
   try {
     const work = join(dir, "work");
@@ -136,7 +137,8 @@ export async function runWorker(kind, { script, args = [], timeout = 30, env = {
     };
     const started = Date.now();
     const r = await new Promise((done) => {
-      const child = spawn(PYTHON, argv, { env: childEnv, cwd: dir, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(PYTHON, argv, { env: childEnv, cwd: dir, stdio: [closeStdinAfterMs !== undefined ? "pipe" : "ignore", "pipe", "pipe"] });
+      const close = closeStdinAfterMs !== undefined ? setTimeout(() => child.stdin.end(), closeStdinAfterMs) : null;
       let stdout = "", stderr = "", buf = "", limited = false;
       const beats = [];
       child.stdout.on("data", (d) => { stdout += d; });
@@ -153,7 +155,7 @@ export async function runWorker(kind, { script, args = [], timeout = 30, env = {
       });
       const kill = killAfterMs !== undefined ? setTimeout(() => { try { child.kill(killSignal); } catch { /* gone */ } }, killAfterMs) : null;
       const limit = setTimeout(() => { limited = true; try { child.kill("SIGKILL"); } catch { /* gone */ } }, limitMs);
-      child.on("close", (code, signal) => { clearTimeout(limit); if (kill) clearTimeout(kill); done({ code, signal, stdout, stderr, beats, limited }); });
+      child.on("close", (code, signal) => { clearTimeout(limit); if (kill) clearTimeout(kill); if (close) clearTimeout(close); done({ code, signal, stdout, stderr, beats, limited }); });
     });
     const read = (p) => { try { return JSON.parse(readFileSync(p, "utf8")); } catch { return null; } };
     const log = existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
