@@ -10,7 +10,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { groupAlive, serverKilledMidCommand } from "./agyFakes.mjs";
 
 const DIST = join(dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const { runVerify, runApplyLoop, normalizeApply, FILE_OUTPUT_SCHEMA } = await import(join(DIST, "apply.js"));
@@ -69,6 +70,21 @@ test("at its time limit a check's whole process group is killed: nothing it star
     assert.equal(alive(pid), false, "the background process the check started is still running");
   } finally {
     if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A check's time limit was a timer in the server: a server killed while a check ran (a restart, Claude Code closing)
+// left the check running in its own process group, with no limit.
+test("a check ends with the server, however the server ends", async () => {
+  const root = tmpRoot();
+  let pid = 0;
+  try {
+    pid = await serverKilledMidCommand(`const { runVerify } = await import(${JSON.stringify(pathToFileURL(join(DIST, "apply.js")).href)});\nawait runVerify(["echo $$ > check.pid; sleep 30"], ${JSON.stringify(root)}, "x", 20);`, join(root, "check.pid"));
+    for (let i = 0; i < 100 && groupAlive(pid); i++) await new Promise((res) => setTimeout(res, 50));
+    assert.equal(groupAlive(pid), false, "the check's process group ran on after the server was gone");
+  } finally {
+    if (pid && groupAlive(pid)) process.kill(-pid, "SIGKILL");
     rmSync(root, { recursive: true, force: true });
   }
 });

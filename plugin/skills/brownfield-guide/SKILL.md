@@ -192,11 +192,13 @@ template from `${CLAUDE_PLUGIN_ROOT}/skills/pipeline/SKILL.md` (search for
   `~/.claude/settings.json`, since the app ignores project settings files. The orchestrator's
   run-start driver-model check stops the run, printing where to set it, when it is unset or
   disagrees with the policy's driver model. Never read or print a Claude Code settings file (`~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json`) to check the value: settings files can hold keys (an API key, a gateway header), and the check reads the environment itself.
-- **Policy** — read `payload.project.default_policy` from the session-hydrate output already
-  captured in step 1 of this command. This is what setup wrote to `.sdlc/project.json`. If
-  it is null, setup was not completed for this project — abort Gate 0 and tell the user to
-  pick a policy first with `/mmo:setup` (its policy step) or `/mmo:policy`. Do not silently
-  default and do not launch the console from here.
+- **Policy** — the policy this run will load, in the server's order (`commands/pass.md`, "Policy
+  resolution"): a `--policy` flag of `/mmo:pass`; else the project's own `routing-policy.yaml`, when it
+  exists (show it as the project's file, with the `name` it carries); else
+  `payload.project.default_policy` from the session-hydrate output already captured in step 1 of this
+  command, which is what setup wrote to `.sdlc/project.json`. If none of the three exists, setup was not
+  completed for this project — abort Gate 0 and tell the user to pick a policy first with `/mmo:setup`
+  (its policy step) or `/mmo:policy`. Do not silently default and do not launch the console from here.
   Otherwise show the resolved name; accept, or accept an on-disk policy name for this run only
   (e.g. `opus-only`) — a per-run override does not overwrite the project default.
 - **Existing AI setup** — verbatim list from `baseline.ai_configs_detected`. Default is
@@ -253,13 +255,16 @@ Pass:
   orchestrator aborts rather than guessing which transport bills the run.
 - `code_dir: <the project's working directory — the repo root, since edits land across the
   existing tree, not into one generated folder>`
+- `gates: <auto-approve when /mmo:pass was given --gates=auto-approve, otherwise prompt>` — the
+  orchestrator answers Gates 1 to 4 by it (its rule 3).
 - `output_dir: .sdlc/runs/<run-id>` — where `requirements.md`, `design.md`,
   `security_review.md`, `packets.json`, `telemetry.jsonl`, `manifest.json`, and the final report
   land for this run.
 
 The orchestrator then drives phases 1 through 9 with gates 1, 2, 3, 4 as usual — Gate 2 only for the jobs
 that have one ("The jobs" in brownfield-runs.md). At each gate, relay the gate prompt to the user; do
-not answer on their behalf.
+not answer on their behalf. Under `gates: auto-approve` the orchestrator answers its gates itself; a gate it
+returns all the same is answered `approved` (`accept` at Gate 4), never relayed.
 
 A return that carries a HITL gate block is a pause, not a stop: relay the gate and re-invoke the orchestrator
 with the person's answer; ask nothing else. Only a return without a gate prompt, before the run has ended by its

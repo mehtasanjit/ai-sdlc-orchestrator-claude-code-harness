@@ -176,6 +176,8 @@ Present only on runs that delegated. Three files per delegated packet, all named
 - **`worker-usage-<packet>.json`** — written by the worker process itself, in its own words: the model it reached, the SDK version, the Google Cloud project and region, its token usage, and its tool calls.
 - **`worker-delegation-<packet>.json`** — the receipt, written by the server. Joins the two above to what changed on disk.
 
+A thinking step's dispatch has two more. **`worker-system-<packet>.md`** holds the session's system instructions: how the step runs and the helper's own instructions, which the SDK keeps whatever it trims from a long conversation. Its `worker-task-<packet>.md` then holds the task alone, the session's first message; the two together are what the model was told. **`worker-summary-<packet>.json`** is the step's own account, kept by its worker after every turn whatever its exit: what was accepted and what is still owed, why the step stopped (`reason`), and the conversation a revise carries on.
+
 The receipt carries `schema: "delegation-record/1"` and these fields:
 
 | Field | Meaning |
@@ -186,7 +188,7 @@ The receipt carries `schema: "delegation-record/1"` and these fields:
 | `cost_usd`, `tokens` | this delegation's own spend |
 | `tool_calls` | `count` (the full total), `truncated`, and `sample` (capped) |
 | `files` | `added`, `modified`, `removed` as path lists, plus `unchanged`, `scanned`, `truncated`, `unreadable` |
-| `artifacts` | filenames of the brief and the sidecar |
+| `artifacts` | filenames of the brief and the sidecar, and for a thinking step its system instructions (`system`) |
 
 A receipt is written for failed delegations too — that is the case a reader most needs one for. Writing it can never fail the delegation: if the file cannot be written, the server warns on stderr and the run continues.
 

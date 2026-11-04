@@ -36,6 +36,9 @@ passed and you receive the same setting shape as greenfield plus two more: `inte
 **`/mmo:pass`** — the same run with the full flag surface exposed, for repeat runs and
 scripted invocations, in either mode. It derives the same settings from its flags.
 
+Every command also settles `gates`: `auto-approve` when `/mmo:pass` was given `--gates=auto-approve`,
+otherwise `prompt` (rule 3).
+
 The policy routes every step of the run, and pre-flight's `route_table` says which model runs each phase and
 who runs it. The thinking steps (`requirements_analysis`, `architecture_design`, `senior_code_review`,
 `security_review`) follow it ("Thinking steps follow the policy", below): `session` means you write
@@ -80,14 +83,18 @@ to the user with pre-flight's other lines, before anything is spent. At each thi
   the helper. The driver check pinned this session to that model.
 - **`who: engine, thinking`**: call `run_thinking_step` instead of the helper, with the step's `role`, the
   `prompt` you would give the helper, `project_root`, the run's `output_dir` (relative to `project_root`),
-  `run_id`, the run's policy arguments and `telemetry_path`:
+  `run_id`, the run's policy arguments and its `telemetry_path` (always: the step is refused without it, since
+  every call the step makes is recorded there with its cost):
 
   | Step | `role` | Also pass |
   |---|---|---|
-  | Phase 1, requirements | `requirements` | `prompt`: the brief's path and any job rules for Phase 1 |
-  | Phase 2, the architect | `architect` | `requirements_path` |
+  | Phase 1, requirements | `requirements` | `prompt`: the brief's path and any job rules for Phase 1; `inputs`: `[<the brief's path>]` |
+  | Phase 2, the architect | `architect` | `requirements_path`; `inputs`: `[<the brief's path>]` |
   | Phase 6, senior review | `senior-reviewer` | `code_dir`, `review_path` (the path you would hand the reviewer) |
   | Phase 8, security review | `security-reviewer` | `code_dir` |
+
+  The plugin's hook refuses a delegation of the architect or a reviewer for such a phase, naming
+  `run_thinking_step`: the table holds wherever a phase's text says to delegate the helper.
 
 Act on the reply's `route`:
 
@@ -104,8 +111,11 @@ Act on the reply's `route`:
   do the step in this session.
 
 Going back to a step passes `revise` with the text you would give the helper: a gate's `revise` comments,
-the acceptance stage's "goes back to the architect" failures, a reviewer re-run. The step carries on its
-saved conversation and edits the pieces it handed in. Tell the user at each gate which model did each
+a reviewer re-run. The step carries on its saved conversation and edits the pieces it handed in. The
+acceptance stage's "goes back to the architect" failure goes back as `acceptance_fix` instead (role
+`architect`), with the receipt's failure and its `log_path`: on `done`, send the reply's
+`acceptance_fix.failures` to `execute_stage` repair as `failures`, as you would the helper's reply; when it
+holds `cannot_pass`, that one line is the helper's "cannot pass" reply. Tell the user at each gate which model did each
 thinking step so far.
 
 # Executor mode — greenfield (`/mmo:greenfield` and `/mmo:pass`)
@@ -190,6 +200,8 @@ below still applies.
    of reaching one tier, this install picked one, and the other was left unchecked because nothing in
    this run can call it. Say nothing about it unless asked.
 1. **Read the brief first.** Confirm scope; if anything is ambiguous, surface it before starting.
+   Under `gates: auto-approve` no one can answer: take the reading the brief best supports, write it
+   in `requirements.md` as an assumption, and go on.
 2. **Output paths — two directories, both supplied by the invoking command.**
    - **`code_dir`** — the generated application: source, tests, `package.json`, README. `/mmo:greenfield`
      sets this to `./src`.
@@ -217,6 +229,12 @@ below still applies.
    - Gate 2: after `design.md` is written
    - Gate 3: after `security_review.md` is written
    - Gate 4: after final report
+
+   Under `gates: auto-approve` no one is asked and you do not stop: at each of these points log the
+   gate's `gate.open`, answer it yourself as the person's `approved` is answered (`accept` at Gate 4,
+   finalizing the manifest as it says), log its `gate.resolved` with `--by=auto-approve` ("Run
+   logging", step 3), and go on to the next phase. This is how a headless run, which has no one to
+   ask, goes to its end.
 4. **TaskPacket discipline.** Every cross-model dispatch to `execute_with_model` MUST carry all of these required fields, in a single object under the tool's `packet` argument:
 
    | Field | Type | Notes |
@@ -271,7 +289,7 @@ below still applies.
 
    This applies to escalations too. When a policy rule sends a packet to your own tier — `opus-plus-flash` escalates `debug` after two mechanical-tier retries — the routing decision stands, but under `estimated` the packet is handled in this conversation with the estimator, not dispatched via `execute_with_model`. Routing decides *which model*; `auth_mode` decides *which transport*. Confusing the two is what makes a run either abort on a credential it never needed or bill an API it was told not to use.
 
-   **Rates you apply yourself** (your estimated direct-tier events) come ONLY from `load_policy`. After pre-flight passes, call `load_policy` once with the run's policy arguments, exactly as `preflight_dispatch` received them, and find the entry under `models` for the model doing the work. Its `effective_price.rates` are the USD-per-1M rates for `input`, `input_cached`, `input_cache_write`, `input_cache_write_1h` and `output` on `effective_prices_on`: the dated price list's card, or the policy's `pricing` block only when that model sets `pricing_override: true` (`effective_price.pricing_block` says which). Never take rates from a `pricing` block, in the policy file or anywhere else: a block is documentation unless `pricing_override` is true, and it can differ from what the server bills. Never invent rates. Never use rates from your training data. Never hardcode. If that model's entry is missing or its `effective_price.rates` is null (no price for the day), abort the run with a clear error rather than guessing (pre-flight already halts a run with a model that has no price).
+   **Rates you apply yourself** (your estimated direct-tier events) come ONLY from `load_policy`. After pre-flight passes, call `load_policy` once with the run's policy arguments, exactly as `preflight_dispatch` received them, and find the price of the model doing the work: when the policy names a `session_model`, the session runs on it and its rates are `session_model_price.rates`; otherwise find its entry under `models`, whose `effective_price.rates` are the USD-per-1M rates for `input`, `input_cached`, `input_cache_write`, `input_cache_write_1h` and `output` on `effective_prices_on`: the dated price list's card, or the policy's `pricing` block only when that model sets `pricing_override: true` (`effective_price.pricing_block` says which). Never take rates from a `pricing` block, in the policy file or anywhere else: a block is documentation unless `pricing_override` is true, and it can differ from what the server bills. Never invent rates. Never use rates from your training data. Never hardcode. If that model's entry is missing or its `effective_price.rates` is null (no price for the day), abort the run with a clear error rather than guessing (pre-flight already halts a run with a model that has no price).
 
    Every other dollar in the run comes from the same price. The server bills each dispatch at the dated price list's rate (`${CLAUDE_PLUGIN_ROOT}/mcp/model-dispatch/src/prices.ts`) for its model on the day it runs, and at the policy's `pricing` block only when that model sets `pricing_override: true`; the post-run collector prices this session's transcript the same way. `effective_price` is that price, so your estimates and the server's bills use the same numbers whatever a block says. A hand-written block that differs from the list arrives at pre-flight as a `price_warnings` entry: print it as rule 0 says, and still take your estimate rates from `effective_price`, never from the block. Events returned by `execute_with_model` were priced by the server; never recompute their `cost_usd`.
 7. **Stateless workers.** If a mechanical-tier result fails validation, do NOT continue a conversation. Construct a refined TaskPacket from scratch with the failure mode encoded in the instruction.
@@ -374,6 +392,8 @@ the logger drops missing fields rather than printing them empty.
    node "${CLAUDE_PLUGIN_ROOT}/scripts/mmo-log.mjs" --event=gate.resolved --level=info \
      --run-id=<run-id> --project-root "$(pwd)" --gate=<same> --response=<approved|revise|abort>
    ```
+   Under `gates: auto-approve` (rule 3), `gate.resolved` also carries `--by=auto-approve`: the run's
+   record then says no person gave that answer.
 
 4. **Around every subagent delegation** (`architect`, `senior-reviewer`, `security-reviewer`,
    `discovery`):

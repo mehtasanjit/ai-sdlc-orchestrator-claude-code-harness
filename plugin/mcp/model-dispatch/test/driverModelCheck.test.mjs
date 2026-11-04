@@ -16,7 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -384,5 +384,122 @@ test("a pass on session_model says so instead of a placeholder model id", () => 
     const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /\(its session_model\)/);
+  });
+});
+
+// Review: the check counted discovery as a thinking phase, while the route table gives discovery to the session (a
+// Claude helper, before Gate 0): a Claude-thinking policy whose default rule is a Gemini completion leaf, so that its
+// discovery rule falls to it, passed pre-flight and was refused here.
+const OPUS_THINKS_FLASH_REST = `
+version: 1
+name: opus-thinks-flash-rest
+models:
+  - id: opus
+    adapter: builtin-anthropic
+    model_name: claude-opus-5
+  - id: flash
+    adapter: mcp:model-dispatch
+    model_name: gemini-3.8-flash
+rules:
+  - when: { phase: [requirements_analysis, architecture_design, senior_code_review, security_review] }
+    use: opus
+  - default: flash
+`;
+
+test("discovery is not a thinking phase of the check: a policy whose discovery rule names a completion leaf is pinned by its thinking phases", () => {
+  withPolicy(OPUS_THINKS_FLASH_REST, (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /driver-model-check ok/);
+    assert.equal(run(["--project-root", root, "--print-only"]).stdout.trim(), "claude-opus-5");
+  });
+});
+
+// Review: the check counted plan_task_packets and change_plan, which code renders, and discovery, the session's
+// Claude helper whatever its rule says, among the phases that pin the session. A policy that thinks on Argon and
+// types on a Claude typist by its default rule was refused as a split across two Claude models, or, with no
+// session_model, pinned the session to the typist's model.
+const ARGON_THINKS_SONNET_TYPES = `
+version: 1
+name: argon-think-sonnet-default
+session_model: claude-opus-5-5
+models:
+  - id: argon
+    adapter: antigravity-worker
+    model_name: gemini-4-argon
+  - id: sonnet
+    adapter: claude-cli
+    model_name: claude-sonnet-5-5
+  - id: opus
+    adapter: builtin-anthropic
+    model_name: claude-opus-5-5
+rules:
+  - when: { phase: architecture_design, intent: refactor }
+    use: opus
+  - when: { phase: [requirements_analysis, architecture_design, senior_code_review, security_review, debug] }
+    use: argon
+  - default: sonnet
+`;
+
+test("phases code renders and discovery do not pin the session: only the thinking phases and session_model do", () => {
+  withPolicy(ARGON_THINKS_SONNET_TYPES, (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /\(its session_model\)/);
+    // A job whose own rule gives the design to a Claude model is pinned to that model (--intent, as the step routes).
+    const job = run(["--project-root", root, "--intent", "refactor"], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(job.code, 0, job.stderr);
+    assert.match(job.stdout, /driver model 'opus'/);
+  });
+  // Without session_model the session runs on its own model: the typist's model is never its pin.
+  withPolicy(ARGON_THINKS_SONNET_TYPES.replace("session_model: claude-opus-5-5\n", ""), (root) => {
+    const r = run(["--project-root", root, "--print-only"]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout.trim(), "");
+  });
+});
+
+// Review: a policy with no default rule and no rule for a thinking phase failed the check with the routing's raw "no
+// rule matching" exception; such a phase is the session's, as before, and pins nothing of its own.
+const TYPING_ONLY = `
+version: 1
+name: typing-only
+models:
+  - id: flash
+    adapter: antigravity-worker
+    model_name: gemini-3.8-flash
+rules:
+  - when: { phase: [codegen, tests, docs, debug] }
+    use: flash
+`;
+
+test("a thinking phase no rule names is the session's: the check passes, pinned only by session_model", () => {
+  withPolicy(TYPING_ONLY, (root) => {
+    const r = run(["--project-root", root]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /names no Claude model for this session/);
+  });
+  withPolicy(TYPING_ONLY.replace("name: typing-only\n", "name: typing-only\nsession_model: claude-opus-5-5\n"), (root) => {
+    assert.equal(run(["--project-root", root, "--print-only"]).stdout.trim(), "claude-opus-5-5");
+    assert.equal(run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" }).code, 0);
+  });
+});
+
+// Review: in argon4-plus-sonnet55 the one way to send a thinking phase back to Claude was a rule naming its Sonnet leaf,
+// which clashes with session_model ("2 Claude models"). `use: session_model` gives the phase to the session's own
+// model instead: the check treats it as the session's, pinned by session_model.
+test("a thinking phase its rule gives to session_model is the session's: pinned by session_model, no clash with a Claude typist", () => {
+  const dir = join(HERE, "..", "..", "..", "config", "policies");
+  const shipped = readFileSync(join(dir, "argon4-plus-sonnet55.yaml"), "utf8");
+  withPolicy(shipped.replace(/^rules:\n/m, "rules:\n  - when: { phase: architecture_design }\n    use: session_model\n"), (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /\(its session_model\)/);
+  });
+  // The rule this replaces: naming the Claude typist's leaf splits the session across two Claude models.
+  withPolicy(shipped.replace(/^rules:\n/m, "rules:\n  - when: { phase: architecture_design }\n    use: sonnet\n"), (root) => {
+    const r = run(["--project-root", root], { CLAUDE_CODE_SUBAGENT_MODEL: "claude-opus-5-5" });
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /2 Claude models/);
   });
 });

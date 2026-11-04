@@ -30,7 +30,8 @@ export function serverBuilt() {
 let cached;
 /**
  * The namespaces the scripts use: { policy, routing, executorRun, telemetry, pricing, prices, effectivePrice,
- * adapters }, each the server module of the same name. Throws a plain error when the bundle is missing.
+ * adapters, specSchema, specStore, checkSupervisor }, each the server module of the same name. Throws a plain error
+ * when the bundle is missing.
  */
 export async function loadServerLib() {
   if (cached) return cached;

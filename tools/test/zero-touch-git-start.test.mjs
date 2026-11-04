@@ -82,8 +82,8 @@ test("a change job in a project without git does not start, and says so in plain
     mkdirSync(project);
     writeFileSync(join(project, "package.json"), '{"name":"shop"}\n');
     forgetGitCheck();
-    // vendor: the start check stops before the run-start model check, which is not what is tested here
-    const ask = (job, env = process.env) => RF.startProblem({ projectDir: project, policy: "opus-only-v5", auth: "vendor", job, env }).problem;
+    // No chat model and no helper setting: the run-start model check has nothing to compare, which is not what is tested here
+    const ask = (job, env = { ...process.env, CLAUDE_CODE_SUBAGENT_MODEL: "" }) => RF.startProblem({ projectDir: project, policy: "opus-only-v5", auth: "vendor", job, env }).problem;
     if (HAS_GIT) assert.deepEqual(ask("bugfix"), { cause: "no-git", projectDir: project });
     for (const job of ["docs", "feature-extend", "feature-new", "refactor", "test", "deps"]) assert.ok(["no-git", "git-missing"].includes(ask(job)?.cause), job);
     assert.equal(ask("greenfield"), null, "a new app needs no git");

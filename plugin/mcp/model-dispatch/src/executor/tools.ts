@@ -29,7 +29,7 @@ import { getModel } from "../policy.js";
 import { appendEvent } from "../telemetry.js";
 import { log } from "../log.js";
 import { finalizeSpec, loadSpec, openedSpec, readSectionFile, storedUnits, submitSpecSection } from "../spec/store.js";
-import { SPEC_HEADER_SCHEMA, SPEC_UNIT_SCHEMA, shapeOf } from "../spec/schema.js";
+import { REPAIR_FAILURE_SCHEMA, SPEC_HEADER_SCHEMA, SPEC_UNIT_SCHEMA, shapeOf } from "../spec/schema.js";
 import { renderShared } from "./brief.js";
 import { boundReceipt, executeStage, executorView, type RepairItem, type Stage } from "./run.js";
 import { runAcceptance } from "./acceptance.js";
@@ -115,16 +115,7 @@ export const EXECUTOR_TOOLS = [
         failures: {
           type: "array",
           description: "repair only: one entry per file to change, from a failing test run.",
-          items: {
-            type: "object",
-            properties: {
-              path: { type: "string", description: "The file to change, relative to code_dir." },
-              problem: { type: "string", description: "What fails: the test name and its error, verbatim." },
-              context_paths: { type: "array", items: { type: "string" }, description: "Files to show beside it, e.g. the failing test file (relative to code_dir)." },
-              new_file: { type: "boolean", description: "true when the fix needs a file that does not exist yet: path is then where to create it, relative to code_dir. A review finding that needs a new file comes back in not_routed; send it again here with new_file." },
-            },
-            required: ["path", "problem"],
-          },
+          items: REPAIR_FAILURE_SCHEMA,
         },
       },
       required: ["spec_path", "stage", "code_dir"],
@@ -336,9 +327,11 @@ const runKey = (specPath: string) => `${realpathSync(specPath)}#${openedSpec(dir
  * preflight_dispatch, so a new pre-flight is a new run. The spec store reads
  * it to tell a header sent again within one run (the units stay) from a new
  * run's header (a new spec), even when the earlier spec was never finalized.
+ * A Gemini architect's thinking step hands its sections in with the same
+ * token (server.ts run_thinking_step), so both paths keep one run's spec.
  */
 const RUN_TOKENS = new WeakMap<RunState, string>();
-function runToken(run: RunState): string {
+export function runToken(run: RunState): string {
   let t = RUN_TOKENS.get(run);
   if (t === undefined) { t = randomUUID(); RUN_TOKENS.set(run, t); }
   return t;

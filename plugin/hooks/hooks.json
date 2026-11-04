@@ -22,7 +22,7 @@
         ]
       },
       {
-        "_comment": "Executor guard: an orchestrator that has called execute_stage (a greenfield executor run) may hire only the pipeline's own helpers and may write only inside its run's record folder; it reads a failing check's output itself, and every change to the project's files goes through the typist (execute_stage repair). Every other orchestrator (every brownfield run), helper and the main chat are untouched; fails open.",
+        "_comment": "Executor guard: an orchestrator that has called execute_stage (a greenfield executor run) may hire only the pipeline's own helpers and may write only inside its run's record folder; it reads a failing check's output itself, and every change to the project's files goes through the typist (execute_stage repair). Every plugin orchestrator, greenfield's and brownfield's, is refused the architect or a reviewer for a phase its chat's pre-flight route table gives to a Gemini thinking step (run_thinking_step runs it). Every other orchestrator, helper and the main chat are untouched; fails open.",
         "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
           {
@@ -50,6 +50,16 @@
           {
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/node.sh\" executor-guard.mjs post"
+          }
+        ]
+      },
+      {
+        "_comment": "Route-table guard: records the chat's latest pre-flight route table (who runs each thinking phase), so the pre hook above refuses a plugin orchestrator's delegation of the architect or a reviewer whose phase the table gives to a Gemini thinking step, naming run_thinking_step. Regex for both tool namespaces, as for execute_with_model.",
+        "matcher": "mcp__(plugin_mmo_)?model-dispatch__preflight_dispatch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/node.sh\" executor-guard.mjs preflight"
           }
         ]
       }

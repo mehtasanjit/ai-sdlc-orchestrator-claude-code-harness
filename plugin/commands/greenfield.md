@@ -190,7 +190,7 @@ phases that would have gone to the cheaper model.
 The run records tokens and cost in one of two modes. Present the choice; do not decide silently.
 
 - **Vendor** — every dispatched call goes through the bundled server, and the numbers are the ones the
-  vendor reports. Requires `ANTHROPIC_API_KEY`. Use this whenever the numbers will be shown to anyone.
+  vendor reports. `ANTHROPIC_API_KEY` is needed only when the policy has a model the server calls through the Anthropic API (`adapter: builtin-anthropic`, or a `claude-cli` model with its own `auth.env`); pre-flight names that model and halts when the key is missing. Use this whenever the numbers will be shown to anyone.
 - **Estimated** — the judgment-phase tokens are estimated from character counts. No API key needed;
   a Claude Code subscription covers the run. The mechanical-phase numbers are still vendor-reported.
   Both modes require `CLAUDE_CODE_SUBAGENT_MODEL` to have been set before `claude` launched,
@@ -200,8 +200,8 @@ The run records tokens and cost in one of two modes. Present the choice; do not 
   check stops the run otherwise and prints where to set it, because the driver subagents execute
   whatever that variable names. Never read or print a Claude Code settings file (`~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json`) to check the value: settings files can hold keys (an API key, a gateway header), and the check reads the environment itself.
 
-If `ANTHROPIC_API_KEY` is set, recommend vendor and say why: the numbers reconcile against the
-console. If it is absent, recommend estimated and say what is lost: the judgment-phase figures are
+Recommend vendor when the numbers will be shown to anyone, and say why: they reconcile against the
+console. Otherwise recommend estimated and say what is lost: the judgment-phase figures are
 approximations, so do not publish them as measurements.
 
 Then confirm the whole plan in one short summary — brief, output paths, policy, telemetry mode —

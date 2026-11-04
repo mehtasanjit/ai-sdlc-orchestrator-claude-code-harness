@@ -28,7 +28,7 @@ import {
   validateSelectOverrides,
   unreachableModelIds,
 } from "./routing.js";
-import { assessModels, claudeKeyProblem, executorCliCheck, parseAuthMode, type AuthMode } from "./preflight.js";
+import { assessModels, claudeKeyProblem, executorCliCheck, parseAuthMode, sessionModelPriceProblem, type AuthMode } from "./preflight.js";
 import { checkModelPrice, withEffectivePrices } from "./effectivePrice.js";
 import { appendEvent, cacheWriteBuckets, normalizeDirectTierEvent } from "./telemetry.js";
 import { createAdapter } from "./adapters/index.js";
@@ -56,7 +56,7 @@ import { executorView } from "./executor/run.js";
 import { resolveProjectRoot } from "./project-root.js";
 import { log, setLevel, configureSinks, type Level } from "./log.js";
 // Typed-spec executor tools (greenfield runs): listed below, handled in executor/tools.ts.
-import { EXECUTOR_TOOLS, EXECUTOR_TOOL_NAMES, STAGE_CONCURRENCY, fallbackLeaf, typistForLeaf, executorClaudeLeaves, executorPolicyNotes, handleExecutorTool, type RunState } from "./executor/tools.js";
+import { EXECUTOR_TOOLS, EXECUTOR_TOOL_NAMES, STAGE_CONCURRENCY, fallbackLeaf, typistForLeaf, executorClaudeLeaves, executorPolicyNotes, handleExecutorTool, runToken, type RunState } from "./executor/tools.js";
 import { BROWNFIELD_INTENTS, TypistApplyAdapter, usesServerTypist } from "./applyTypist.js";
 import { EDIT_ANSWER_SCHEMA } from "./executor/brief.js";
 import { HANDOFF_TOOLS, HANDOFF_TOOL_NAMES, handleHandoffTool } from "./handoff/tools.js";
@@ -66,8 +66,8 @@ import { judgingAgentLeaves, probeEvents, probeTypists, runTypingLeaves } from "
 import { runCard } from "./runCard.js";
 import { PLUGIN_ROOT } from "./paths.js";
 import { routeTable } from "./routeTable.js";
-import { DEFAULT_THINKING_TIMEOUT_SEC, THINKING_MODULE, THINKING_ROLES, THINKING_TASK_TYPE, runThinkingStep, type ThinkingDeps } from "./thinking.js";
-import { BusyLedger } from "./busyLedger.js";
+import { DEFAULT_THINKING_TIMEOUT_SEC, THINKING_ROLES, runThinkingStep, type ThinkingDeps } from "./thinking.js";
+import { BusyLedger, unservedSince } from "./busyLedger.js";
 import { bindingConflict, checkAgsdk, leafLocations, writeBinding, type BoundLeaf } from "./agsdkPreflight.js";
 
 /**
@@ -314,7 +314,9 @@ function preflightDispatch(policy: Policy, authMode: AuthMode, projectRoot?: str
   const sdk = checkAgsdk(reachable.filter((m) => m.adapter === "antigravity-worker"), process.env as Record<string, string | undefined>);
   // Which model runs each phase, and who: a thinking phase nothing can run as a thinking step stops the run here.
   const routes = routeTable(policy, overrides, intent);
-  const haltReason = [assessment.halt_reason, cli.halt, sdk.halt, ...routes.problems].filter((r): r is string => !!r).join(" ") || null;
+  // The session's own model is priced too, when the policy names one.
+  const sessionPrice = sessionModelPriceProblem(policy.session_model, reachable, (m) => checkModelPrice(m as ModelConfig, today, authMode));
+  const haltReason = [assessment.halt_reason, sessionPrice, cli.halt, sdk.halt, ...routes.problems].filter((r): r is string => !!r).join(" ") || null;
   const warnings = [...assessment.warnings, ...(cli.warning ? [cli.warning] : []), ...sdk.warnings];
 
   // Resolved Gemini configuration — the project and region the run will bill.
@@ -786,7 +788,8 @@ async function runPacket(raw: unknown, a: any, signal?: AbortSignal): Promise<un
       // served for the ledger's whole window, the run stops here (the orchestrator stops and tells the person).
       const last = one.result.attempts?.[one.result.attempts.length - 1];
       if (last?.unavailable) {
-        const stop = ledger.unavailable(leaf.model_name, last.unavailable, sentAt);
+        // An agent packet answers many calls before one goes unserved: its stretch began when the worker says.
+        const stop = ledger.unavailable(leaf.model_name, last.unavailable, unservedSince(last, sentAt));
         if (stop) {
           const halt = `${stop}; the run stopped here. Run it again when Google serves again`;
           log("warn", "dispatch.unavailable_halt", { packet_id: packet.id, model_id: routed.modelId });
@@ -1065,15 +1068,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "run_thinking_step",
       description:
-        "Run one thinking step (requirements, the architect, the senior or security reviewer, discovery) where the " +
+        "Run one thinking step (requirements, the architect, the senior or security reviewer) where the " +
         "run's policy routes its phase. A Claude model: the reply is route 'session' and nothing is spent; delegate the " +
         "helper (or write requirements yourself) as before. An antigravity-worker leaf: Gemini runs the helper's own " +
         "instructions with read-only tools (the engine's read rule) and hands each piece in through the same check the " +
-        "Claude helper's hand-over runs, until every piece is accepted or the policy's thinking_timeout_sec is spent; " +
-        "the reply is route 'done'. A step that cannot finish replies 'stopped' with the reason and what is still owed, " +
+        "Claude helper's hand-over runs, until every piece is accepted (the reply is route 'done'), the policy's " +
+        "thinking_timeout_sec is spent, or Gemini answers three reminders in a row of what it owes without progress. " +
+        "An architect step called again in the same run starts from the sections the run's spec already holds, and is " +
+        "done at once, with nothing sent, when that spec is finalized (a new preflight_dispatch is a new run, whose spec " +
+        "goes again in full). A second call of a step while it runs is refused, " +
+        "and nothing is sent for it. Every call passes the run's telemetry_path, where every call the step made is " +
+        "recorded. " +
+        "A step that cannot finish replies 'stopped' with the reason, saying in plain words what stopped it, and what is still owed, " +
         "and Google serving nothing for the run's busy window replies 'halt': stop the run in both cases; no other " +
-        "model takes the step over. Pass `revise` (a gate's comments, or a check's lines to fix) to carry on the step's " +
-        "saved conversation.",
+        "model takes the step over. A worker the agent door's kill rule stops (frozen) after a turn of its own is " +
+        "carried on once, here, from the conversation it saved, with what its tools had accepted (the reply's " +
+        "`resumed` is true); a second kill replies 'stopped'. Pass `revise` (a gate's comments, or a check's lines " +
+        "to fix) to carry on the step's saved conversation. Pass `acceptance_fix` (role 'architect') for the " +
+        "acceptance stage's install or audit failure: " +
+        "the reply's `acceptance_fix` holds the `failures` entries for execute_stage repair, or `cannot_pass`, the one " +
+        "line why the brief's fixed stack cannot pass.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1081,17 +1095,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           prompt: { type: "string", description: "Exactly what you would put in the helper's delegation prompt (for 'requirements': the brief's path and the job's Phase 1 rules)." },
           project_root: { type: "string" },
           output_dir: { type: "string", description: "The run's own folder, relative to project_root: .sdlc/runs/<run_id> in brownfield, the run's output_dir in greenfield." },
-          run_id: { type: "string" },
-          intent: { type: "string", description: "Brownfield: the run's job, as Gate 0 recorded it." },
+          run_id: { type: "string", description: "The run, as its preflight_dispatch recorded it: the step is routed by that run's policy and job." },
+          intent: { type: "string", description: "Brownfield: the run's job, as Gate 0 recorded it (the run's pre-flight's job; another is refused)." },
           code_dir: { type: "string", description: "Greenfield: the generated app's folder, relative to project_root." },
           requirements_path: { type: "string", description: "The run's requirements.md, relative to project_root (the greenfield architect's coverage check)." },
-          review_path: { type: "string", description: "Senior reviewer: where review.json goes, relative to project_root (default <output_dir>/review.json)." },
+          review_path: { type: "string", description: "Senior reviewer: where review.json goes, relative to project_root and inside output_dir (default <output_dir>/review.json)." },
+          inputs: { type: "array", items: { type: "string" }, description: "Files the step reads that may lie outside the project (for 'requirements' and 'architect': the brief's path): copied into <output_dir>/inputs/ through the read rule, and named to the step." },
           revise: { type: "string", description: "A gate's revise comments, or a check's printed lines to fix: carries on the step's saved conversation." },
+          acceptance_fix: { type: "string", description: "Architect only: the acceptance receipt's failure routed to the architect and its log_path. Carries on the architect's conversation; changes no spec section; not with revise." },
           policy_name: { type: "string" },
           policy_path: { type: "string" },
-          telemetry_path: { type: "string" },
+          telemetry_path: { type: "string", description: "The run's telemetry.jsonl (relative to project_root, or absolute): every call the step makes is appended there with its cost, as an execute_stage call's are." },
         },
-        required: ["role", "prompt", "project_root", "output_dir"],
+        required: ["role", "prompt", "project_root", "output_dir", "run_id", "telemetry_path"],
       },
     },
     ...EXECUTOR_TOOLS,
@@ -1166,22 +1182,45 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         }
       }
       case "run_thinking_step": {
-        // The worker's brief and evidence are staged beside telemetry_path; the worker runs from another folder, so a
-        // path relative to the project is made absolute first.
+        // Every call a step makes is spend, so the step has somewhere to record it before anything is sent (review: a
+        // step called without telemetry_path spent and left nothing in the run's records).
         const a0j = args as any;
-        const a = a0j?.telemetry_path && a0j.project_root ? { ...a0j, telemetry_path: resolvePath(a0j.project_root, a0j.telemetry_path) } : a0j;
+        if (typeof a0j?.telemetry_path !== "string" || a0j.telemetry_path === "") {
+          throw new Error("run_thinking_step: telemetry_path is required: the run's telemetry.jsonl, where every call the step makes is recorded with its cost. Nothing was sent.");
+        }
+        // The worker's brief and evidence are staged beside telemetry_path; the worker runs from another folder, so a
+        // path relative to the project is made absolute first, and the run's log goes beside that same file.
+        const a1 = a0j.project_root ? { ...a0j, telemetry_path: resolvePath(a0j.project_root, a0j.telemetry_path) } : a0j;
+        configureSinks({ telemetryPath: a1.telemetry_path });
+        // A thinking step is routed by the run its pre-flight recorded, never by its own call's arguments: with no
+        // recorded run the call's own policy (or the default) would route it, and with no job the run's job-scoped
+        // rules would not apply (review: either turned a step the route table gave Gemini into the session's, on Claude).
+        const recorded = typeof a1?.run_id === "string" && a1.run_id ? runStates.get(runKey(a1.project_root, a1.run_id)) : undefined;
+        if (!recorded) {
+          throw new Error(`run_thinking_step: no pre-flight of run '${a1?.run_id ?? ""}' for ${a1?.project_root ?? "this project"}. Call preflight_dispatch with the run's run_id first: a thinking step is routed by the run its pre-flight checked, and nothing was sent.`);
+        }
+        if (typeof a1.intent === "string" && a1.intent !== "" && a1.intent !== (recorded.intent ?? "")) {
+          throw new Error(`run_thinking_step: run ${a1.run_id}'s pre-flight recorded the job '${recorded.intent ?? "(none)"}', and this call names '${a1.intent}'. A step runs under its run's job; nothing was sent.`);
+        }
+        const a = { ...a1, intent: recorded.intent };
         const { policy, run } = runFor(a);
         const deps: ThinkingDeps = {
           pluginRoot: PLUGIN_ROOT,
+          // A step goes where the run's route table (routeTable.ts) gives its phase, so the step and the table
+          // pre-flight printed agree: a phase the table gives the session on no model of the policy (no rule names it)
+          // is answered "session", on the session's own Claude model as the table names it.
           route: (phase) => {
-            const d = pickModel({ phase, task_type: THINKING_TASK_TYPE, module: THINKING_MODULE, retry_count: 0, intent: a.intent }, policy, selectOverrides());
-            return { model: getModel(policy, d.modelId), reason: d.reason };
+            const row = routeTable(policy, selectOverrides(), a.intent).rows.find((r) => r.phase === phase);
+            if (!row) throw new Error(`run_thinking_step: the route table has no row for ${phase}`);
+            if (row.model_id === null) return { model: { id: "session_model", adapter: "builtin-anthropic", model_name: row.model } as ModelConfig, reason: row.reason };
+            return { model: getModel(policy, row.model_id), reason: row.reason };
           },
           // The agent door's own guards, as runPacket applies them: a pre-flight in this server process, and the run's
           // busy ledger (Google serving nothing for its window halts the run).
           agentDoorProblem: () => (run ? null : "this server has not checked the Google project and SDK it would use. Call preflight_dispatch first; nothing was dispatched."),
           contractActive: (root) => hasActiveWriteContract(root),
           thinkingTimeoutSec: policy.thinking_timeout_sec ?? DEFAULT_THINKING_TIMEOUT_SEC,
+          runToken: runToken(recorded),
           dispatch: async (packet, thinking) => {
             const ledger = ledgerFor(run);
             const sentAt = ledger.time();
@@ -1189,16 +1228,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
             const leafName = getModel(policy, one.decision.modelId).model_name;
             const lastAttempt = one.result.attempts?.[one.result.attempts.length - 1];
             if (lastAttempt?.unavailable) {
-              const stop = ledger.unavailable(leafName, lastAttempt.unavailable, sentAt);
+              // The worker waited out the busy model for the run's window, carrying on the step; the run's ledger
+              // counts the stretch from its first unserved call, never from the step's start. A worker that produced
+              // output was served until then, and the ledger learns it first, so a stretch an earlier batch left open
+              // does not run on across a step Google kept serving (review of 0.10.1).
+              const since = unservedSince(lastAttempt, sentAt);
+              if (one.result.tokens.output > 0) ledger.served(leafName, since);
+              const stop = ledger.unavailable(leafName, lastAttempt.unavailable, since);
               if (stop) one.result.halt = `${stop}; the run stopped here. Run it again when Google serves again`;
             } else if (one.result.success || one.result.tokens.output > 0) ledger.served(leafName);
             return { result: one.result, events: one.events };
           },
-          record: (evs) => { if (a.telemetry_path) for (const ev of evs) appendEvent(a.telemetry_path, ev); },
+          record: (evs) => { for (const ev of evs) appendEvent(a.telemetry_path, ev); },
           log: (level, event, fields) => log(level, event, fields),
         };
-        const out = await runThinkingStep(a, deps);
-        return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+        // A thinking step can run for hours (thinking_timeout_sec), so it sends progress as an agent-door dispatch does
+        // (a heartbeat between, a message when it settles): Claude Code aborts a local server's call that sends no reply
+        // and no progress for 30 minutes, and the step's worker would be stopped with it.
+        const token = (req.params as any)._meta?.progressToken;
+        const progress = batchProgress({ token, send: (params) => extra.sendNotification({ method: "notifications/progress", params } as any) }, 1, undefined, () => `still thinking: the ${String(a?.role)} step`);
+        try {
+          const out = await runThinkingStep(a, deps);
+          progress.settled({ id: `the ${String(a?.role)} step`, status: String((out as any)?.route) }, 1);
+          return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+        } finally {
+          await progress.stop();
+        }
       }
       case "execute_batch": {
         const a = args as any;

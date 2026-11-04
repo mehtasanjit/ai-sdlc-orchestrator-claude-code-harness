@@ -75,7 +75,7 @@ test("the hooks that run a script with node go through hooks/node.sh: without No
   // A bare `node …` hook command fails on a computer without Node.js (the desktop app needs none) with
   // "node: command not found" on every file write, edit and helper launch, shown as a hook error.
   const viaShim = allCommands().filter((c) => c.command.includes("/hooks/node.sh"));
-  assert.deepEqual(viaShim.map((c) => c.command.split("node.sh\" ")[1]).sort(), ["executor-guard.mjs post", "executor-guard.mjs pre", "foreground-helpers.mjs", "write-contract-check.mjs"]);
+  assert.deepEqual(viaShim.map((c) => c.command.split("node.sh\" ")[1]).sort(), ["executor-guard.mjs post", "executor-guard.mjs pre", "executor-guard.mjs preflight", "foreground-helpers.mjs", "write-contract-check.mjs"]);
   assert.deepEqual(allCommands().filter((c) => /^node\b/.test(c.command)), [], "no hook starts node directly");
   const root = spacedPluginRoot();
   // macOS's temporary folder sits behind a link (/var is /private/var): the paths below are in the linked form, while

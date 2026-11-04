@@ -15,16 +15,29 @@ import enum
 
 
 class _Config:
-    """A configuration object: keeps its keyword arguments as attributes and in `kwargs`."""
+    """A configuration object: keeps its keyword arguments as attributes and in `kwargs`. One built by its constructor
+    is `_validated`, as the SDK's pydantic models are validated there; a model_copy(update=) is not (see below)."""
 
     def __init__(self, *args, **kwargs):
         self.args = args
         self.kwargs = dict(kwargs)
         for k, v in kwargs.items():
             setattr(self, k, v)
+        self._validated = True
 
     def model_dump(self, **_):
         return dict(self.kwargs)
+
+    def model_copy(self, update=None, **_):
+        """A copy with some fields replaced, as pydantic's model_copy: the SDK's configuration classes are pydantic
+        models, whose model_copy(update=) runs none of their validation (0.1.22: a copy takes capabilities naming an
+        unknown subagent, which LocalAgentConfig's constructor refuses), so the copy is not `_validated`."""
+        new = copy.copy(self)
+        new.kwargs = {**self.kwargs, **dict(update or {})}
+        for k, v in dict(update or {}).items():
+            setattr(new, k, v)
+        new._validated = False
+        return new
 
     def __repr__(self):
         return f"{type(self).__name__}({self.kwargs!r})"

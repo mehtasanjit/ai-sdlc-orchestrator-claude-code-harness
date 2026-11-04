@@ -15,6 +15,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, "..", "dist");
 const {
   HARDCODED_OFF_LIMITS,
+  CREDENTIAL_FILES,
+  READ_OFF_LIMITS,
   FILE_OUTPUT_SCHEMA,
   sliceSection,
   hydrateInputs,
@@ -56,6 +58,12 @@ const basePacket = (over = {}) => ({
 
 test("the server's hardcoded off-limits list equals the hook's", () => {
   assert.deepEqual(HARDCODED_OFF_LIMITS, offLimits.HARDCODED_OFF_LIMITS);
+});
+
+test("the server's read list equals the plugin's: the hardcoded list and every credential file", () => {
+  assert.deepEqual(CREDENTIAL_FILES, offLimits.CREDENTIAL_FILES);
+  assert.deepEqual(READ_OFF_LIMITS, offLimits.READ_OFF_LIMITS);
+  for (const p of HARDCODED_OFF_LIMITS) assert.ok(READ_OFF_LIMITS.includes(p), `${p} is read off-limits too`);
 });
 
 test("sliceSection returns the heading through the next heading of the same or higher level", () => {

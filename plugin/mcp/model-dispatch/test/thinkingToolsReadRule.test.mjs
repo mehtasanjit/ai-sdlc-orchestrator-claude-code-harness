@@ -1,0 +1,284 @@
+/**
+ * The read rule against every way a Gemini thinking step's tools could reach a file it refuses: git's own path
+ * patterns, folders and an unscoped diff; credential files, a private key under any name, a hard link to a refused
+ * file, and other spellings of a refused name on a disk that opens them as that file. Each case was a leak found in
+ * review; each test failed before its fix. Real temp folders and real git; no model call.
+ */
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { alive } from "./agyFakes.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const { ThinkingTools } = await import(pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "thinking-tools.mjs")).href);
+
+const SECRET = "NEW-SECRET-VALUE";
+const text = (r) => r.result ?? r.error;
+
+/** A git project with a refused file and two source files changed since the run's starting commit (one deleted). */
+function changedProject() {
+  const root = mkdtempSync(join(tmpdir(), "mmo-readrule-"));
+  const git = (...a) => execFileSync("git", ["-C", root, ...a], { stdio: "pipe" }).toString().trim();
+  git("init", "-q");
+  git("config", "user.email", "test@example.invalid");
+  git("config", "user.name", "test");
+  writeFileSync(join(root, ".mcp.json"), '{"env":{"TOKEN":"old"}}\n');
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "a.js"), "export const a = 1;\n");
+  writeFileSync(join(root, "src", "gone.js"), "export const g = 1;\n");
+  git("add", "-A");
+  git("commit", "-q", "-m", "base");
+  const head = git("rev-parse", "HEAD");
+  writeFileSync(join(root, ".mcp.json"), `{"env":{"TOKEN":"${SECRET}"}}\n`);
+  writeFileSync(join(root, "src", "a.js"), "export const a = 2;\n");
+  rmSync(join(root, "src", "gone.js"));
+  mkdirSync(join(root, ".sdlc", "runs", "r1"), { recursive: true });
+  return { root, head };
+}
+const provenance = (root, head, touched) =>
+  writeFileSync(join(root, ".sdlc", "runs", "r1", "provenance.json"), JSON.stringify({ git_head_before: head, files_touched: touched }));
+const reviewer = (root) =>
+  new ThinkingTools({ role: "brownfield-senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/review.json" } });
+
+test("git_diff gives git only files the read rule allows: no pattern, no refused file, no unscoped diff", async () => {
+  const { root, head } = changedProject();
+  provenance(root, head, ["src/a.js", "src/gone.js", ".mcp.json"]);
+  const t = reviewer(root);
+  // A pattern git would expand, and a refused file: refused, and the secret never shows.
+  for (const path of ["*", ":(glob)**", ".mcp.json"]) {
+    const r = await t.call("git_diff", { path });
+    assert.ok(r.error, `git_diff "${path}" should be refused: ${text(r)}`);
+    assert.doesNotMatch(text(r), new RegExp(SECRET));
+  }
+  // A folder is its changed files that the rule allows; the project root the same.
+  for (const path of [".", "src"]) {
+    const shown = text(await t.call("git_diff", { path }));
+    assert.match(shown, /\+export const a = 2;/, `git_diff "${path}"`);
+    assert.doesNotMatch(shown, new RegExp(SECRET), `git_diff "${path}"`);
+  }
+  // One allowed file, and one the run deleted.
+  assert.match((await t.call("git_diff", { path: "src/a.js" })).result, /\+export const a = 2;/);
+  assert.match((await t.call("git_diff", { path: "src/gone.js" })).result, /-export const g = 1;/);
+  // The whole change: every touched file the rule allows, never the refused one.
+  const all = (await t.call("git_diff", {})).result;
+  assert.match(all, /a = 2/);
+  assert.doesNotMatch(all, new RegExp(SECRET));
+  // When no touched file may be shown, nothing is: never the unscoped diff of the whole project.
+  provenance(root, head, [".mcp.json"]);
+  const none = text(await reviewer(root).call("git_diff", {}));
+  assert.doesNotMatch(none, new RegExp(SECRET));
+  assert.doesNotMatch(none, /a = 2/);
+});
+
+/** A project holding credentials in the places they really live, and other names for a refused file. */
+function credentialProject() {
+  const root = mkdtempSync(join(tmpdir(), "mmo-creds-"));
+  const put = (rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
+  put(".env", `STRIPE_KEY=${SECRET}\n`);
+  put(".mcp.json", `{"env":{"TOKEN":"${SECRET}"}}\n`);
+  put(".claude/settings.json", `{"env":{"ANTHROPIC_API_KEY":"${SECRET}"}}\n`);
+  put(".npmrc", `//registry.npmjs.org/:_authToken=${SECRET}\n`);
+  put("deploy/server.pem", `-----BEGIN PRIVATE KEY-----\n${SECRET}\n-----END PRIVATE KEY-----\n`);
+  put(".aws/credentials", `[default]\naws_secret_access_key = ${SECRET}\n`);
+  put("keys/gcp-service-account.json", `{"type":"service_account","private_key":"${SECRET}"}\n`);
+  put("notes/ops.txt", `-----BEGIN RSA PRIVATE KEY-----\n${SECRET}\n-----END RSA PRIVATE KEY-----\n`);
+  put("src/a.js", "export const a = 1;\n");
+  linkSync(join(root, ".env"), join(root, "notes.txt"));
+  mkdirSync(join(root, ".sdlc", "runs", "r1"), { recursive: true });
+  return root;
+}
+const architect = (root) =>
+  new ThinkingTools({ role: "brownfield-architect", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { sections_dir: ".sdlc/runs/r1/sections" } });
+
+test("credential files, a private key under any name and a hard link to a refused file are never read or searched", async () => {
+  const root = credentialProject();
+  const t = architect(root);
+  for (const path of [".env", ".mcp.json", ".claude/settings.json", ".npmrc", "deploy/server.pem", ".aws/credentials", "keys/gcp-service-account.json", "notes/ops.txt", "notes.txt"]) {
+    const r = await t.call("read_file", { path });
+    assert.ok(r.error, `read_file "${path}" should be refused: ${text(r)}`);
+    assert.doesNotMatch(text(r), new RegExp(SECRET));
+  }
+  assert.match((await t.call("read_file", { path: "src/a.js" })).result, /export const a = 1;/);
+  const found = text(await t.call("search_files", { pattern: SECRET }));
+  assert.doesNotMatch(found, new RegExp(SECRET), `search_files found a secret: ${found}`);
+});
+
+// macOS's disk opens another spelling of a name as the same file; Linux's does not, so there it is another file.
+test("another spelling of a refused file's name is refused on a disk that opens it as that file", { skip: process.platform !== "darwin" && "this disk keeps other spellings apart" }, async () => {
+  const root = credentialProject();
+  const t = architect(root);
+  for (const path of [".MCP.JSON", ".mcp.jſon", ".claude/ſettings.json", ".ENV"]) {
+    const r = await t.call("read_file", { path });
+    assert.ok(r.error, `read_file "${path}" should be refused: ${text(r)}`);
+    assert.doesNotMatch(text(r), new RegExp(SECRET));
+  }
+});
+
+/** A brownfield project whose run's job is known, for the architect's hand-ins. */
+function handInProject() {
+  const root = mkdtempSync(join(tmpdir(), "mmo-handin-"));
+  const put = (rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
+  put(".env", `STRIPE_KEY=${SECRET}\n`);
+  put("src/x.ts", "export const x = 1;\n");
+  put(".sdlc/runs/r1/intent_brief.md", "# Intent Brief — feature-new — a test run\n\n## Goal\n\nAdd b.\n");
+  return { root, put };
+}
+const architectFor = (root) =>
+  new ThinkingTools({ role: "brownfield-architect", project_root: root, run_id: "r1", intent: "feature-new", output_dir: ".sdlc/runs/r1", outputs: { sections_dir: ".sdlc/runs/r1/change.sections" } });
+const headerWith = (run) => ({ conventions: ["c"], decisions: [], file_checks: [{ id: "lint", run, timeout_s: 10 }], project_checks: [] });
+const unitB = [{ id: "U01", path: "src/b.ts", action: "create", phase: "codegen", behaviour: "Exports b.", exports: [{ name: "b", params: [], returns: "number" }], import_line: 'import { b } from "./b";', style_from: { path: "src/x.ts", reason: "same style" }, depends_on: [], covers: ["FR-1"], checks: ["lint"] }];
+
+test("a Gemini architect's hand-in runs no command it wrote: nothing runs, nothing comes back, the baseline waits for dispatch", async () => {
+  const { root } = handInProject();
+  const t = architectFor(root);
+  // A command naming a file the read rule protects is refused at hand-in (thinkingTools.test.mjs); this one names
+  // none, and still nothing it would do happens at hand-in.
+  assert.ok((await t.call("write_section", { name: "header.json", json: JSON.stringify(headerWith("cat \"$(printf '.e%s' nv)\"; touch ran.txt; false {path}")) })).result);
+  const u = await t.call("write_section", { name: "units-001.json", json: JSON.stringify(unitB) });
+  assert.doesNotMatch(text(u), new RegExp(SECRET), "the check's output came back to the model");
+  assert.equal(existsSync(join(root, "ran.txt")), false, "a command the model wrote ran at hand-in");
+  assert.match(text(u), /accepted units-001\.json/, "the section is accepted; its checks' baseline is taken at dispatch");
+});
+
+test("the person's deny rules still refuse a hand-in's command, which is checked without being run", async () => {
+  const { root, put } = handInProject();
+  put(".claude/settings.json", JSON.stringify({ permissions: { deny: ["Bash(cat:*)"] } }));
+  const t = architectFor(root);
+  assert.ok((await t.call("write_section", { name: "header.json", json: JSON.stringify(headerWith("cat {path}")) })).result);
+  const u = await t.call("write_section", { name: "units-001.json", json: JSON.stringify(unitB) });
+  assert.ok(u.error, "a denied command is refused");
+  assert.match(u.error, /deny/);
+});
+
+/** A reviewer's project with the run's change spec naming one file check, `node {path}`, with a 3 s limit. */
+function checkProject(settings) {
+  const root = mkdtempSync(join(tmpdir(), "mmo-filecheck-"));
+  const put = (rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
+  put("test/env.test.js", 'console.log("seen:", ["ANTHROPIC_API_KEY","CLAUDE_CODE_OAUTH_TOKEN","GEMINI_API_KEY"].map(k => k + "=" + process.env[k]).join(" "));\n');
+  put("test/hold.test.js", `const c = require("child_process").spawn("sleep", ["30"], { stdio: "inherit" }); require("fs").writeFileSync(${JSON.stringify(join(root, "child.pid"))}, String(c.pid)); setTimeout(() => {}, 60000);\n`);
+  put("-rf.js", "console.log(1);\n");
+  put(".sdlc/runs/r1/change-spec.json", JSON.stringify({ header: { file_checks: [{ id: "unit", run: "node {path}", timeout_s: 3 }] } }));
+  if (settings) put(".claude/settings.json", JSON.stringify(settings));
+  return root;
+}
+const fileReviewer = (root) =>
+  new ThinkingTools({ role: "brownfield-senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/review.json" } });
+
+test("run_file_check runs a check as the engine does: no vendor credentials, the person's deny rules, the whole group stopped at the limit", async () => {
+  const saved = { ...process.env };
+  Object.assign(process.env, { ANTHROPIC_API_KEY: `sk-ant-${SECRET}`, CLAUDE_CODE_OAUTH_TOKEN: `oauth-${SECRET}`, GEMINI_API_KEY: `gem-${SECRET}` });
+  try {
+    const root = checkProject();
+    const t = fileReviewer(root);
+    const env = text(await t.call("run_file_check", { path: "test/env.test.js", check_id: "unit" }));
+    assert.doesNotMatch(env, new RegExp(SECRET), `the check saw a vendor credential: ${env}`);
+    const held = text(await t.call("run_file_check", { path: "test/hold.test.js", check_id: "unit" }));
+    assert.match(held, /timed out after 3 ?s/, `a check over its limit says so: ${held}`);
+    const pid = Number((await import("node:fs")).readFileSync(join(root, "child.pid"), "utf8"));
+    let alive = true;
+    try { process.kill(pid, 0); } catch { alive = false; }
+    if (alive) process.kill(pid, "SIGKILL");
+    assert.equal(alive, false, "the check's own child was left running after its limit");
+    assert.ok((await t.call("run_file_check", { path: "-rf.js", check_id: "unit" })).error, "a path that reads as an option is refused");
+  } finally {
+    for (const k of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY"]) if (k in saved) process.env[k] = saved[k]; else delete process.env[k];
+  }
+  const denied = await fileReviewer(checkProject({ permissions: { deny: ["Bash(node:*)"] } })).call("run_file_check", { path: "test/env.test.js", check_id: "unit" });
+  assert.ok(denied.error, `a check the person's settings deny is refused: ${text(denied)}`);
+  assert.match(denied.error, /deny/);
+});
+
+// E-check-caller-gone. Review: a file check's limit was a timer in the process that ran it, so when that process ended
+// (a thinking step's tools end with their worker's process group: the kill rule, the person's Stop) the check ran on in
+// its own group with no limit: one with a 5 s limit still ran 8 s after its caller was gone.
+test("a file check ends with the tools process that runs it, however that process ends", { timeout: 60_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-filecheck-gone-"));
+  const put = (rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
+  const ids = join(root, "ids.json");
+  // The check starts a child of its own, says which processes it is, then waits; its limit is far past what the test waits.
+  put("test/held.test.js", `const c = require("child_process").spawn("sleep", ["30"], { stdio: "inherit" }); require("fs").writeFileSync(${JSON.stringify(ids)}, JSON.stringify({ check: process.pid, parent: process.ppid, child: c.pid })); setTimeout(() => {}, 60000);\n`);
+  put(".sdlc/runs/r1/change-spec.json", JSON.stringify({ header: { file_checks: [{ id: "unit", run: "node {path}", timeout_s: 20 }] } }));
+  const tools = pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "thinking-tools.mjs")).href;
+  // The tools process, in a process group of its own as a worker's is: it runs the check, and once the check has
+  // started it does `end`.
+  const caller = (end) => spawn(process.execPath, ["--input-type=module", "-e", [
+    `const { ThinkingTools } = await import(${JSON.stringify(tools)});`,
+    `const { existsSync } = await import("node:fs");`,
+    `new ThinkingTools({ role: "brownfield-senior-reviewer", project_root: ${JSON.stringify(root)}, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/review.json" } }).call("run_file_check", { path: "test/held.test.js", check_id: "unit" });`,
+    `const started = setInterval(() => { if (existsSync(${JSON.stringify(ids)})) { clearInterval(started); ${end} } }, 20);`,
+  ].join("\n")], { detached: true, stdio: "ignore" });
+  const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+  const started = [];
+  try {
+    for (const [how, end, stop] of [
+      ["killed with its process group, as the kill rule's SIGKILL takes a worker's tools", "setInterval(() => {}, 1 << 30);", (p) => process.kill(-p.pid, "SIGKILL")],
+      ["ending on its own", "process.exit(0);", () => {}],
+    ]) {
+      rmSync(ids, { force: true });
+      const p = caller(end);
+      started.push(p.pid);
+      for (const until = Date.now() + 15_000; !existsSync(ids) && Date.now() < until; ) await sleep(20);
+      assert.ok(existsSync(ids), `${how}: the check never started`);
+      const check = JSON.parse(readFileSync(ids, "utf8"));
+      started.push(check.check, check.parent, check.child);
+      stop(p);
+      const running = () => [check.check, check.child, check.parent].filter((pid) => alive(pid));
+      for (const until = Date.now() + 5_000; running().length && Date.now() < until; ) await sleep(50);
+      assert.deepEqual(running(), [], `${how}: the check ran on after its caller ended (${JSON.stringify(check)})`);
+    }
+  } finally {
+    for (const pid of started) if (alive(pid)) { try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } }
+  }
+});
+
+test("a hand-in is written only inside the step's own folder, never beside the project or into its source", async () => {
+  const base = mkdtempSync(join(tmpdir(), "mmo-own-"));
+  const root = join(base, "app");
+  mkdirSync(join(root, "src"), { recursive: true });
+  mkdirSync(join(root, ".sdlc", "runs", "r1"), { recursive: true });
+  const review = JSON.stringify({ findings: [] });
+  for (const where of ["../outside/review.json", "src/review.json"]) {
+    const t = new ThinkingTools({ role: "brownfield-senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: where } });
+    const r = await t.call("write_review", { content: review });
+    assert.ok(r.error, `write_review to "${where}" should be refused: ${text(r)}`);
+    assert.equal(existsSync(join(root, where)), false, `${where} was written`);
+  }
+  const ok = new ThinkingTools({ role: "brownfield-senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/m1/review.json" } });
+  assert.match(text(await ok.call("write_review", { content: review })), /wrote/);
+});
+
+test("a reviewer sees that env files exist and which keys they declare, never a value", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-envkeys-"));
+  const put = (rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
+  put("app/.env.example", "JWT_SECRET=\nDATABASE_URL=\n");
+  put("app/.env.test", `JWT_SECRET=${"x".repeat(32)}\nDATABASE_URL=postgres://localhost:5432/test\n`);
+  put("app/.env", `JWT_SECRET=${SECRET}\n`);
+  put("app/src/config.ts", "export const schema = Joi.object({ JWT_SECRET: Joi.string().min(32) });\n");
+  mkdirSync(join(root, ".sdlc", "runs", "r1"), { recursive: true });
+  const t = new ThinkingTools({ role: "senior-reviewer", project_root: root, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/review.json" } });
+  const listed = text(await t.call("list_files", { path: "app" }));
+  for (const name of [".env.example", ".env.test", ".env"]) assert.match(listed, new RegExp(`^\\${name}  \\(kept from you by the read rule\\)$`, "m"), `${name} is listed: ${listed}`);
+  const fixture = text(await t.call("env_keys", { path: "app/.env.test" }));
+  assert.match(fixture, /^JWT_SECRET  \(32 characters\)$/m);
+  assert.match(fixture, /^DATABASE_URL  \(\d+ characters, a URL\)$/m);
+  assert.doesNotMatch(fixture, /xxxx|localhost/, "no value leaves the machine");
+  const real = text(await t.call("env_keys", { path: "app/.env" }));
+  assert.equal(real.trim(), "JWT_SECRET", "the real env file gives its key names only");
+  assert.ok((await t.call("env_keys", { path: "app/src/config.ts" })).error, "env_keys reads only env files");
+  assert.ok((await t.call("read_file", { path: "app/.env.test" })).error, "the contents stay refused");
+});
+
+test("the worker offers each role the same tools as the tool process serves it", async () => {
+  const { ROLE_TOOLS } = await import(pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "thinking-tools.mjs")).href);
+  const py = (await import("node:fs")).readFileSync(resolve(HERE, "..", "worker", "thinking_worker.py"), "utf8");
+  const block = py.match(/^ROLE_TOOLS = (\{[\s\S]*?^\})/m)?.[1];
+  assert.ok(block, "thinking_worker.py has a ROLE_TOOLS table");
+  assert.deepEqual(JSON.parse(block.replace(/,(\s*[\]}])/g, "$1")), ROLE_TOOLS);
+  for (const role of ["senior-reviewer", "brownfield-senior-reviewer", "security-reviewer", "brownfield-security-reviewer"]) assert.ok(ROLE_TOOLS[role].includes("env_keys"), role);
+  assert.ok(!ROLE_TOOLS.architect.includes("env_keys"));
+});

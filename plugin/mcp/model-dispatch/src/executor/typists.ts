@@ -39,7 +39,7 @@ import { GeminiFlashAdapter } from "../adapters/GeminiFlashAdapter.js";
 import { AntigravityWorkerAdapter } from "../adapters/AntigravityWorkerAdapter.js";
 import { priceClaudeCliResult } from "../adapters/claudeCliLedger.js";
 import { sidecarUsageSemantics } from "../delegation/workerProcess.js";
-import { BUSY_BUDGET_SEC, HEARTBEAT_SEC, STALL_TRIES, STOPPED_BY_REQUEST, callWaitBoundSec, stallSecFor, watchWorker, withoutHeartbeats, type BackstopOptions, type Heartbeat } from "./stall.js";
+import { BACKSTOP, BUSY_BUDGET_SEC, HEARTBEAT_SEC, STALL_TRIES, STOPPED_BY_REQUEST, callWaitBoundSec, stallSecFor, watchWorker, withoutHeartbeats, type BackstopOptions, type Heartbeat } from "./stall.js";
 import { log } from "../log.js";
 // The Python workers' folder, from the package root: in the single-file bundle this module is not two folders
 // below it (paths.ts).
@@ -359,9 +359,11 @@ function removeScratch(dir: string): void {
  * Runs a child in its own process group, so nothing is left billing: on a fixed timer the whole group is killed at
  * `timeoutMs`; in heartbeat mode (the agent typist's worker) there is no timer, and the kill rule that reads the
  * worker's heartbeat stops the group instead (executor/stall.ts watchWorker), SIGTERM first so the worker writes its
- * receipt. Lean Opus keeps the fixed timer.
+ * receipt. Lean Opus keeps the fixed timer. `input` is written to the child's stdin, which is then closed; without
+ * it, stdin is a pipe this server holds open and never writes, so its end comes with this server's end, however the
+ * server ends: an Antigravity worker watches it (--watch-stdin) and stops itself as the kill rule would.
  */
-function runChild(cmd: string, args: string[], opts: { env: Record<string, string>; cwd: string; input: string; timeoutMs: number; signal?: AbortSignal; heartbeat?: { workLimitS: number; waitBoundS: number; backstop?: BackstopOptions } }): Promise<{ code: number | null; out: string; err: string; timedOut: boolean; killed?: string | null; lastBeat?: Heartbeat | null }> {
+function runChild(cmd: string, args: string[], opts: { env: Record<string, string>; cwd: string; input?: string; timeoutMs: number; signal?: AbortSignal; heartbeat?: { workLimitS: number; waitBoundS: number; backstop?: BackstopOptions } }): Promise<{ code: number | null; out: string; err: string; timedOut: boolean; killed?: string | null; lastBeat?: Heartbeat | null }> {
   return new Promise((done) => {
     const child = spawn(cmd, args, { env: opts.env, cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
     let out = "", err = "", timedOut = false;
@@ -391,7 +393,7 @@ function runChild(cmd: string, args: string[], opts: { env: Record<string, strin
       opts.signal?.removeEventListener("abort", onAbort);
       done({ code, out, err, timedOut, ...(watch ? { killed: watch.reason, lastBeat: watch.lastBeat } : {}) });
     });
-    child.stdin.end(opts.input);
+    if (opts.input !== undefined) child.stdin.end(opts.input);
   });
 }
 
@@ -489,9 +491,11 @@ export const TYPIST_WORKER = join(WORKER_DIR, "typist_worker.py");
  * applies unstated defaults and a rate limit can surface as a failed attempt).
  * The call supervisor's settings (worker/agy_supervisor.py) are rendered when
  * given: the locations in order, the stall limit and tries, the busy budget and
- * the heartbeat interval.
+ * the heartbeat interval; and with the kill rule's grace (`termGraceSec`), the
+ * worker watches its stdin, which runChild then holds open, and stops itself as
+ * the kill rule would once this server is gone.
  */
-export function agyWorkerArgs(i: { briefFile: string; sharedFile: string; schemaFile: string; model: string; region: string; workdir: string; receiptFile: string; thinking: string; maxModelCalls: number; timeoutSec: number; apiRetries: number; apiRetryInitialMs: number; locations?: string[]; stallSec?: number; stallTries?: number; busyBudgetSec?: number; heartbeatSec?: number }): string[] {
+export function agyWorkerArgs(i: { briefFile: string; sharedFile: string; schemaFile: string; model: string; region: string; workdir: string; receiptFile: string; thinking: string; maxModelCalls: number; timeoutSec: number; apiRetries: number; apiRetryInitialMs: number; locations?: string[]; stallSec?: number; stallTries?: number; busyBudgetSec?: number; heartbeatSec?: number; termGraceSec?: number }): string[] {
   return [TYPIST_WORKER, "--brief-file", i.briefFile, "--system-file", i.sharedFile, "--answer-schema-file", i.schemaFile, "--model", i.model, "--region", i.region,
     "--workdir", i.workdir, "--out", i.receiptFile, "--thinking", i.thinking.toUpperCase(), "--max-model-calls", String(i.maxModelCalls), "--timeout", String(i.timeoutSec),
     "--api-retries", String(i.apiRetries), "--api-retry-initial-ms", String(i.apiRetryInitialMs),
@@ -499,7 +503,8 @@ export function agyWorkerArgs(i: { briefFile: string; sharedFile: string; schema
     ...(i.stallSec !== undefined ? ["--stall-sec", String(i.stallSec)] : []),
     ...(i.stallTries !== undefined ? ["--stall-tries", String(i.stallTries)] : []),
     ...(i.busyBudgetSec !== undefined ? ["--busy-budget-sec", String(i.busyBudgetSec)] : []),
-    ...(i.heartbeatSec !== undefined ? ["--heartbeat-sec", String(i.heartbeatSec)] : [])];
+    ...(i.heartbeatSec !== undefined ? ["--heartbeat-sec", String(i.heartbeatSec)] : []),
+    ...(i.termGraceSec !== undefined ? ["--watch-stdin", "--term-grace-sec", String(i.termGraceSec)] : [])];
 }
 
 export interface AgyTypistOptions {
@@ -568,13 +573,14 @@ export class AgyTypist implements Typist {
       briefFile, sharedFile: req.sharedFile, schemaFile, model: this.leaf.model_name, region: this.agent.location, workdir: scratch, receiptFile,
       thinking: this.opts.effort, maxModelCalls: this.opts.maxModelCalls, timeoutSec: this.opts.timeoutSec, apiRetries: this.opts.apiRetries,
       apiRetryInitialMs: this.opts.apiRetryInitialMs, locations: this.opts.locations ?? this.agent.locations, stallSec, stallTries,
-      busyBudgetSec, heartbeatSec: HEARTBEAT_SEC,
+      busyBudgetSec, heartbeatSec: HEARTBEAT_SEC, termGraceSec: this.opts.backstop?.termGraceS ?? BACKSTOP.termGraceS,
     });
     // No timer: the worker keeps its own limits and the kill rule reads its heartbeat (executor/stall.ts), with the
     // bound of the very settings the worker was given (its stall tries, its harness retry rule, its busy budget).
     const waitBoundS = callWaitBoundSec(stallSec, { tries: stallTries, retry: { retries: this.opts.apiRetries, initialMs: this.opts.apiRetryInitialMs }, busyBudgetSec });
+    // The brief is a file (--brief-file): the worker's stdin carries nothing, and stays open as this server's pipe.
     const r = await runChild(this.agent.python, args, {
-      env: agyEnv(process.env, this.agent.project, this.agent.location), cwd: scratch, input: "", timeoutMs: 0, signal: req.signal,
+      env: agyEnv(process.env, this.agent.project, this.agent.location), cwd: scratch, timeoutMs: 0, signal: req.signal,
       heartbeat: { workLimitS: this.opts.timeoutSec, waitBoundS, backstop: this.opts.backstop },
     });
     const latency = Date.now() - started;

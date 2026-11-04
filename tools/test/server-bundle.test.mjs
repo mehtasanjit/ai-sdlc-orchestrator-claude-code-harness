@@ -119,7 +119,7 @@ test("in that copy, the scripts that load the server's code work, and say nothin
 // namespace the other scripts load must export exactly what its compiled module does, so nothing they use changed.
 test("each namespace of the scripts' bundle exports exactly its server module's names", { skip: existsSync(join(SERVER, "dist", "lib.js")) ? false : "NOT RUN: dist/ is not built (cd plugin/mcp/model-dispatch && npm run build)" }, async () => {
   const lib = await import(pathToFileURL(join(SERVER, "bundle", "lib.mjs")).href);
-  const modules = { policy: "policy.js", routing: "routing.js", executorRun: "executor/run.js", telemetry: "telemetry.js", pricing: "pricing.js", prices: "prices.js", effectivePrice: "effectivePrice.js", adapters: "adapters/index.js", specSchema: "spec/schema.js", specStore: "spec/store.js" };
+  const modules = { policy: "policy.js", routing: "routing.js", executorRun: "executor/run.js", telemetry: "telemetry.js", pricing: "pricing.js", prices: "prices.js", effectivePrice: "effectivePrice.js", adapters: "adapters/index.js", specSchema: "spec/schema.js", specStore: "spec/store.js", checkSupervisor: "checkSupervisor.js" };
   assert.deepEqual(Object.keys(lib).sort(), Object.keys(modules).sort());
   for (const [ns, file] of Object.entries(modules)) {
     const mod = await import(pathToFileURL(join(SERVER, "dist", file)).href);

@@ -308,9 +308,11 @@ function effectivePriceView(model: PricedModel, date: Date | string, day: string
  * every model given its `effective_price` for `date`, and the day and a note
  * at the top. Pure: the loaded policy object is not modified. The day is the
  * price list's own UTC-day reading of `date` (utcDay), so `priced_on` names
- * the period the rates came from.
+ * the period the rates came from. A policy that names the session's own model
+ * (session_model) gets its price too, as `session_model_price`: in estimated
+ * mode the session prices its own work from it.
  */
-export function withEffectivePrices<P extends { models: PricedModel[] }>(policy: P, date: Date | string) {
+export function withEffectivePrices<P extends { models: PricedModel[]; session_model?: string }>(policy: P, date: Date | string) {
   const arg = dateArg(date);
   const day = utcDay(arg) ?? arg;
   return {
@@ -318,5 +320,8 @@ export function withEffectivePrices<P extends { models: PricedModel[] }>(policy:
     effective_prices_note: EFFECTIVE_PRICES_NOTE,
     ...policy,
     models: policy.models.map((m) => ({ ...m, effective_price: effectivePriceView(m, date, day) })),
+    ...(typeof policy.session_model === "string" && policy.session_model
+      ? { session_model_price: effectivePriceView({ id: "session_model", model_name: policy.session_model }, date, day) }
+      : {}),
   };
 }

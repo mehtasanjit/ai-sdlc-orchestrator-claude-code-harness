@@ -55,9 +55,10 @@ function parseArgs(argv) {
 /**
  * Checks one section file. Returns { ok, lines } — the lines to print; on success the section is stored.
  * A header section is named header*.json; every other section file holds units. `intent`: the run's job as the
- * caller names it (--intent); Gate 0's record wins, and a different job is a usage error.
+ * caller names it (--intent); Gate 0's record wins, and a different job is a usage error. `runCommands: false` runs
+ * no file check (baselineErrors): a Gemini thinking step's hand-in, whose checks wait for dispatch.
  */
-export async function checkSection(projectRoot, runId, file, { intent } = {}) {
+export async function checkSection(projectRoot, runId, file, { intent, runCommands = true } = {}) {
   const run = runFolder(projectRoot, runId);
   if (run.error) return { ok: false, usage: true, lines: [run.error] };
   const { job, error: jobError } = runJob(run.dir, intent);
@@ -78,13 +79,13 @@ export async function checkSection(projectRoot, runId, file, { intent } = {}) {
   if (kind === "header") {
     const schemaErrors = specSchema.validate(headerSchema, value);
     if (schemaErrors.length) return { ok: false, lines: schemaErrors.map((e) => `${name} ${e.path}: ${e.message}`) };
-    const own = [...headerErrors(value), ...(job ? headerJobErrors(value, job) : [])];
+    const own = [...headerErrors(value, { projectRoot: resolve(projectRoot), runId }), ...(job ? headerJobErrors(value, job) : [])];
     if (own.length) return { ok: false, lines: own.map((e) => `${name} ${e}`) };
     // A header sent again after units were accepted: their checks run under its commands now, so a changed command
     // is tried on every file it will judge before the header replaces the one they were accepted under.
     const lines = [];
     for (const part of parts.filter((p) => p.section === "units")) {
-      for (const e of await baselineErrors(part.value, { projectRoot: resolve(projectRoot), runDir: run.dir, header: value })) lines.push(`${part.source} ${e}`);
+      for (const e of await baselineErrors(part.value, { projectRoot: resolve(projectRoot), runDir: run.dir, header: value, runCommands })) lines.push(`${part.source} ${e}`);
     }
     if (lines.length) return { ok: false, lines };
   } else {
@@ -102,7 +103,7 @@ export async function checkSection(projectRoot, runId, file, { intent } = {}) {
     if (lines.length) return { ok: false, lines };
     // Only a section that is right in every other way has its checks run: they take real time, and a refused section
     // is checked again anyway.
-    const failing = await baselineErrors(value, { projectRoot: resolve(projectRoot), runDir: run.dir, header });
+    const failing = await baselineErrors(value, { projectRoot: resolve(projectRoot), runDir: run.dir, header, runCommands });
     if (failing.length) return { ok: false, lines: failing.map((e) => `${name} ${e}`) };
     hashes = r.hashes;
   }

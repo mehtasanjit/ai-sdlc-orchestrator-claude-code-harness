@@ -35,10 +35,11 @@
  *      loadPolicy from ../mcp/model-dispatch/dist/, which is guaranteed built
  *      before any run (verify-setup.mjs --fix / /mmo:setup step 1).
  *
- * Derivation (deriveSessionModel): route every judgment phase through the
- * policy; the phases that land on a Claude model, plus the policy's
- * `session_model`, must all name one model. A phase routed to another vendor runs on
- * the server (run_thinking_step) and does not count. A single env var cannot
+ * Derivation (deriveSessionModel): route each thinking phase (the route
+ * table's) through the policy; the phases that land on a Claude model, plus the
+ * policy's `session_model`, must all name one model. A phase routed to another vendor
+ * runs on the server (run_thinking_step) and does not count, nor do the phases code
+ * renders or discovery, whose rules have no effect. A single env var cannot
  * honor a policy that splits the Claude judgment tier across models, so
  * disagreement is an error, not a majority vote (meeting decision:
  * unresolvable → error and STOP).
@@ -88,23 +89,35 @@ export const JUDGMENT_PHASES = [
  */
 export const IN_SESSION_ADAPTERS = new Set(["builtin-anthropic", "claude-cli"]);
 
-function routeJudgmentPhases(policy, routing, overrides, intent) {
-  return JUDGMENT_PHASES.map((phase) => {
-    // The context run_thinking_step routes a thinking step with (thinking.ts THINKING_TASK_TYPE, THINKING_MODULE, the
-    // run's intent), so this check pins the model the step actually gets.
-    const decision = routing.pickModel(
-      { phase, task_type: "judgment", module: "judgment", retry_count: 0, ...(intent ? { intent } : {}) },
-      policy,
-      overrides
+// The context run_thinking_step routes a thinking step with (thinking.ts THINKING_TASK_TYPE, THINKING_MODULE, the run's
+// intent), so this check pins the model the step actually gets.
+const judgmentContext = (phase, intent) => ({ phase, task_type: "judgment", module: "judgment", retry_count: 0, ...(intent ? { intent } : {}) });
+
+/** A phase's row for the derivations: the policy model its rule resolved to. */
+function routedTo(policy, phase, modelId) {
+  const model = policy.models.find((m) => m.id === modelId);
+  if (!model) {
+    throw new Error(
+      `policy '${policy.name}': rule for phase '${phase}' resolved to model id ` +
+        `'${modelId}' which is not in the models list`
     );
-    const model = policy.models.find((m) => m.id === decision.modelId);
-    if (!model) {
-      throw new Error(
-        `policy '${policy.name}': rule for phase '${phase}' resolved to model id ` +
-          `'${decision.modelId}' which is not in the models list`
-      );
-    }
-    return { phase, modelId: model.id, modelName: model.model_name, adapter: model.adapter };
+  }
+  return { phase, modelId: model.id, modelName: model.model_name, adapter: model.adapter };
+}
+
+function routeJudgmentPhases(policy, routing, overrides, intent) {
+  return JUDGMENT_PHASES.map((phase) => routedTo(policy, phase, routing.pickModel(judgmentContext(phase, intent), policy, overrides).modelId));
+}
+
+/**
+ * The thinking phases (the route table's, the server's routing.THINKING_PHASES), each routed as run_thinking_step
+ * routes it (routing.routeThinking): to a model of the policy, or `{ phase, session: true }` for a phase the session
+ * runs on its own model because no rule names it.
+ */
+function routeThinkingPhases(policy, routing, overrides, intent) {
+  return routing.THINKING_PHASES.map((phase) => {
+    const d = routing.routeThinking(judgmentContext(phase, intent), policy, overrides);
+    return d.session ? { phase, session: true } : routedTo(policy, phase, d.modelId);
   });
 }
 
@@ -143,21 +156,23 @@ export function deriveDriverModel(policy, routing, overrides = {}) {
   return { modelName: first.modelName, modelId: first.modelId, perPhase };
 }
 
-/** The phases run_thinking_step runs (src/thinking.ts THINKING_ROLES): on a Claude model in the session, or on an agent leaf. */
-export const THINKING_PHASES = new Set(["requirements_analysis", "architecture_design", "senior_code_review", "security_review", "discovery"]);
 const AGENT_ADAPTER = "antigravity-worker";
 
 /**
- * The Claude model this session must run on, in either auth mode. A thinking step whose rule names an agent leaf runs
- * on that model through the server (run_thinking_step); everything else the policy gives Claude runs in this session,
- * with the orchestrator itself. That is one Claude model: the one the Claude-routed phases name, or the policy's
- * `session_model` when none names Claude. With neither, `modelName` is null: the session runs on its own model, as
- * before. Throws on a thinking phase nothing can run as a thinking step (a model reached as a plain completion), and on
- * more than one Claude model.
+ * The Claude model this session must run on, in either auth mode. Only the thinking phases decide it, the route
+ * table's (the server's routing.THINKING_PHASES, read through the bundle): a thinking step whose rule names an agent
+ * leaf runs on that model through the server (run_thinking_step), and one whose rule names Claude runs in this session,
+ * with the orchestrator itself. That is one Claude model: the one the Claude-routed thinking phases name, or the
+ * policy's `session_model` when none names Claude. With neither, `modelName` is null: the session runs on its own
+ * model, as before. Phases code renders (plan_task_packets, change_plan) and discovery (the session's Claude helper
+ * whatever its rule says) decide nothing: a rule for them has no effect (review: a Claude typist named by the default
+ * rule pinned the session through them), nor does a thinking phase no rule names: the session runs it on its own
+ * model, as before. Throws on a thinking phase nothing can run as a thinking step (a model reached as a plain
+ * completion), and on more than one Claude model.
  */
 export function deriveSessionModel(policy, routing, overrides = {}, intent) {
-  const perPhase = routeJudgmentPhases(policy, routing, overrides, intent);
-  const cannot = perPhase.filter((p) => THINKING_PHASES.has(p.phase) && !IN_SESSION_ADAPTERS.has(p.adapter) && p.adapter !== AGENT_ADAPTER);
+  const perPhase = routeThinkingPhases(policy, routing, overrides, intent);
+  const cannot = perPhase.filter((p) => !p.session && !IN_SESSION_ADAPTERS.has(p.adapter) && p.adapter !== AGENT_ADAPTER);
   if (cannot.length) {
     throw new Error(
       `policy '${policy.name}' routes a thinking phase to a model that cannot read the project:\n` +
@@ -165,7 +180,7 @@ export function deriveSessionModel(policy, routing, overrides = {}, intent) {
         `\nRoute each to an antigravity-worker leaf or a Claude model.`
     );
   }
-  const claude = perPhase.filter((p) => IN_SESSION_ADAPTERS.has(p.adapter));
+  const claude = perPhase.filter((p) => !p.session && IN_SESSION_ADAPTERS.has(p.adapter));
   const names = [...new Set([...claude.map((p) => p.modelName), ...(policy.session_model ? [policy.session_model] : [])])];
   if (names.length > 1) {
     const table = claude.map((p) => `  ${p.phase} → ${p.modelName} (${p.modelId})`).join("\n");

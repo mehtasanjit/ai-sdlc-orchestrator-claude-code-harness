@@ -11,8 +11,8 @@
  * functions from server.ts, which keeps the loop testable with a stub model.
  */
 
-import { closeSync, constants as FS, existsSync, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, readSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { closeSync, constants as FS, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
@@ -26,6 +26,7 @@ import { contractShape, isTransient, parseAnswer } from "./executor/typists.js";
 import { checkAnswer } from "./executor/checks.js";
 import { isSafeRelativePath } from "./spec/store.js";
 import { commandEnv } from "./executor/acceptance.js";
+import { runSupervised } from "./checkSupervisor.js";
 import { BusyLedger } from "./busyLedger.js";
 
 /** `{path, content}` — what every apply packet returns; substituted when the packet omits outputSchema. */
@@ -80,6 +81,44 @@ export const HARDCODED_OFF_LIMITS = [
   ".claude/settings.local.json",
   ".git/**",
 ];
+
+// Same lists as plugin/scripts/lib/off-limits.mjs CREDENTIAL_FILES and READ_OFF_LIMITS (apply.test.mjs asserts it):
+// files that hold credentials, never sent to a model on top of the hardcoded list. Reads only: writes are unchanged.
+export const CREDENTIAL_FILES = [
+  ".claude/settings.json",
+  ".npmrc",
+  ".yarnrc.yml",
+  ".pypirc",
+  ".netrc",
+  ".git-credentials",
+  ".vault-token",
+  ".terraformrc",
+  ".docker/config.json",
+  ".kube/config",
+  ".ssh/**",
+  ".aws/**",
+  ".azure/**",
+  ".gnupg/**",
+  ".config/gcloud/**",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.pfx",
+  "*.jks",
+  "*.keystore",
+  "id_rsa*",
+  "id_dsa*",
+  "id_ecdsa*",
+  "id_ed25519*",
+  "credentials.json",
+  "*-credentials.json",
+  "*service-account*.json",
+  "*service_account*.json",
+  "application_default_credentials.json",
+  "*.tfstate",
+  "*.tfstate.backup",
+];
+export const READ_OFF_LIMITS = [...HARDCODED_OFF_LIMITS, ...CREDENTIAL_FILES];
 
 // ---------------------------------------------------------------------------
 // Paths: off-limits matching and the read rule
@@ -168,7 +207,7 @@ function readContract(projectRoot: string): any | null {
  * The contract while it binds (active, and its run live by its own log: runLog.ts), with the run it binds, or null.
  * An ended run's contract binds nothing, exactly as one switched off, as the hook decides.
  */
-function bindingContract(projectRoot: string): { contract: any; runId: string | null } | null {
+export function bindingContract(projectRoot: string): { contract: any; runId: string | null } | null {
   const contract = readContract(projectRoot);
   try {
     if (contract?.active !== true || runEnded(projectRoot, contract.run_id)) return null;
@@ -182,15 +221,158 @@ function bindingContract(projectRoot: string): { contract: any; runId: string | 
  * Why `rel` may not be read into a model's prompt, or null: the one read rule for everything sent to a model (the
  * planner's plan-lint and findings-to-packets hold a plan to the same rule; this is the last line, the only one a
  * hand-written packet passes). A file on the hardcoded off-limits list (at any depth, as the writer matches it) or on
- * the binding contract's off_limits is never sent. The live run's own folder (.sdlc/runs/<run_id>/, where its briefs
- * live) is exempt from the contract's list. Case is ignored, as the disk ignores it.
+ * the binding contract's off_limits is never sent, and neither is a credential file (READ_OFF_LIMITS). The live run's
+ * own folder (.sdlc/runs/<run_id>/, where its briefs live) is exempt from the contract's list. Names are compared with
+ * case and Unicode form folded (foldName), as the disk treats them.
  */
 export function readOffLimits(rel: string, binding: { contract: any; runId: string | null } | null): string | null {
-  for (const p of HARDCODED_OFF_LIMITS) if (matchesAtAnyDepth(rel, p, true)) return `off-limits (hardcoded): ${p}`;
+  const name = foldName(rel);
+  for (const p of READ_OFF_LIMITS) if (matchesAtAnyDepth(name, foldName(p), true)) return `off-limits (hardcoded): ${p}`;
   if (!binding) return null;
-  if (binding.runId && rel.toLowerCase().startsWith(`.sdlc/runs/${binding.runId.toLowerCase()}/`)) return null;
-  const off = firstMatch(rel, binding.contract?.off_limits, true);
+  if (binding.runId && name.startsWith(`.sdlc/runs/${foldName(binding.runId)}/`)) return null;
+  // The project baseline (discovery's record of the project, which the brownfield architect reads) is not the
+  // contract's to keep from a model; the always list above still is. A link out of it is judged where it leads, by
+  // the caller's real-path check (modelReadOf).
+  if (name.startsWith(".sdlc/baseline/")) return null;
+  const patterns: unknown[] = Array.isArray(binding.contract?.off_limits) ? binding.contract.off_limits : [];
+  const off = patterns.find((p): p is string => typeof p === "string" && matchGlob(name, foldName(p), true));
   return off ? `off-limits (contract): ${off}` : null;
+}
+
+/** A name in the one form off-limits names are compared in: Unicode NFC with case folded both ways (`ſ` to `s`). */
+function foldName(s: string): string {
+  return s.normalize("NFC").toUpperCase().toLowerCase();
+}
+
+// Folders the search for another name of a refused file skips: git's store and installed dependencies only, which hold
+// no file of the project's own. A refused file can sit in a build or cache folder (a copied .env), and a hard link to it
+// is that file (review: a link to coverage/.env was read).
+const NAME_SEARCH_SKIP = new Set([".git", "node_modules", ".venv", "venv"]);
+
+/**
+ * Whether a file with more than one name is the same file as an off-limits one: a hard link to `.env` under another
+ * name is `.env`'s bytes. Asked only for an input whose file has more than one link.
+ */
+function sameFileAsOffLimits(projectRoot: string, dev: number, ino: number, binding: { contract: any; runId: string | null } | null): boolean {
+  const walk = (abs: string, rel: string): boolean => {
+    let entries: import("node:fs").Dirent[];
+    try { entries = readdirSync(abs, { withFileTypes: true }); } catch { return false; }
+    for (const d of entries) {
+      const childRel = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) {
+        if (!NAME_SEARCH_SKIP.has(d.name) && walk(join(abs, d.name), childRel)) return true;
+      } else if (d.isFile() && readOffLimits(childRel, binding)) {
+        try {
+          const st = statSync(join(abs, d.name));
+          if (st.dev === dev && st.ino === ino) return true;
+        } catch {}
+      }
+    }
+    return false;
+  };
+  return walk(projectRoot, "");
+}
+
+/** A private key's own marker, in any file: such a file is never sent to a model, whatever its name. */
+export function holdsPrivateKey(text: string): boolean {
+  return /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/.test(text);
+}
+
+/**
+ * Text the read rule keeps from models, put out of what goes to one, as the plugin's tools do it (the same steps as
+ * plugin/scripts/lib/change-spec.mjs withoutProtectedText, and the same answer for the same input: test/protectedText
+ * .test.mjs holds them equal). A check's command is the plan's, written by a model, and it can print what a protected
+ * file holds without naming it (a test that prints its configuration); a failed check's output goes into the typist's
+ * next attempt, and an acceptance failure into the architect's task (review of 0.10.1).
+ */
+export const KEPT_BY_READ_RULE = "[kept from you by the read rule]";
+
+export function withoutProtectedText(projectRoot: string, text: string): string {
+  let out = String(text).replace(/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|$)/g, KEPT_BY_READ_RULE);
+  for (const v of protectedValues(projectRoot)) if (out.includes(v)) out = out.split(v).join(KEPT_BY_READ_RULE);
+  return out;
+}
+
+const protectedCache = new Map<string, { listedAt: number; files: string[]; stamp: string | null; values: string[] }>();
+function protectedValues(projectRoot: string): string[] {
+  let c = protectedCache.get(projectRoot);
+  if (!c || Date.now() - c.listedAt > 30_000) {
+    c = { listedAt: Date.now(), files: [...protectedFiles(projectRoot)].sort(), stamp: null, values: [] };
+    protectedCache.set(projectRoot, c);
+  }
+  const stamp = c.files.map((f) => { try { const st = statSync(f); return `${st.size}:${st.mtimeMs}`; } catch { return "-"; } }).join("|");
+  if (stamp !== c.stamp) { c.values = valuesOf(c.files); c.stamp = stamp; }
+  return c.values;
+}
+
+/** The files whose text the read rule keeps from models and a command run in the project could print. */
+function protectedFiles(projectRoot: string): Set<string> {
+  const files = new Set([join(projectRoot, ".git", "config")]);
+  const listed = spawnSync("git", ["-C", projectRoot, "ls-files", "-z", "--cached", "--others", "--exclude=node_modules", "--", ...READ_OFF_LIMITS.flatMap((g) => [`:(glob)${g}`, `:(glob)**/${g}`])], { encoding: "utf8", timeout: 30_000, maxBuffer: 50_000_000 });
+  if (listed.status === 0) for (const f of listed.stdout.split("\0").filter(Boolean)) files.add(join(projectRoot, f));
+  else walkFiles(projectRoot, (rel) => READ_OFF_LIMITS.some((g) => matchesAtAnyDepth(rel, g)), files);
+  // In the home folder, the files that hold credentials themselves (HOME_SECRET_FILES), never a whole folder.
+  const home = homedir();
+  for (const f of HOME_SECRET_FILES) files.add(join(home, f));
+  for (const dir of [".config/gcloud/legacy_credentials", ".azure"]) walkFiles(join(home, dir), (rel) => /\.json$/i.test(rel), files, [], 1);
+  return files;
+}
+
+/** The home folder's files that hold credentials, each one READ_OFF_LIMITS protects (as change-spec.mjs keeps them). */
+export const HOME_SECRET_FILES = [".npmrc", ".pypirc", ".netrc", ".git-credentials", ".vault-token", ".terraformrc", ".yarnrc.yml", ".docker/config.json", ".kube/config", ".aws/credentials", ".config/gcloud/application_default_credentials.json", ".claude/settings.json"];
+
+function walkFiles(root: string, keep: (rel: string) => boolean, into: Set<string>, skip: string[] = [], depth = 8): void {
+  const SKIP = new Set(["node_modules", ".git", ...skip]);
+  let seen = 0;
+  const walk = (dir: string, rel: string, left: number): void => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (++seen > 20_000) return;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { if (left > 0 && !SKIP.has(e.name)) walk(join(dir, e.name), r, left - 1); }
+      else if (e.isFile() && keep(r)) into.add(join(dir, e.name));
+    }
+  };
+  walk(root, "", depth);
+}
+
+const SECRET_KEY = /(secret|passw|passphrase|pwd|token|api[_-]?key|access[_-]?key|key[_-]?data|private|credential|auth|client[_-]?id|session|salt|signing|encrypt|cookie|bearer|(^|[_.-])key$)/i;
+const URL_LOGIN = /[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:([^\s/@]+)@[^\s/"']+[^\s"']*/gi;
+const tokenLike = (v: string): boolean => v.length >= 16 && /[A-Za-z]/.test(v) && /\d/.test(v) && /^[\x21-\x7e]+$/.test(v);
+
+/** What the protected files hold that output must not carry, longest first: each secret value (as change-spec.mjs). */
+export function valuesOf(files: Iterable<string>): string[] {
+  const values = new Set<string>();
+  const add = (raw: unknown): void => { const v = String(raw).trim().replace(/^["']|["'],?$/g, ""); if (v.length >= 4) values.add(v); };
+  for (const f of files) {
+    let text: string;
+    try { if (statSync(f).size > 1_000_000) continue; text = readFileSync(f, "utf8"); } catch { continue; }
+    for (const m of text.matchAll(URL_LOGIN)) { values.add(m[0]); add(m[1]); }
+    const name = basename(f);
+    if (/\.(json|tfstate|tfstate\.backup)$/i.test(name)) {
+      let data: unknown = null;
+      try { data = JSON.parse(text); } catch { /* not JSON after all */ }
+      const walk = (x: unknown, key: string): void => {
+        if (typeof x === "string") { if (SECRET_KEY.test(key)) add(x); }
+        else if (Array.isArray(x)) for (const y of x) walk(y, key);
+        else if (x && typeof x === "object") for (const [k, v] of Object.entries(x as Record<string, unknown>)) walk(v, k);
+      };
+      walk(data, "");
+      continue;
+    }
+    if (name === ".vault-token") { add(text); continue; }
+    if (name === ".netrc") { for (const m of text.matchAll(/\bpassword\s+(\S+)/g)) add(m[1]); continue; }
+    for (const line of text.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#") || t.startsWith(";")) continue;
+      const kv = t.match(/^(?:export\s+)?([^=\s][^=]*?)\s*=\s*(.*)$/) ?? t.match(/^([\w.-]+)\s*:\s+(.+)$/);
+      if (!kv) continue;
+      const v = kv[2].trim().replace(/^["']|["'],?$/g, "");
+      if (SECRET_KEY.test(kv[1]) || tokenLike(v)) add(v);
+    }
+  }
+  return [...values].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +406,58 @@ export function sliceSection(text: string, heading: string): string | null {
   return start === -1 ? null : lines.slice(start).join("\n");
 }
 
+/** Why the read rule refuses a model's read of one file (modelReadOf). */
+export type ModelReadRefusal =
+  | { kind: "outside"; throughLink: boolean }
+  | { kind: "off-limits"; why: string; via?: string }
+  | { kind: "missing" }
+  | { kind: "not-a-file" }
+  | { kind: "hard-link" };
+
+/**
+ * The file a model's read of `given` (relative to project_root, or absolute) reaches, or why the read rule refuses it,
+ * judged as everything a model is sent is judged: by the path as written, by the file it reaches through links, and by
+ * every other name that file has in the project (a hard link to `.env` is `.env`'s bytes). Inside the project the live
+ * contract's off_limits hold too; outside it, the always list holds, by the path's names. A path outside the project,
+ * or one that leads out of it through a link, is refused unless `outside` allows it (a thinking step's input, such as
+ * a greenfield brief: thinking.ts stepInputsCopied).
+ */
+export function modelReadOf(
+  projectRoot: string,
+  given: string,
+  opts: { outside?: boolean; binding?: { contract: any; runId: string | null } | null } = {},
+): { refused: ModelReadRefusal } | { abs: string; real: string; st: import("node:fs").Stats } {
+  const binding = opts.binding === undefined ? bindingContract(projectRoot) : opts.binding;
+  const abs = resolve(projectRoot, given);
+  const rel = toPosix(relative(projectRoot, abs));
+  // A path outside the project is judged by its own names against the always list (no contract covers it).
+  const nameOf = (r: string, a: string) => (escapes(r) ? { name: toPosix(a).replace(/^\/+/, ""), contract: null } : { name: r, contract: binding });
+  const given0 = nameOf(rel, abs);
+  if (escapes(rel) && !opts.outside) return { refused: { kind: "outside", throughLink: false } };
+  // The path as written is judged before the disk is asked whether it exists, so the answer is the same on every
+  // disk: on a case-sensitive one (Linux's) `.ENV` is not `.env`'s file and may not exist, and an off-limits path
+  // refused as "does not exist" would also tell the caller whether an off-limits file is there.
+  const why = readOffLimits(given0.name, given0.contract);
+  if (why) return { refused: { kind: "off-limits", why } };
+  if (!existsSync(abs)) return { refused: { kind: "missing" } };
+  // Real paths as the disk spells them: realpathSync keeps the spelling it is given, and macOS opens `.MCP.JSON` or
+  // `.mcp.jſon` as `.mcp.json`.
+  const realRoot = realpathSync.native(projectRoot);
+  const real = realpathSync.native(abs);
+  const realRel = toPosix(relative(realRoot, real));
+  if (escapes(realRel) && !opts.outside) return { refused: { kind: "outside", throughLink: true } };
+  const st = statSync(real);
+  if (!st.isFile()) return { refused: { kind: "not-a-file" } };
+  // And the file it reaches through links, once it is known to be one, and every other name it has.
+  const reached = nameOf(realRel, real);
+  if (reached.name !== given0.name) {
+    const whyReached = readOffLimits(reached.name, reached.contract);
+    if (whyReached) return { refused: { kind: "off-limits", why: whyReached, via: reached.name } };
+  }
+  if (st.nlink > 1 && sameFileAsOffLimits(realRoot, st.dev, st.ino, binding)) return { refused: { kind: "hard-link" } };
+  return { abs, real, st };
+}
+
 /**
  * Fill in `content` for every slice that arrived without it. Reads relative to `projectRoot`, and only a file the read
  * rule lets a model see: a path that escapes the project, as written or through a symbolic link (the real path is judged
@@ -233,42 +467,29 @@ export function sliceSection(text: string, heading: string): string | null {
  */
 export function hydrateInputs(packet: TaskPacket, projectRoot: string): { packet: TaskPacket; hydrated: string[] } {
   const hydrated: string[] = [];
-  let realRoot: string | null = null;
   let binding: { contract: any; runId: string | null } | null | undefined;
   const inputs: FileSlice[] = packet.inputs.map((s) => {
     if (typeof s.content === "string") return s;
-    const abs = resolve(projectRoot, s.path);
-    const rel = toPosix(relative(projectRoot, abs));
-    if (escapes(rel)) {
-      throw new Error(`execute_with_model: input slice "${s.path}" resolves outside project_root.`);
-    }
     if (binding === undefined) binding = bindingContract(projectRoot);
-    const offLimits = (r: string) => {
-      const why = readOffLimits(r, binding ?? null);
-      if (why) {
-        throw new Error(
-          `execute_with_model: input slice "${s.path}" is never sent to a model (${why}${r !== rel ? `, reached through a symbolic link as ${r}` : ""}). ` +
-            "Whether a model may read it is the person's decision: stop and tell the person which file the work needs and why.",
-        );
+    const read = modelReadOf(projectRoot, s.path, { binding });
+    if ("refused" in read) {
+      const r = read.refused;
+      const where = `execute_with_model: input slice "${s.path}"`;
+      switch (r.kind) {
+        case "outside": throw new Error(`${where} resolves outside project_root${r.throughLink ? " through a symbolic link" : ""}.`);
+        case "off-limits":
+          throw new Error(
+            `${where} is never sent to a model (${r.why}${r.via ? `, reached through a symbolic link as ${r.via}` : ""}). ` +
+              "Whether a model may read it is the person's decision: stop and tell the person which file the work needs and why.",
+          );
+        case "missing": throw new Error(`${where} does not exist under project_root (${projectRoot}).`);
+        case "not-a-file": throw new Error(`${where} is not a file.`);
+        case "hard-link": throw new Error(`${where} is never sent to a model: it is the same file as an off-limits one, under another name (a hard link).`);
       }
-    };
-    // The path as written is judged before the disk is asked whether it exists, so the answer is the same on every
-    // disk: on a case-sensitive one (Linux's) `.ENV` is not `.env`'s file and may not exist, and an off-limits path
-    // refused as "does not exist" would also tell the caller whether an off-limits file is there.
-    offLimits(rel);
-    if (!existsSync(abs)) {
-      throw new Error(`execute_with_model: input slice "${s.path}" does not exist under project_root (${projectRoot}).`);
     }
-    realRoot ??= realpathSync(projectRoot);
-    const real = realpathSync(abs);
-    const realRel = toPosix(relative(realRoot, real));
-    if (escapes(realRel)) {
-      throw new Error(`execute_with_model: input slice "${s.path}" resolves outside project_root through a symbolic link.`);
-    }
-    if (!statSync(real).isFile()) throw new Error(`execute_with_model: input slice "${s.path}" is not a file.`);
-    // And the file it reaches through links, once it is known to be one.
-    if (realRel !== rel) offLimits(realRel);
+    const abs = read.abs;
     const text = readFileSync(abs, "utf8");
+    if (holdsPrivateKey(text)) throw new Error(`execute_with_model: input slice "${s.path}" is never sent to a model: it holds a private key.`);
     let content: string;
     if (s.lines) content = sliceLines(text, s.lines);
     else if (s.section) {
@@ -807,48 +1028,26 @@ export interface ShellResult {
  * started outlives it; and without the vendor credentials the server holds (acceptance.ts commandEnv), because a
  * check runs the project's own code and its failing output goes into the next attempt's prompt. Once the command
  * ends, whatever it left running in its group is stopped too. Its output (stdout and stderr, in the order written) is
- * kept as a tail while it streams.
+ * kept as a tail while it streams. The command runs under the check supervisor (checkSupervisor.ts), which keeps the
+ * limit and ends the command's group at once when this server ends, however it ends. Its exit code and signal are
+ * those of an end before the limit; one the limit stopped is reported as timed out, with neither.
  */
 export function runShell(cmd: string, cwd: string, timeoutSec: number): Promise<ShellResult> {
-  return new Promise((done) => {
-    const t0 = Date.now();
-    let kept = Buffer.alloc(0);
-    const keep = (b: Buffer) => {
-      kept = Buffer.concat([kept, b]);
-      if (kept.length > OUTPUT_KEEP_BYTES) kept = kept.subarray(kept.length - OUTPUT_KEEP_BYTES);
-    };
-    let child: ChildProcess;
-    try {
-      child = spawn("/bin/sh", ["-c", cmd], { cwd, env: commandEnv(process.env), stdio: ["ignore", "pipe", "pipe"], detached: true });
-    } catch (e: any) {
-      done({ code: null, signal: null, timedOut: false, output: "", ms: Date.now() - t0, error: e?.message ?? String(e) });
-      return;
-    }
-    let code: number | null = null;
-    let signal: string | null = null;
-    let exited = false, timedOut = false, finished = false;
-    let error: string | undefined;
-    const killGroup = () => { try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* the group is gone */ } };
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      done({ code, signal, timedOut, output: kept.toString("utf8"), ms: Date.now() - t0, ...(error ? { error } : {}) });
-    };
-    const timer = setTimeout(() => {
-      if (!exited) timedOut = true;
-      killGroup();
-      // Whatever still holds the output open (something that left the group) no longer delays the verdict.
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      finish();
-    }, Math.min(Math.max(1, timeoutSec) * 1000, MAX_TIMER_MS));
-    child.stdout!.on("data", keep);
-    child.stderr!.on("data", keep);
-    child.on("error", (e) => { error = e.message; finish(); });
-    child.on("exit", (c, s) => { exited = true; code = c; signal = s; killGroup(); });
-    child.on("close", finish);
-  });
+  const t0 = Date.now();
+  let kept = Buffer.alloc(0);
+  const keep = (b: Buffer) => {
+    kept = Buffer.concat([kept, b]);
+    if (kept.length > OUTPUT_KEEP_BYTES) kept = kept.subarray(kept.length - OUTPUT_KEEP_BYTES);
+  };
+  const limitMs = Math.min(Math.max(1, timeoutSec) * 1000, MAX_TIMER_MS);
+  return runSupervised({ shell: "/bin/sh", command: cmd, cwd, env: commandEnv(process.env), limitMs, onOutput: keep, stopGroupOnExit: true }).then((r) => ({
+    code: r.exited ? r.code : null,
+    signal: r.exited ? r.signal : null,
+    timedOut: r.timedOut && !r.exited,
+    output: kept.toString("utf8"),
+    ms: Date.now() - t0,
+    ...(r.error ? { error: r.error } : {}),
+  }));
 }
 
 /**
@@ -1912,7 +2111,8 @@ export async function runApplyLoop(deps: ApplyLoopDeps): Promise<ApplyOutcome> {
       // typing events can say only whether the answer was usable, because its checks run later as their own stage; a
       // brownfield attempt is judged here, before its event, so its event carries the full verdict and a rollup of
       // successful calls never counts an answer its file's checks refused.
-      failure = verify.ok ? "" : `verify failed: ${verify.failed_command} (${exitText(verify)})\n${verify.output_tail ?? ""}`;
+      // The check's output goes into the typist's next attempt: the read rule's text never goes with it.
+      failure = verify.ok ? "" : withoutProtectedText(projectRoot, `verify failed: ${verify.failed_command} (${exitText(verify)})\n${verify.output_tail ?? ""}`);
       settle(verify.ok, failure, attemptReason);
       if (verify.ok) return finish("applied");
       if (editsBase !== null) writeFileSync(abs, editsBase, "utf8");

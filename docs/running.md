@@ -61,13 +61,22 @@ The session pauses at each HITL gate; approve or redirect at each one.
 Best when you want to script the run, redirect all output to a file, or run overnight without babysitting.
 
 ```bash
-claude --print "/mmo:pass --auth=vendor --policy=opus-only --run-id=pass1 examples/workforce-ops/brief.md" \
-  --permission-mode acceptEdits \
+export CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-7   # the policy's Claude model; the run-start check needs it in both auth modes
+claude --print "/mmo:pass --auth=vendor --gates=auto-approve --policy=opus-only --run-id=pass1 examples/workforce-ops/brief.md" \
+  --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
   --output-format stream-json --verbose \
   > examples/workforce-ops/passes/pass1/live-run.log
 ```
 
-Every HITL gate auto-approves. The full transcript lands in `live-run.log`.
+A headless run cannot answer a permission prompt, so everything it needs must be allowed up front: shell commands
+(the plugin's own scripts through `node`, such as the run-start check, telemetry and the run's summary, and the
+generated project's install and tests through `npm`), reading the plugin's own instruction files, and the plugin's
+server tools (`mcp__plugin_mmo_model-dispatch`: pre-flight, dispatch, the thinking steps). The `--allowedTools` list
+above allows those three, and with `Bash` any other shell command the session decides to run, so give a headless run
+a folder made for it. With `acceptEdits` alone the run stops at its first step, the run-start check ("This command
+requires approval"), before anything is spent.
+
+With `--gates=auto-approve` the orchestrator approves every HITL gate itself, each logged as `gate.resolved response=approved by=auto-approve`, and writes an assumption into `requirements.md` wherever the brief is unclear; the full transcript lands in `live-run.log`. Without the flag the run stops at Gate 1, asking the gate's question; a script answers it with `claude --print --resume <session id> "approved"` (the same flags), and the run goes on to the next gate.
 
 ### How to choose
 
@@ -80,7 +89,7 @@ Every HITL gate auto-approves. The full transcript lands in `live-run.log`.
 
 ### Arguments
 
-- `--auth=<vendor|estimated>` — **required**. `vendor` dispatches every typed file and every thinking step the policy routes to another vendor via the MCP server, so telemetry carries real vendor-reported tokens (needs `ANTHROPIC_API_KEY`); `estimated` uses a char-count heuristic for direct-tier calls (works on a Claude Code subscription without an API key). Both require `CLAUDE_CODE_SUBAGENT_MODEL` set before `claude` launches (from a terminal, exported or in the `env` block of `<project>/.claude/settings.local.json`; from the desktop app, in the `env` block of `~/.claude/settings.json`, since the app ignores project settings files), set to the policy's driver model — the driver subagents execute whatever that variable names, and the orchestrator's run-start check stops the run (printing where to set it) when it is unset or disagrees with what the policy prices. See [setup.md](setup.md#anthropic) and [methodology.md](methodology.md).
+- `--auth=<vendor|estimated>` — **required**. `vendor` dispatches every typed file and every thinking step the policy routes to another vendor via the MCP server, so telemetry carries real vendor-reported tokens (`ANTHROPIC_API_KEY` is needed only when the policy has a model the server calls through the Anthropic API (`adapter: builtin-anthropic`, or a `claude-cli` model with its own `auth.env`); pre-flight names that model and halts when the key is missing); `estimated` uses a char-count heuristic for direct-tier calls (works on a Claude Code subscription without an API key). Both require `CLAUDE_CODE_SUBAGENT_MODEL` set before `claude` launches (from a terminal, exported or in the `env` block of `<project>/.claude/settings.local.json`; from the desktop app, in the `env` block of `~/.claude/settings.json`, since the app ignores project settings files), set to the policy's driver model — the driver subagents execute whatever that variable names, and the orchestrator's run-start check stops the run (printing where to set it) when it is unset or disagrees with what the policy prices. See [setup.md](setup.md#anthropic) and [methodology.md](methodology.md).
 - `--policy=<name>` — routing policy. Resolves in this order: the flag, then `.sdlc/project.json.default_policy` written by `/mmo:setup` or `/mmo:policy change`, then `opus-plus-flash`. Any file under `plugin/config/policies/*.yaml` is a valid name — that listing is the authoritative preset set (a wrong name makes the loader print the live list). The directory sits inside the installed plugin, so a custom YAML dropped there is wiped by every `/plugin update`; put a per-repo policy in `<project root>/routing-policy.yaml` instead, which the loader prefers automatically.
 - `--study=<id>` — case-study identifier. Defaults to `workforce-ops`. Change this whenever you run the pipeline on a brief other than the shipped one, so telemetry and packets stay grouped by project. Output lands in `examples/<study-id>/passes/<run-id>/`.
 - `--run-id=<id>` — becomes the pass's directory name under `examples/<study-id>/passes/`. Any string works. Defaults to `pass1`.
@@ -126,8 +135,9 @@ Steps:
    Or headless:
 
    ```bash
-   claude --print "/mmo:pass --auth=vendor --study=my-project --run-id=pass1 my-brief.md" \
-     --permission-mode acceptEdits \
+   export CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-7   # the Claude model of the project's default policy (opus-plus-flash)
+   claude --print "/mmo:pass --auth=vendor --gates=auto-approve --study=my-project --run-id=pass1 my-brief.md" \
+     --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
      --output-format stream-json --verbose \
      > examples/my-project/passes/pass1/live-run.log
    ```
@@ -155,7 +165,7 @@ The orchestrator pauses at four points during the run:
 - **Gate 3** — after `security_review.md` is written
 - **Gate 4** — after the final report
 
-In interactive mode each gate prints the artifact and waits for your input; approve to continue or provide direction to redirect the phase. In headless mode all four gates auto-approve.
+In interactive mode each gate prints the artifact and waits for your input; approve to continue or provide direction to redirect the phase. In headless mode, with `--gates=auto-approve`, all four gates are approved by the orchestrator itself, and the run's log records each as `by=auto-approve`.
 
 ## After the pass finishes
 
@@ -187,10 +197,12 @@ Each pass writes to a separate directory under `examples/<study-id>/passes/`. To
 
 ```bash
 # headless form
-claude --print "/mmo:pass --auth=vendor --policy=opus-only --run-id=baseline examples/workforce-ops/brief.md" \
+claude --print "/mmo:pass --auth=vendor --gates=auto-approve --policy=opus-only --run-id=baseline examples/workforce-ops/brief.md" \
+  --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
   --output-format stream-json --verbose > examples/workforce-ops/passes/baseline/live-run.log
 
-claude --print "/mmo:pass --auth=vendor --policy=opus-plus-flash --run-id=multi-model examples/workforce-ops/brief.md" \
+claude --print "/mmo:pass --auth=vendor --gates=auto-approve --policy=opus-plus-flash --run-id=multi-model examples/workforce-ops/brief.md" \
+  --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \
   --output-format stream-json --verbose > examples/workforce-ops/passes/multi-model/live-run.log
 
 node tools/report.mjs examples/workforce-ops/passes/baseline

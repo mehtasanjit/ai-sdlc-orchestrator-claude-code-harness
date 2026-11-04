@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The executor guard, two hooks in one file:
+ * The executor guard, three hooks in one file:
  *
  *   post — PostToolUse on execute_stage: records the calling helper's agent_id (Claude Code sends it on
  *          every hook call made inside a helper) in <project>/.sdlc/local/executor-agents.json, with the
@@ -15,25 +15,53 @@
  *          folder is the one the run named, not any `.sdlc` folder, so a `.sdlc` inside the product is
  *          not writable; a code folder inside the record folder (/mmo:pass writes its product to
  *          <record folder>/src) is not writable either.
+ *   preflight — PostToolUse on preflight_dispatch: records the chat's latest pre-flight route table (its
+ *          thinking rows), and pre refuses a plugin orchestrator's delegation of the architect or a
+ *          reviewer (greenfield's or brownfield's) whose phase that table gives to a Gemini thinking step
+ *          (`engine, thinking`): that step is run_thinking_step's. A phase the table gives the session
+ *          passes, as does every other delegation.
  *
  * Why: diagnosis helpers and the orchestrator's own edits do the typist's work on Opus, outside the
- * policy's routing. The playbook forbids both; this makes it hold.
+ * policy's routing, and a Claude helper hired for a phase the policy gives to Gemini quietly turns a
+ * Gemini-planned run into a Claude-planned one. The playbook forbids all three; this makes it hold.
  *
- * Scope: only an orchestrator that called execute_stage. A brownfield run never does, so brownfield is
- * untouched; the main chat has no agent_id and is never touched. Fails open: an unreadable marker, a
- * missing field or any error allows the call — the guard never breaks a session.
+ * Scope: only an orchestrator that called execute_stage, for the hires and writes of an executor run (a
+ * brownfield run never calls it, so brownfield is untouched there); the route table, for any plugin
+ * orchestrator in the chat whose pre-flight recorded it, greenfield's and brownfield's. The main chat has
+ * no agent_id and is never touched. Fails open: an unreadable marker, a missing field or any error allows
+ * the call — the guard never breaks a session.
  */
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, isAbsolute, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { pipelineAgent } from "./foreground-helpers.mjs";
+import { fromPluginOrchestrator, pipelineAgent } from "./foreground-helpers.mjs";
 
 // A greenfield executor run's helpers. The foreground rule's list (foreground-helpers.mjs) also holds the brownfield
 // reviewers' copies, which a greenfield run never hires, so this guard keeps its own list.
 const EXECUTOR_HELPERS = new Set(["orchestrator", "architect", "senior-reviewer", "security-reviewer", "discovery"]);
 
-/** Where the executor-run orchestrators are recorded, relative to the project folder. */
+/**
+ * Where the guard keeps what it judges by, relative to the project folder: the executor-run orchestrators
+ * (`agents`, by agent id) and each chat's latest pre-flight route table (`routes`, by session id).
+ */
 export const MARKER = join(".sdlc", "local", "executor-agents.json");
+
+/**
+ * The helpers a thinking step stands in for, by the phase each serves: src/thinking.ts THINKING_ROLES, where each
+ * of these roles runs its own agent's instructions (tools/test/executor-guard.test.mjs holds the two in step).
+ * Requirements has no helper (the orchestrator writes it), and discovery is always the session's helper.
+ */
+export const THINKING_HELPERS = Object.freeze({
+  architect: "architecture_design",
+  "brownfield-architect": "architecture_design",
+  "senior-reviewer": "senior_code_review",
+  "brownfield-senior-reviewer": "senior_code_review",
+  "security-reviewer": "security_review",
+  "brownfield-security-reviewer": "security_review",
+});
+
+/** The chats whose route table is kept: the newest ones. */
+const ROUTES_KEPT = 20;
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 function readMarker(projectDir) {
@@ -66,7 +94,68 @@ export function record(input, projectDir) {
   writeFileSync(file, JSON.stringify(m, null, 2) + "\n");
 }
 
+/**
+ * An MCP tool's reply as a PostToolUse hook receives it: one JSON text, a list of content blocks, or an object
+ * holding them (as lib/handoff.mjs toolReceipt reads it); null when it holds no JSON object.
+ */
+function toolReply(resp) {
+  const parse = (t) => { try { const v = JSON.parse(t); return v && typeof v === "object" ? v : null; } catch { return null; } };
+  const text = (list) => { const t = list.find((c) => c && c.type === "text" && typeof c.text === "string"); return t ? parse(t.text) : null; };
+  if (typeof resp === "string") return parse(resp);
+  if (Array.isArray(resp)) return text(resp);
+  if (resp && typeof resp === "object") return Array.isArray(resp.content) ? text(resp.content) : resp;
+  return null;
+}
+
+/**
+ * PostToolUse on preflight_dispatch: keep the chat's latest pre-flight route table, its thinking rows (who runs each
+ * phase, on which model). Kept by chat (session_id), not by agent: the orchestrator that hires the helpers is
+ * invoked again after each gate, under another agent id, and its run's pre-flight came once, at the start. A
+ * pre-flight that stopped its run keeps nothing for the chat; a reply that cannot be read changes nothing.
+ */
+export function recordRoutes(input, projectDir) {
+  const sid = typeof input?.session_id === "string" && input.session_id ? input.session_id : null;
+  if (!sid) return;
+  const reply = toolReply(input.tool_response);
+  if (!reply || !("ok" in reply)) return;
+  const m = readMarker(projectDir);
+  m.routes = m.routes && typeof m.routes === "object" && !Array.isArray(m.routes) ? m.routes : {};
+  if (reply.ok === true && Array.isArray(reply.route_table)) {
+    const thinking = {};
+    for (const r of reply.route_table) {
+      if (r && Object.values(THINKING_HELPERS).includes(r.phase)) thinking[r.phase] = { who: String(r.who ?? ""), model: String(r.model ?? "") };
+    }
+    m.routes[sid] = { at: new Date().toISOString(), run_id: typeof input.tool_input?.run_id === "string" ? input.tool_input.run_id : null, thinking };
+  } else {
+    delete m.routes[sid];
+  }
+  const newest = Object.entries(m.routes).sort((a, b) => String(b[1]?.at ?? "").localeCompare(String(a[1]?.at ?? ""))).slice(0, ROUTES_KEPT);
+  m.routes = Object.fromEntries(newest);
+  const file = join(projectDir, MARKER);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(m, null, 2) + "\n");
+}
+
 const deny = (why) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } });
+
+/**
+ * A plugin orchestrator's delegation of a helper whose phase the chat's route table gives to a Gemini thinking step
+ * (`engine, thinking`): refused, naming run_thinking_step; null for anything else (a session route, another helper,
+ * no table, or a caller that is not one of this plugin's orchestrators).
+ */
+function thinkingStepRefusal(input, marker, projectDir) {
+  if (!fromPluginOrchestrator(input, projectDir)) return null;
+  const helper = pipelineAgent(input.tool_input?.subagent_type)?.name;
+  const phase = THINKING_HELPERS[helper];
+  if (!phase) return null;
+  const route = marker.routes?.[input.session_id]?.thinking?.[phase];
+  if (route?.who !== "engine, thinking") return null;
+  return deny(
+    `This run's route table gives ${phase} to ${route.model} through the server (engine, thinking), so the ${helper} ` +
+      `step runs there: call run_thinking_step with role "${helper}" instead of delegating the ${helper} helper, which ` +
+      `would run it on Claude. Nothing was started.`
+  );
+}
 
 /**
  * Where a path really is: the real path of its nearest existing folder with the rest added back. A file
@@ -108,10 +197,15 @@ function inRecord(recordDir, codeDirs, p) {
 export function decide(input, projectDir) {
   const id = typeof input?.agent_id === "string" && input.agent_id ? input.agent_id : null;
   if (!id) return null;
-  const agent = readMarker(projectDir).agents?.[id];
-  if (!agent) return null;
+  const marker = readMarker(projectDir);
   const tool = String(input.tool_name ?? "");
   const ti = input.tool_input ?? {};
+  if (tool === "Agent" || tool === "Task") {
+    const wrongDoor = thinkingStepRefusal(input, marker, projectDir);
+    if (wrongDoor) return wrongDoor;
+  }
+  const agent = marker.agents?.[id];
+  if (!agent) return null;
   if (tool === "Agent" || tool === "Task") {
     if (EXECUTOR_HELPERS.has(pipelineAgent(ti.subagent_type)?.name)) return null;
     return deny(`In a greenfield executor run the orchestrator hires only the pipeline's own helpers. Read the failing check's output yourself, then send each file to change to execute_stage with stage "repair" (failures): the typist the run's policy routes fixes to changes it. Nothing was started.`);
@@ -138,6 +232,7 @@ if (import.meta.url === entry) {
     const input = JSON.parse(readFileSync(0, "utf8") || "null");
     const projectDir = process.env.CLAUDE_PROJECT_DIR || (typeof input?.cwd === "string" ? input.cwd : process.cwd());
     if (process.argv[2] === "post") record(input, projectDir);
+    else if (process.argv[2] === "preflight") recordRoutes(input, projectDir);
     else { const out = decide(input, projectDir); if (out) process.stdout.write(JSON.stringify(out)); }
   } catch { /* fail open: the guard never breaks a session */ }
 }

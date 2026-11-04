@@ -41,7 +41,7 @@ At the Claude Code prompt:
 The command takes no arguments — it asks. Two questions:
 
 1. **Which brief?** Pick the shipped **quick-demo** brief (a one-endpoint ping service on Express, no database). It's the cheapest and fastest option and the best way to see the pipeline end to end without waiting for large phases.
-2. **Which auth mode?** Pick `vendor` — every LLM call is dispatched through the MCP server so telemetry carries real, reconcilable token counts. Requires `ANTHROPIC_API_KEY`.
+2. **Which auth mode?** Pick `vendor` — every typed file and every thinking step the policy routes to another vendor is dispatched through the MCP server, so telemetry carries real, reconcilable token counts. `ANTHROPIC_API_KEY` is needed only when the policy has a model the server calls through the Anthropic API (`adapter: builtin-anthropic`, or a `claude-cli` model with its own `auth.env`); pre-flight names that model and halts when the key is missing.
 
 Before any money is spent, the orchestrator shows you the phase list and the model each phase will run on. Confirm to proceed.
 

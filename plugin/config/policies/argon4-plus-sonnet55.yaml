@@ -21,11 +21,15 @@
 # and both reviewers run on Argon through run_thinking_step: the helper's own
 # instructions, read-only tools that apply the engine's read rule, and hand-in tools that
 # run the Claude helper's own checks piece by piece. A step that cannot finish within
-# thinking_timeout_sec (default four hours of its own work) stops the run; no other model
+# thinking_timeout_sec (default four hours of its own work), or that answers three reminders
+# in a row of what it owes without progress, stops the run; no other model
 # takes it over. Discovery (before Gate 0), the orchestrator's own turns and the gates run on
 # session_model, which the driver check pins (CLAUDE_CODE_SUBAGENT_MODEL) in both auth modes. Versions up to 3 of
 # this policy ran under plugins before 0.10.0, where the session's own model planned and
 # reviewed whatever the rules said; version 4 keeps those runs apart in telemetry.
+# A thinking step goes back to Claude by changing one line, its phase's rule to
+# `use: session_model` (for example `- when: { phase: architecture_design }` with
+# `use: session_model`): the step then runs in the session on session_model, and typing is unchanged.
 version: 4
 name: argon4-plus-sonnet55
 
@@ -54,7 +58,8 @@ models:
     worker_timeout_sec: 540
     failover_locations: [us, eu]  # a refused or held call carries on at us, then eu, billed +10% there
     # No `reasoning:`: every typist runs at low effort (executor/tools.ts
-    # TYPIST_EFFORT), so a tier here would read as a setting and change nothing.
+    # TYPIST_EFFORT) and every thinking step at high (AntigravityWorkerAdapter.ts
+    # THINKING_STEP_LEVEL), so a tier here would read as a setting and change nothing.
     # No max_output_tokens_absolute — agent sessions manage their own per-turn
     # limits.
 

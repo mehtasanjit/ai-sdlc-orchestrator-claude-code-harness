@@ -258,8 +258,14 @@ export interface BatchDeps {
  * stays silent past its idle limit and a batch of slow typists can run that long. Nothing is sent when the caller
  * asked for no progress (no token). Await stop() when the batch ends: it waits for the messages still being sent, so
  * the call's answer never overtakes its last progress message (a client stops listening once the answer arrives).
+ * `heartbeat` words the message between settlements, for a call that is not typing packets (a thinking step).
  */
-export function batchProgress(progress: ProgressChannel | undefined, total: number, heartbeatMs = HEARTBEAT_MS) {
+export function batchProgress(
+  progress: ProgressChannel | undefined,
+  total: number,
+  heartbeatMs = HEARTBEAT_MS,
+  heartbeat: (done: number, total: number) => string = (done, total) => `still typing: ${done} of ${total} packets settled`,
+) {
   const token = progress?.token;
   let done = 0;
   const pending = new Set<Promise<void>>();
@@ -268,7 +274,7 @@ export function batchProgress(progress: ProgressChannel | undefined, total: numb
     const p: Promise<void> = progress!.send({ progressToken: token, progress: done, total, message }).catch(() => {}).finally(() => pending.delete(p));
     pending.add(p);
   };
-  const timer = token !== undefined ? setInterval(() => say(`still typing: ${done} of ${total} packets settled`), heartbeatMs) : null;
+  const timer = token !== undefined ? setInterval(() => say(heartbeat(done, total)), heartbeatMs) : null;
   return {
     settled(item: { id: string; status: string }, n: number, _total?: number) {
       done = n;

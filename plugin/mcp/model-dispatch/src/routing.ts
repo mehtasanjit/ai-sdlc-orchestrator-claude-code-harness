@@ -18,12 +18,34 @@ import { existsSync } from "node:fs";
 import { utcDay } from "./prices.js";
 import { defaultAdcPath, geminiDispatchEndpoint, vertexSurchargeFactor } from "./adapters/geminiEndpoint.js";
 import type {
+  ModelConfig,
+  Phase,
   Policy,
   Rule,
   RoutingDecision,
   RuleMatcher,
   SelectOverrides,
 } from "./types.js";
+
+/**
+ * The phases a run's thinking steps take (thinking.ts THINKING_ROLES): run in the session on a Claude model, or as a
+ * thinking step on an agent leaf. The one list the route table (routeTable.ts) and the run-start check
+ * (scripts/driver-model-check.mjs, through the bundle) both read, so they cannot disagree on which phases pin the
+ * session (review: the check also counted discovery, plan_task_packets and change_plan, which the table does not route).
+ */
+export const THINKING_PHASES: readonly Phase[] = Object.freeze(["requirements_analysis", "architecture_design", "senior_code_review", "security_review"]);
+
+/**
+ * The rule target that gives a thinking phase to the session: `use: session_model` runs that phase in the session, on
+ * the Claude model the policy's `session_model` names (the session's own model when it names none), never on a model
+ * of `models:`. So routing a thinking phase back to Claude is one line in the policy, and adds no Claude leaf, which
+ * would also become every typed file's last attempt (executor/tools.ts fallbackLeaf). The loader accepts it only on a
+ * rule for THINKING_PHASES (policy.ts), and pickModel never returns it as a model.
+ */
+export const SESSION_MODEL_TARGET = "session_model";
+
+/** What a rule names: a model id, a slot, or SESSION_MODEL_TARGET. */
+const targetOf = (rule: Rule) => ("default" in rule ? rule.default : rule.use);
 
 export interface TaskContext {
   phase: string;
@@ -144,40 +166,75 @@ export function unreachableModelIds(
   return unreachable;
 }
 
+/**
+ * The rule that routes a context: the first rule that matches it, else the policy's (first) default rule, with its
+ * index (-1 for the default); null when neither exists.
+ */
+function ruleFor(ctx: TaskContext, policy: Policy): { rule: Rule; index: number } | null {
+  for (let i = 0; i < policy.rules.length; i++) {
+    const rule = policy.rules[i];
+    if ("default" in rule) continue; // defaults handled last
+    if (matches(rule.when, ctx)) return { rule, index: i };
+  }
+  const rule = policy.rules.find((r) => "default" in r);
+  return rule ? { rule, index: -1 } : null;
+}
+
+/** The decision a rule gives: its target resolved against the run's slot choices, and why. */
+function decisionFor(policy: Policy, rule: Rule, index: number, overrides: SelectOverrides): RoutingDecision {
+  const resolved = resolveNamed(policy, "default" in rule ? rule.default : rule.use, overrides);
+  return {
+    modelId: resolved.modelId,
+    reason: rule.reason ?? ("default" in rule ? "fell through to policy default" : `matched rule ${index} (${describeMatcher(rule.when)})`),
+    ruleIndex: index,
+    ...(resolved.selection ? { selection: resolved.selection } : {}),
+  };
+}
+
 export function pickModel(
   ctx: TaskContext,
   policy: Policy,
   overrides: SelectOverrides = {}
 ): RoutingDecision {
-  for (let i = 0; i < policy.rules.length; i++) {
-    const rule = policy.rules[i];
-    if ("default" in rule) continue; // defaults handled last
-    if (matches(rule.when, ctx)) {
-      const resolved = resolveNamed(policy, rule.use, overrides);
-      return {
-        modelId: resolved.modelId,
-        reason: rule.reason ?? `matched rule ${i} (${describeMatcher(rule.when)})`,
-        ruleIndex: i,
-        ...(resolved.selection ? { selection: resolved.selection } : {}),
-      };
-    }
+  const hit = ruleFor(ctx, policy);
+  if (!hit) {
+    throw new Error(
+      `Policy '${policy.name}' has no rule matching ${JSON.stringify(ctx)} and no default rule.`
+    );
   }
-  // Fall through to default
-  for (let i = 0; i < policy.rules.length; i++) {
-    const rule = policy.rules[i];
-    if ("default" in rule) {
-      const resolved = resolveNamed(policy, rule.default, overrides);
-      return {
-        modelId: resolved.modelId,
-        reason: rule.reason ?? "fell through to policy default",
-        ruleIndex: -1,
-        ...(resolved.selection ? { selection: resolved.selection } : {}),
-      };
-    }
+  if (targetOf(hit.rule) === SESSION_MODEL_TARGET) {
+    throw new Error(
+      `Policy '${policy.name}' rule ${hit.index} gives ${ctx.phase} to the session (use: session_model): the session runs ` +
+        `that step itself, on its own Claude model, so no model of the policy is routed for it.`
+    );
   }
-  throw new Error(
-    `Policy '${policy.name}' has no rule matching ${JSON.stringify(ctx)} and no default rule.`
-  );
+  return decisionFor(policy, hit.rule, hit.index, overrides);
+}
+
+/** A thinking phase the session runs: its Claude helper (or, for requirements, the orchestrator) does the step. */
+export interface SessionRoute {
+  session: true;
+  reason: string;
+  /** The rule that gives the phase to the session (use: session_model), or -1 when no rule names it. */
+  ruleIndex: number;
+}
+
+/** Why the session runs a thinking phase that no rule names. */
+export const NO_RULE_REASON = "no rule names this phase; the session's helper runs it as before";
+
+/**
+ * Where a thinking step goes (a THINKING_PHASES context, as thinking.ts routes it): the model pickModel names, or the
+ * session, when the rule that matches says `use: session_model` (the reason is the rule's own, else "the policy's
+ * rule"), or when no rule matches and the policy has no default. A thinking phase was the session's before thinking
+ * steps followed the policy, so a policy that routes only typing keeps it there, instead of failing pre-flight with the
+ * routing's "no rule matching" (review). The route table, run_thinking_step and the run-start check route a thinking
+ * phase with this, so the three agree; typing goes through pickModel, which still refuses a context nothing routes.
+ */
+export function routeThinking(ctx: TaskContext, policy: Policy, overrides: SelectOverrides = {}): RoutingDecision | SessionRoute {
+  const hit = ruleFor(ctx, policy);
+  if (!hit) return { session: true, reason: NO_RULE_REASON, ruleIndex: -1 };
+  if (targetOf(hit.rule) === SESSION_MODEL_TARGET) return { session: true, reason: hit.rule.reason ?? "the policy's rule", ruleIndex: hit.index };
+  return decisionFor(policy, hit.rule, hit.index, overrides);
 }
 
 function matches(matcher: RuleMatcher, ctx: TaskContext): boolean {
@@ -285,8 +342,21 @@ export function simulatePolicyCost(
   const priceWarnings = new Set<string>();
   let total = 0;
   for (const ev of events) {
-    const decision = pickModel(ev, policy, overrides);
-    const model = policy.models.find((m) => m.id === decision.modelId);
+    // A phase its rule gives to the session (use: session_model) runs on the session's own Claude model: it is priced at
+    // the policy's session_model, and listed as unpriced when the policy names none, since that model is not known.
+    const hit = ruleFor(ev, policy);
+    const toSession = hit !== null && targetOf(hit.rule) === SESSION_MODEL_TARGET;
+    if (toSession && !policy.session_model) {
+      const reason = "the policy names no session_model, so the session's own model is not known";
+      const key = `${SESSION_MODEL_TARGET}\u0000${reason}`;
+      const entry = unpriced.get(key) ?? { model_id: SESSION_MODEL_TARGET, model_name: "the session's own model", reason, events: 0 };
+      entry.events++;
+      unpriced.set(key, entry);
+      continue;
+    }
+    const model: ModelConfig | undefined = toSession
+      ? { id: SESSION_MODEL_TARGET, adapter: "builtin-anthropic", model_name: policy.session_model as string }
+      : policy.models.find((m) => m.id === pickModel(ev, policy, overrides).modelId);
     if (!model) continue;
     // The effective price on the event's own day, exactly as the live
     // dispatch priced it: the dated list, or the policy block under

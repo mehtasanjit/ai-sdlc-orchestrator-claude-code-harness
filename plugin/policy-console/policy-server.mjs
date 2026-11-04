@@ -262,6 +262,10 @@ function summarizePolicy(id, policy, headerComment) {
     desc: headerComment || `${policy.models.length} models across ${policy.rules.length} routing rules.`,
     models: policy.models,
     select: policy.select,
+    // The two policy-level settings for thinking steps, which the console does not edit: a custom policy keeps the
+    // base's (customBase), and the generated YAML shows them. null when the base sets none.
+    session_model: policy.session_model ?? null,
+    thinking_timeout_sec: policy.thinking_timeout_sec ?? null,
     routing,
     thinking,
     intentOverrides: intentPhaseOverrides(policy),
@@ -283,6 +287,28 @@ function loadAllPolicySummaries() {
 }
 
 // ── build (mirrors lib/buildPolicy.ts) ────────────────────────────────
+
+/**
+ * What a custom policy keeps of its base policy whatever the console edits: the version, the select slots, the rules
+ * the console does not show, and the two policy-level settings for thinking steps, `session_model` (the Claude model
+ * the session runs on) and `thinking_timeout_sec` (a thinking step's work budget). The save handler and the preview
+ * both build from it. Review: a policy customised from a Gemini preset lost session_model, so its run-start check
+ * pinned nothing and the session ran on whatever model it was on.
+ */
+function customBase(base) {
+  return {
+    version: base.version,
+    select: base.select,
+    session_model: base.session_model,
+    thinking_timeout_sec: base.thinking_timeout_sec,
+    structural: {
+      codegenTaskTypes: codegenTaskTypes(base),
+      debugEscalation: debugEscalationRule(base),
+      fallback: fallbackRule(base),
+      extraPhaseRules: extraPhaseRules(base),
+    },
+  };
+}
 
 function buildCustomPolicy(base, input) {
   const { select, structural } = base;
@@ -344,6 +370,8 @@ function buildCustomPolicy(base, input) {
   return {
     version: base.version,
     name: input.name,
+    ...(base.session_model !== undefined ? { session_model: base.session_model } : {}),
+    ...(base.thinking_timeout_sec !== undefined ? { thinking_timeout_sec: base.thinking_timeout_sec } : {}),
     models,
     ...(select ? { select } : {}),
     rules,
@@ -464,19 +492,7 @@ function savePolicy(input) {
   if (errors.length) return { ok: false, errors };
 
   const base = parseYaml(readPolicyRaw(input.baseId));
-  const policy = buildCustomPolicy(
-    {
-      version: base.version,
-      select: base.select,
-      structural: {
-        codegenTaskTypes: codegenTaskTypes(base),
-        debugEscalation: debugEscalationRule(base),
-        fallback: fallbackRule(base),
-        extraPhaseRules: extraPhaseRules(base),
-      },
-    },
-    { ...input, name },
-  );
+  const policy = buildCustomPolicy(customBase(base), { ...input, name });
   const yamlText = renderPolicyYaml(policy, input.baseId);
   const path = join(POLICIES_DIR, `${name}.yaml`);
 
@@ -589,19 +605,7 @@ const server = createServer(async (req, res) => {
         return;
       }
       const base = parseYaml(readPolicyRaw(payload.baseId));
-      const policy = buildCustomPolicy(
-        {
-          version: base.version,
-          select: base.select,
-          structural: {
-            codegenTaskTypes: codegenTaskTypes(base),
-            debugEscalation: debugEscalationRule(base),
-            fallback: fallbackRule(base),
-            extraPhaseRules: extraPhaseRules(base),
-          },
-        },
-        { ...payload, name },
-      );
+      const policy = buildCustomPolicy(customBase(base), { ...payload, name });
       sendJson(res, 200, { ok: true, yaml: renderPolicyYaml(policy, payload.baseId) });
       return;
     }

@@ -14,10 +14,10 @@
  * the earlier spec's results are moved under previous/, not deleted.
  */
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { moveAside, specKey, type Spec, type SpecCommand } from "../spec/store.js";
 import { insideCodeDir, RECEIPT_MAX_BYTES } from "./run.js";
+import { runSupervised } from "../checkSupervisor.js";
 // apply.ts imports commandEnv from here and this file imports commandDeniedBy from there: each uses the other's export
 // only when called, never while the modules load, so the cycle is safe.
 import { commandDeniedBy } from "../apply.js";
@@ -85,26 +85,22 @@ const ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
 const cut = (s: string) => (s.length > LINE_CHARS ? `${s.slice(0, LINE_CHARS)}…` : s);
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "command";
 
-/** Runs one command line in its own process group, output to a file; the group is killed at the limit. */
+/**
+ * Runs one command line in its own process group, output to a file; the group is killed at the limit. Once the command
+ * ends, whatever it left running in its group is stopped too, as a packet's checks are (apply.ts runShell): a command
+ * must finish by itself (the architect's acceptance list), and a server a failed check left running would answer the
+ * next round's requests with the code it was started on. The command runs under the check supervisor
+ * (checkSupervisor.ts), which keeps the limit and ends the command's group at once when this server ends, however it
+ * ends; the command writes into the log file itself, as before.
+ */
 function runCommand(run: string, cwd: string, env: Record<string, string>, logPath: string, timeoutMs: number): Promise<{ code: number | null; timedOut: boolean; seconds: number }> {
   return new Promise((done) => {
     const t0 = Date.now();
     const fd = openSync(logPath, "w");
-    const child = spawn("/bin/sh", ["-c", run], { cwd, env, stdio: ["ignore", fd, fd], detached: true });
-    let timedOut = false, finished = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
-    }, timeoutMs);
-    const finish = (code: number | null) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
+    void runSupervised({ shell: "/bin/sh", command: run, cwd, env, limitMs: timeoutMs, logFd: fd, stopGroupOnExit: true }).then((r) => {
       try { closeSync(fd); } catch { /* closed */ }
-      done({ code, timedOut, seconds: Math.round((Date.now() - t0) / 100) / 10 });
-    };
-    child.on("error", () => finish(null));
-    child.on("close", (code) => finish(code));
+      done({ code: r.error !== undefined ? null : r.code, timedOut: r.timedOut, seconds: Math.round((Date.now() - t0) / 100) / 10 });
+    });
   });
 }
 

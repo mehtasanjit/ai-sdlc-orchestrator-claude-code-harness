@@ -10,6 +10,7 @@
  * is logged with its arguments, process id and process group, so a test can read the flags the engine passed and
  * whether the process is still alive.
  */
+import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,12 +34,25 @@ const n = (existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0) + 1;
 writeFileSync(counter, String(n));
 const plan = cfg.runs[Math.min(n, cfg.runs.length) - 1] || {};
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
-log("start", { n, args });
+// A thinking run's tools config as the run found it (the server rewrites it between dispatches).
+const toolsConfig = flag("--tools-config") && existsSync(flag("--tools-config")) ? JSON.parse(readFileSync(flag("--tools-config"), "utf8")) : undefined;
+log("start", { n, args, toolsConfig });
 const outPath = flag("--out") || flag("--usage-file");
+// Files the worker writes while it runs, before it exits or hangs: a thinking worker keeps its summary after every status.
+for (const w of plan.writes || []) setTimeout(() => {
+  if (w.sidecar !== undefined && outPath) writeFileSync(outPath, JSON.stringify(w.sidecar));
+  if (w.summary !== undefined && flag("--summary-file")) writeFileSync(flag("--summary-file"), JSON.stringify(w.summary));
+}, w.atMs || 0);
 const finish = (which) => {
   const body = which === "term" ? plan.onTerm : plan;
+  // A thinking run that changes project files (touchProject: paths relative to the tools config's project_root).
+  if (body && Array.isArray(body.touchProject) && flag("--tools-config")) {
+    const root = JSON.parse(readFileSync(flag("--tools-config"), "utf8")).project_root;
+    for (const f of body.touchProject) writeFileSync(root + "/" + f, "changed by the run\n");
+  }
   if (body && body.receipt !== undefined && outPath && body.receipt !== null) writeFileSync(outPath, JSON.stringify(body.receipt));
   if (body && body.sidecar !== undefined && outPath && body.sidecar !== null) writeFileSync(outPath, JSON.stringify(body.sidecar));
+  if (body && body.summary !== undefined && body.summary !== null && flag("--summary-file")) writeFileSync(flag("--summary-file"), JSON.stringify(body.summary));
   if (body && body.stdout) process.stdout.write(body.stdout);
   if (body && body.stderr) process.stderr.write(body.stderr);
   log("exit", { which, code: body && body.exitCode !== undefined ? body.exitCode : 0 });
@@ -57,8 +71,12 @@ else setTimeout(() => finish("done"), plan.holdMs || 0);
 
 /**
  * Makes the stand-in. `runs[i]` is the i-th run's plan: {beats: [{atMs, hb}], holdMs (number or "forever"),
- * receipt, sidecar, stdout, stderr, exitCode, ignoreTerm, onTerm: {receipt|sidecar, exitCode}}; the last plan
- * repeats. `version` is what the version query prints (null: the SDK is not installed).
+ * receipt, sidecar, summary (a thinking worker's --summary-file), touchProject (project files a thinking run changes),
+ * writes: [{atMs, sidecar?, summary?}] (files written while it runs, as a thinking worker keeps its summary after every
+ * status), stdout, stderr, exitCode, ignoreTerm,
+ * onTerm: {receipt|sidecar, exitCode}}; the last plan
+ * repeats. `version` is what the version query prints (null: the SDK is not installed). A thinking run's start is
+ * logged with the tools config it found.
  */
 export function fakeWorkerPython({ runs = [{}], version = "0.1.22" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agy-fake-python-"));
@@ -85,6 +103,34 @@ export const flagValue = (args, name) => { const i = args.indexOf(name); return 
 /** Whether a process id is alive (signal 0 probes without signalling). */
 export function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
+}
+
+/** Whether any process is left in a process group (a worker leads its own). */
+export function groupAlive(pgid) {
+  try { process.kill(-pgid, 0); return true; } catch (e) { return e.code === "EPERM"; }
+}
+
+/**
+ * Stands in for the server: runs `code` (an ES module's body) in a Node process of its own until the command it starts
+ * has written its shell's process id to `pidFile`, then kills that process with SIGKILL, which it cannot see coming.
+ * Returns the command's process id, which is its process group's: the server starts each command in a group of its own.
+ */
+export async function serverKilledMidCommand(code, pidFile, { env = {}, limitMs = 15_000 } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "server-standin-"));
+  writeFileSync(join(dir, "server.mjs"), code);
+  const server = spawn(process.execPath, [join(dir, "server.mjs")], { env: { ...process.env, ...env }, stdio: "ignore" });
+  try {
+    let pid = 0;
+    for (const until = Date.now() + limitMs; !(pid > 0) && Date.now() < until; ) {
+      await new Promise((done) => setTimeout(done, 20));
+      try { pid = Number(readFileSync(pidFile, "utf8").trim()); } catch { /* not started yet */ }
+    }
+    if (!(pid > 0)) throw new Error(`the server's command never started (nothing in ${pidFile})`);
+    return pid;
+  } finally {
+    server.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** Runs `fn` with the given process environment variables set, then puts every one back. */

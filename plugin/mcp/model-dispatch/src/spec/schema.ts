@@ -16,8 +16,9 @@
  * re-send, while a longer line costs only its own tokens.
  *
  * The validator covers exactly the JSON Schema keywords these schemas use
- * (type, required, properties, additionalProperties: false, enum, minLength,
- * maxLength, pattern, items, minItems, maxItems, minimum, maximum). It is
+ * (type: object, array, string, integer or boolean; required, properties,
+ * additionalProperties: false, enum, minLength, maxLength, pattern, items,
+ * minItems, maxItems, minimum, maximum). It is
  * written here rather than pulled from a library because the server declares
  * no JSON Schema dependency, and its error messages name the exact path.
  */
@@ -181,6 +182,22 @@ export function shapeOf(schema: Schema): string {
   return String(schema.type);
 }
 
+/**
+ * One fix a repair round types from a failing run: execute_stage repair's `failures` entry (failureRepairs). The
+ * executor declares it, and a Gemini architect's acceptance fix is checked against it on arrival
+ * (scripts/thinking-tools.mjs write_acceptance_fix), so the two cannot drift.
+ */
+export const REPAIR_FAILURE_SCHEMA: Schema = {
+  type: "object",
+  properties: {
+    path: { type: "string", description: "The file to change, relative to code_dir." },
+    problem: { type: "string", description: "What fails: the test name and its error, verbatim." },
+    context_paths: { type: "array", items: { type: "string" }, description: "Files to show beside it, e.g. the failing test file (relative to code_dir)." },
+    new_file: { type: "boolean", description: "true when the fix needs a file that does not exist yet: path is then where to create it, relative to code_dir. A review finding that needs a new file comes back in not_routed; send it again here with new_file." },
+  },
+  required: ["path", "problem"],
+};
+
 /** One problem found by `validate`, with the JSON path it applies to. */
 export interface SchemaError {
   path: string;
@@ -227,5 +244,6 @@ export function validate(schema: Schema, value: unknown, path = ""): SchemaError
     if (schema.maximum !== undefined && value > schema.maximum) errors.push({ path: at, message: `must be ≤ ${schema.maximum}` });
     return errors;
   }
+  if (t === "boolean") return typeof value === "boolean" ? [] : [{ path: at, message: "must be true or false" }];
   throw new Error(`validate: unsupported schema type '${t}' at ${at}`);
 }

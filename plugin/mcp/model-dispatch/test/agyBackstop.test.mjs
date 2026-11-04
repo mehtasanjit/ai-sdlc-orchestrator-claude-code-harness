@@ -9,11 +9,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { alive, beat, fakeWorkerPython, withEnv } from "./agyFakes.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { alive, beat, fakeWorkerPython, groupAlive, withEnv } from "./agyFakes.mjs";
+import { NO_PYTHON, PYTHON, STANDIN, step } from "./agyStandin.mjs";
 
 const DIST = join(dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const { AgyTypist } = await import(join(DIST, "executor", "typists.js"));
@@ -166,6 +168,48 @@ test("the kill rule sends SIGTERM first: a worker that answers it with its recei
   }
 });
 
+// E-typist-server-gone. Review: a typist worker outlived its server: after the server was gone it went on with its call,
+// up to its own limits, its spend never recorded. The real typist worker and the SDK stand-in, under a server killed
+// with SIGKILL, which it cannot see coming.
+test("a typist worker ends with its server, however the server ends: it stops as the kill rule stops it, and its receipt is written", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "typist-server-gone-"));
+  // The call is out, billed so far, and never answered.
+  writeFileSync(join(dir, "script.json"), JSON.stringify({ sessions: [{ turns: [[{ at: 0, step: step.user() }, { at: 0.1, usage: BILLED }, { at: 0.1, hold: true }]] }] }));
+  writeFileSync(join(dir, "shared.txt"), "");
+  const log = join(dir, "standin.jsonl");
+  const python = join(dir, "python");
+  writeFileSync(python, `#!/bin/sh\nexport PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${JSON.stringify(STANDIN)} AGY_STANDIN_SCRIPT=${JSON.stringify(join(dir, "script.json"))} AGY_STANDIN_LOG=${JSON.stringify(log)}\nexec ${JSON.stringify(PYTHON)} "$@"\n`);
+  chmodSync(python, 0o755);
+  const scratch = join(dir, "tmp");
+  mkdirSync(scratch);
+  // The server: one typing call through the agent typist, as a stage runs it.
+  const server = join(dir, "server.mjs");
+  writeFileSync(server, [
+    `import { AgyTypist } from ${JSON.stringify(pathToFileURL(join(DIST, "executor", "typists.js")).href)};`,
+    `const typist = new AgyTypist(${JSON.stringify(FLASH)}, { effort: "LOW", maxModelCalls: 3, timeoutSec: 600, apiRetries: 6, apiRetryInitialMs: 2000 });`,
+    `await typist.type({ unit: { id: "u1", path: "a.txt" }, packet: { id: "u1", outputSchema: { type: "object" } }, framed: "brief", shared: "", sharedFile: ${JSON.stringify(join(dir, "shared.txt"))}, contract: "file", passId: "r" });`,
+  ].join("\n"));
+  const events = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const child = spawn(process.execPath, [server], { env: { ...process.env, GEMINI_WORKER_PYTHON: python, GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", TMPDIR: scratch }, stdio: "ignore" });
+  try {
+    for (const until = Date.now() + 30_000; !events().some((e) => e.ev === "usage") && Date.now() < until; ) await sleep(50);
+    const worker = events().find((e) => e.ev === "agent")?.pid;
+    assert.ok(worker && events().some((e) => e.ev === "usage"), `the worker started and its call was billed: ${JSON.stringify(events().map((e) => e.ev))}`);
+    child.kill("SIGKILL");
+    for (const until = Date.now() + 8_000; (alive(worker) || groupAlive(worker)) && Date.now() < until; ) await sleep(50);
+    assert.equal(alive(worker), false, "the typist worker outlived its server");
+    assert.equal(groupAlive(worker), false, "a process of the worker's group outlived its server");
+    assert.ok(events().some((e) => e.ev === "cancel" && e.pid === worker), "it ended its call in flight, as on the kill rule's SIGTERM");
+    const [folder] = readdirSync(scratch).filter((f) => f.startsWith("mmo-agy-typist-"));
+    const receipt = JSON.parse(readFileSync(join(scratch, folder, "receipt.json"), "utf8"));
+    assert.equal(receipt.usage.prompt_token_count, BILLED.prompt_token_count, "its receipt says what its call cost");
+  } finally {
+    try { child.kill("SIGKILL"); } catch { /* gone */ }
+    for (const e of events()) if (alive(e.pid)) { try { process.kill(-e.pid, "SIGKILL"); } catch { /* gone */ } }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // The agent door's backstop.
 test("an agent worker killed after its heartbeat stopped is billed its last heartbeat's usage, and no heartbeat line reaches the error text", async () => {
   const fake = fakeWorkerPython({ runs: [{ beats: [{ atMs: 100, hb: beat() }, { atMs: 500, hb: beat({ state: "tool", usage: { global: BILLED } }) }], holdMs: "forever", ignoreTerm: true }] });
@@ -186,4 +230,42 @@ test("an agent worker killed after its heartbeat stopped is billed its last hear
     fake.cleanup();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// A thinking worker writes its receipt as each of its sessions ends and runs on in later sessions, so a worker frozen
+// in a later session leaves an older receipt behind. Found with the thinking step's carry-on, whose budget is the
+// killed worker's own work: billed from that older receipt, the session it froze in was neither paid nor timed.
+test("a killed worker is billed its newest reading: its last heartbeat when its receipt is older, its receipt when written after", async () => {
+  const SESSION_1 = { prompt_token_count: 1000, cached_content_token_count: 0, candidates_token_count: 100, thoughts_token_count: 0, total_token_count: 1100 };
+  const BOTH = { prompt_token_count: 5000, cached_content_token_count: 0, candidates_token_count: 400, thoughts_token_count: 0, total_token_count: 5400 };
+  const receipt = (usage, work_s) => ({ sdk_version: "0.1.22", vertex_location: "global", work_s, usage, tries: [{ location: "global", ended_by: "answer", http_codes: [], s: work_s, usage }] });
+  const killedOnce = async (plan) => {
+    const fake = fakeWorkerPython({ runs: [plan] });
+    const dir = mkdtempSync(join(tmpdir(), "backstop-newest-"));
+    mkdirSync(join(dir, "work"));
+    try {
+      const packet = { id: "tp_x_002", phase: "codegen", task_type: "x", module: "m", instruction: "do", inputs: [], outputSchema: { type: "object" }, acceptance: [], budget: { maxInputTokens: 1000, maxOutputTokens: 1000 } };
+      return await withEnv({ GEMINI_WORKER_PYTHON: fake.python, GOOGLE_CLOUD_PROJECT: "p", GOOGLE_CLOUD_LOCATION: "global" }, () =>
+        Promise.race([new AntigravityWorkerAdapter({ ...FLASH, worker_timeout_sec: 600 }, { backstop: SHORT }).execute(packet, undefined, { work_dir: join(dir, "work"), telemetry_path: join(dir, "t.jsonl") }), sleep(15_000).then(() => null)]));
+    } finally {
+      for (const s of fake.runs()) if (alive(s.pid)) { try { process.kill(s.pid, "SIGKILL"); } catch { /* gone */ } }
+      fake.cleanup();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  // Its first session ended (receipt: 1 s of work, that session's tokens); the next one billed more (the heartbeat:
+  // 30 s, both sessions' tokens), and then the worker froze.
+  const stale = await killedOnce({ writes: [{ atMs: 20, sidecar: receipt(SESSION_1, 1) }], beats: [{ atMs: 60, hb: beat({ work_s: 30, usage: { global: BOTH } }) }], holdMs: "forever", ignoreTerm: true });
+  assert.ok(stale, "the frozen worker was not stopped within 15 s");
+  assert.equal(stale.worker_stopped, "killed");
+  assert.deepEqual({ input: stale.tokens.input, output: stale.tokens.output }, { input: 5000, output: 400 }, "the last heartbeat's tokens, not the older receipt's");
+  assert.equal(stale.attempts[0].gemini.work_ms, 30_000, "the last heartbeat's work");
+  assert.ok(Math.abs(stale.cost_usd - flashCost({ input: 5000, input_cached: 0, output: 400 })) < 1e-9, `billed ${stale.cost_usd}`);
+  assert.match(String(stale.error), /its tokens are its last heartbeat's/);
+  // A worker that answers SIGTERM with its receipt, after its last heartbeat, is billed that receipt, and says so.
+  const final = await killedOnce({ beats: [{ atMs: 50, hb: beat({ work_s: 1, usage: { global: SESSION_1 } }) }], holdMs: "forever", onTerm: { sidecar: receipt(BOTH, 31), exitCode: 1 } });
+  assert.ok(final, "the worker was not stopped within 15 s");
+  assert.deepEqual({ input: final.tokens.input, output: final.tokens.output }, { input: 5000, output: 400 }, "the receipt's tokens");
+  assert.equal(final.attempts[0].gemini.work_ms, 31_000);
+  assert.doesNotMatch(String(final.error), /its tokens are its last heartbeat's/, "billed from its receipt, not its heartbeat");
 });

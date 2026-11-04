@@ -373,10 +373,13 @@ test("the contract page names every place a planned write or read is refused bef
   assert.match(findings, /writeRefusal\(root, /, "findings-to-packets holds each fix target to the writer's rule");
   const layers = section(CONTRACT_DOC, "## Four enforcement layers").replace(/\s+/g, " ");
   assert.match(layers, /`findings-to-packets\.mjs`/);
-  // The server's own read rule is applied in hydrateInputs, on the path as written and through links.
-  const hydrate = APPLY.slice(APPLY.indexOf("export function hydrateInputs"), APPLY.indexOf("\nexport ", APPLY.indexOf("export function hydrateInputs") + 1));
-  assert.match(hydrate, /realpathSync/);
-  assert.match(hydrate, /readOffLimits\(/);
+  // The server's own read rule is applied in hydrateInputs, through modelReadOf (the one judge of a model's read, which
+  // a thinking step's inputs use too): on the path as written and through links.
+  const fn = (name) => APPLY.slice(APPLY.indexOf(`export function ${name}`), APPLY.indexOf("\nexport ", APPLY.indexOf(`export function ${name}`) + 1));
+  assert.match(fn("hydrateInputs"), /modelReadOf\(projectRoot, s\.path/);
+  const judge = fn("modelReadOf");
+  assert.match(judge, /realpathSync/);
+  assert.match(judge, /readOffLimits\(/);
   const writer = section(CONTRACT_DOC, "## The server's writer (apply form and `execute_batch`)").replace(/\s+/g, " ");
   assert.match(writer, /`hydrateInputs`/);
   assert.match(writer, /through links|by the file it reaches/);
@@ -635,6 +638,14 @@ test("the version notes have no section for a build that was never released, and
 /** One version's note, by its version. */
 const versionNote = (version) => NOTES.slice(NOTES.indexOf(`### v${version}\n`)).split(/\n(?=### v)/)[0];
 
+test("the current version's note carries no run names or session history", () => {
+  // Review of 0.10.0: the two note tests below were pinned to v0.9.3, so the current note went unchecked.
+  const version = JSON.parse(read("plugin", ".claude-plugin", "plugin.json")).version;
+  const note = versionNote(version);
+  assert.ok(note.length > 100, `a v${version} note in docs/methodology.md`);
+  assert.doesNotMatch(note, /\bLarge\d|\bRun \d+\b|first try/, "no run names or session history");
+});
+
 test("the v0.9.3 note carries no run names, says how pre-flight events count, and which turns are command turns", () => {
   const version = "0.9.3";
   const note = versionNote(version);
@@ -833,4 +844,20 @@ test("the v0.10.0 note says how thinking steps are routed, as thinking.ts does i
   assert.match(row, /default 14,400 s/);
   assert.match(thinking, /export const DEFAULT_THINKING_TIMEOUT_SEC = 14_400;/);
   assert.match(noteRow("Session model", "0.10.0"), /`session_model`/);
+});
+
+test("every text that gives a thinking step's no-progress limit gives the worker's own", () => {
+  const n = Number(/^NO_PROGRESS_TURNS = (\d+)$/m.exec(read("plugin", "mcp", "model-dispatch", "worker", "thinking_worker.py"))?.[1]);
+  assert.ok(n > 0, "the worker names its no-progress limit");
+  assert.match(read("plugin", "mcp", "model-dispatch", "src", "thinking.ts"), new RegExp(`export const NO_PROGRESS_TURNS = ${n};`), "the step's reply counts what the worker counts");
+  const said = new RegExp(`answers ${WORDS[n]} reminders in a row of what it owes without progress`);
+  // The version that brought the limit says it; 0.10.0's own note keeps what 0.10.0 did (a fixed count of 8).
+  assert.match(noteRow("Worker", "0.10.1"), said);
+  assert.match(read("docs", "architecture.md"), said, "the tool table");
+  assert.match(noteRow("Thinking-step routing", "0.10.0"), /up to 8 times/);
+  assert.match(read("plugin", "mcp", "model-dispatch", "src", "server.ts"), said, "run_thinking_step's description");
+  // Each shipped policy whose header says what stops a thinking step.
+  const headers = readdirSync(join(PLUGIN, "config", "policies")).filter((f) => f.endsWith(".yaml")).map((f) => [f, read("plugin", "config", "policies", f).replace(/\n#\s*/g, " ")]).filter(([, t]) => t.includes("A step that cannot finish within thinking_timeout_sec"));
+  assert.ok(headers.length > 0, "the Gemini policies' headers say what stops a step");
+  for (const [f, t] of headers) assert.match(t, said, f);
 });

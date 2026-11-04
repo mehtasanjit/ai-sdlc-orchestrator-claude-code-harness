@@ -44,10 +44,15 @@ export class BusyLedger {
     return this.now();
   }
 
-  /** A call of `model` was served (Google answered it, whatever the answer's own verdict). */
-  served(model: string): void {
+  /**
+   * A call of `model` was served (Google answered it, whatever the answer's own verdict), at `at` on the ledger's clock
+   * (default: now). A worker that answered many calls tells when it was last served (the start of its own unserved
+   * stretch), so the stretch after it counts from then. A served time never moves the last one back, nor ahead of now.
+   */
+  served(model: string, at?: number): void {
     const a = this.account(model);
-    a.lastServedAt = this.now();
+    const t = Math.min(at ?? this.now(), this.now());
+    if (a.lastServedAt === null || t >= a.lastServedAt) a.lastServedAt = t;
     a.unavailableSince = null;
   }
 
@@ -89,4 +94,15 @@ export class BusyLedger {
     const window = Math.round(this.windowMs / 1000);
     return `none of this ${what}'s calls was served for ${window} s, while other calls of ${model} were: ${reason}`;
   }
+}
+
+/**
+ * When a worker's unavailable call's stretch of unserved calls began, on the ledger's clock: the worker's own account
+ * (the attempt's unserved_since), else when the dispatch was sent. A time before the dispatch was sent cannot be this
+ * dispatch's, so it counts from the dispatch. Counted from the dispatch, a thinking step served for ten minutes and
+ * refused for its last two read as "no call of it was served for 300 s" (review: a long, served step was halted).
+ */
+export function unservedSince(attempt: { unserved_since?: string }, sentAt: number): number {
+  const t = typeof attempt.unserved_since === "string" ? Date.parse(attempt.unserved_since) : NaN;
+  return Number.isFinite(t) && t >= sentAt ? t : sentAt;
 }

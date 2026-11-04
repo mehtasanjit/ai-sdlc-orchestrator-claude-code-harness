@@ -10,12 +10,15 @@
  * The worker runs its session under the call supervisor (worker/agy_supervisor.py): a held call is cut and sent
  * again, Google's status is read, a refused call can move to the leaf's failover_locations, and the usage sidecar is
  * written on every outcome with each try's own usage and location. This adapter prices each try at its own location,
- * day and served tier, and stops the worker only by the heartbeat kill rule (executor/stall.ts).
+ * day and served tier, and stops the worker only by the heartbeat kill rule (executor/stall.ts) or the request's own
+ * stop, which the result then names (`worker_stopped`). A worker never outlives this server: it watches its stdin,
+ * which the server holds open, and stops itself as the kill rule would once the server is gone.
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 
 import type {
   AttemptRecord,
@@ -46,11 +49,13 @@ import {
 import {
   buildDelegationRecord,
   diffInventories,
+  evidenceDir,
   takeInventory,
 } from "../delegation/evidence.js";
 import {
   AGENT_API_RETRY,
   BUSY_BUDGET_SEC,
+  BUSY_WINDOW_SEC,
   FAILOVER_API_RETRY,
   HEARTBEAT_SEC,
   STALL_TRIES,
@@ -72,6 +77,13 @@ import { PLUGIN_ROOT, WORKER_DIR } from "../paths.js";
 const WORKER_SCRIPT = join(WORKER_DIR, "gemini_worker.py");
 const THINKING_SCRIPT = join(WORKER_DIR, "thinking_worker.py");
 const THINKING_TOOLS = join(PLUGIN_ROOT, "scripts", "thinking-tools.mjs");
+/**
+ * The reasoning level of every thinking step, whatever the leaf's `reasoning:` (which sets its typing): every Claude
+ * helper a step stands in for is pinned to high effort, and the design compares the two, so Gemini plans and reviews at
+ * its high level too (review: a step ran at the leaf's typing level, for the shipped leaves the SDK's default). Thinking
+ * tokens bill as output, so a step costs more than it would at the leaf's default level.
+ */
+const THINKING_STEP_LEVEL = "HIGH";
 
 // Tail (exception is at the bottom of the traceback) kept when the worker fails.
 const STDERR_TAIL_CHARS = 4000;
@@ -109,6 +121,39 @@ function tryDate(t: any, dispatchStart: Date): Date {
 }
 
 const msOf = (s: unknown): number => (typeof s === "number" && Number.isFinite(s) ? Math.round(s * 1000) : 0);
+
+/** The token counts a heartbeat and a receipt both carry, with the SDK's field names. */
+const USAGE_COUNTS = ["prompt_token_count", "cached_content_token_count", "candidates_token_count", "thoughts_token_count", "total_token_count"] as const;
+/** A heartbeat's work_s is rounded to a tenth of a second (worker/agy_supervisor.py), a receipt's to a thousandth. */
+const HEARTBEAT_WORK_ROUNDING_S = 0.1;
+
+/**
+ * A stopped worker's receipt brought up to its last heartbeat, when that heartbeat is newer: what it counts beyond the
+ * receipt's tries at a location is one more try there (ended as the engine stopped the worker), and the call's work,
+ * wait and sleep are the heartbeat's. Null when the heartbeat is not newer, or the receipt has no tries to add to.
+ *
+ * Newer: more of some billed token count, or more of the worker's own work than the heartbeat's rounding explains. For
+ * a worker the engine stopped both readings only grow, so a receipt it wrote after its last heartbeat (on SIGTERM) is
+ * never older; a thinking worker writes one as each session ends and goes on in later sessions, so one frozen in a
+ * later session leaves an older receipt behind. Billed from that receipt alone, the session it froze in was neither
+ * paid nor counted as its work, and a carried-on step's budget is read from that work (thinking.ts carryOnBudget).
+ */
+function receiptUpToHeartbeat(receipt: any, hb: Heartbeat, endedBy: string): any {
+  const tries: any[] = Array.isArray(receipt?.tries) ? receipt.tries : [];
+  if (!tries.length) return null;
+  const extra: any[] = [];
+  for (const [location, u] of Object.entries(hb.usage ?? {})) {
+    const usage: Record<string, number> = {};
+    for (const f of USAGE_COUNTS) {
+      const held = tries.filter((t) => t?.location === location).reduce((a, t) => a + (Number(t?.usage?.[f]) || 0), 0);
+      usage[f] = Math.max(0, (Number((u as any)?.[f]) || 0) - held);
+    }
+    if (USAGE_COUNTS.some((f) => usage[f] > 0)) extra.push({ location, ended_by: endedBy, http_codes: [], s: 0, usage });
+  }
+  const moreWork = typeof hb.work_s === "number" && typeof receipt?.work_s === "number" && hb.work_s > receipt.work_s + HEARTBEAT_WORK_ROUNDING_S;
+  if (!extra.length && !moreWork) return null;
+  return { ...receipt, tries: [...tries, ...extra], work_s: hb.work_s, google_wait_s: hb.wait_s, ...(typeof hb.slept_s === "number" ? { slept_s: hb.slept_s } : {}) };
+}
 
 export class AntigravityWorkerAdapter implements ModelAdapter {
   readonly id: string;
@@ -320,23 +365,26 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       );
     }
 
-    // Evidence lands beside telemetry, where the report reads. Fallback under
-    // the workspace keeps a hand-run invocation from writing into wherever
-    // the server was launched from.
-    const outDir = runContext?.telemetry_path
-      ? join(dirname(runContext.telemetry_path), "delegation")
-      : join(workdir, ".sdlc", "delegation");
+    // Evidence lands beside telemetry, where the report reads (evidenceDir).
+    const outDir = evidenceDir(runContext?.telemetry_path, workdir);
 
     const stem = evidenceStem(packet);
     const taskFile = join(outDir, `worker-task-${stem}.md`);
     const usageFile = join(outDir, `worker-usage-${stem}.json`);
     const recordFile = join(outDir, `worker-delegation-${stem}.json`);
+    // A thinking step's summary (accepted, owed, its conversation), which its worker keeps whatever its exit.
+    const summaryFile = join(outDir, `worker-summary-${stem}.json`);
+    // A thinking step's system instructions (how it runs, the helper's instructions), kept beside its task.
+    const systemFile = join(outDir, `worker-system-${stem}.md`);
 
     try {
       mkdirSync(outDir, { recursive: true });
       keepEarlierDispatch(outDir, stem);
-      // A thinking step's brief is the step's own text: it has read and hand-in tools, not the agent's file tools.
-      writeFileSync(taskFile, runContext?.thinking ? packet.instruction : workerTaskMarkdown(packet, { workdir }), "utf8");
+      // A thinking step's brief is the step's own text: it has read and hand-in tools, not the agent's file tools. Its
+      // system text goes to the worker as the session's system instructions, and its task file holds the task alone;
+      // the packet's instruction, the two together, stays the record of what the model is told.
+      if (runContext?.thinking) writeFileSync(systemFile, runContext.thinking.system, "utf8");
+      writeFileSync(taskFile, runContext?.thinking ? runContext.thinking.task : workerTaskMarkdown(packet, { workdir }), "utf8");
     } catch (err: any) {
       return this.failure(started, `Could not stage the delegation brief: ${err?.message ?? err}`);
     }
@@ -346,15 +394,21 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     const failover = (this.modelConfig.failover_locations ?? []).length > 0;
     const stallSec = stallSecFor(this.modelConfig);
     const retry = failover ? FAILOVER_API_RETRY : AGENT_API_RETRY;
+    // A thinking step's Gemini session works in an empty folder of its own, as the typist door's does: it reads the
+    // project only through the step's own tools (project_root in their config), and the inventory below still covers
+    // the real project. Review: with the project as its workspace under the SDK's allow-all policy, switching the SDK's
+    // own tools off (enabled_tools: finish) was all that kept them off the project.
+    const sdkWorkdir = thinking ? mkdtempSync(join(tmpdir(), "mmo-agy-thinking-")) : workdir;
     const args = buildWorkerArgs({
       script: thinking ? THINKING_SCRIPT : WORKER_SCRIPT,
       taskFile,
       model: this.modelConfig.model_name,
       region: this.location,
-      workdir,
+      workdir: sdkWorkdir,
       outDir,
       usageFile,
-      thinking: workerThinkingLevel(this.modelConfig.reasoning),
+      // A thinking step at HIGH (THINKING_STEP_LEVEL); a typing dispatch at the leaf's own level.
+      thinking: thinking ? THINKING_STEP_LEVEL : workerThinkingLevel(this.modelConfig.reasoning),
       timeoutSec,
       locations: this.locations,
       stallSec,
@@ -363,11 +417,20 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       heartbeatSec: HEARTBEAT_SEC,
       apiRetries: retry.retries,
       apiRetryInitialMs: retry.initialMs,
+      termGraceSec: this.backstop?.termGraceS,
     });
     if (thinking) {
+      // A step waits out a model Google serves nothing of for the run's busy window, carrying on its own conversation,
+      // as a batch does for a typing call (busyLedger.ts); each carry-on is a new call with its own busy budget.
       args.push("--role", thinking.role, "--tools-config", thinking.toolsConfig, "--save-dir", thinking.saveDir,
-        "--node", process.execPath, "--tools-script", THINKING_TOOLS);
+        "--node", process.execPath, "--tools-script", THINKING_TOOLS, "--busy-window-sec", String(BUSY_WINDOW_SEC),
+        "--system-file", systemFile);
       if (thinking.resumeId) args.push("--resume-id", thinking.resumeId);
+      // A dispatch that carries on one the kill rule stopped: the worker continues its saved conversation.
+      if (thinking.carryOn) args.push("--carry-on");
+      args.push("--summary-file", summaryFile);
+      // The step lock's token, by which a call taking over the lock tells this worker from a process that took its id.
+      if (thinking.lock) args.push("--lock-token", thinking.lock.token);
     }
 
     // Inventoried as late as possible so nothing this adapter wrote appears
@@ -400,18 +463,27 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
 
     // The kill rule's bound for one call: the worker's own stall tries, harness retry rule and busy budget.
     const waitBoundS = callWaitBoundSec(stallSec, { tries: STALL_TRIES, retry, busyBudgetSec: BUSY_BUDGET_SEC });
-    const run = await this.spawnWorker(args, workdir, timeoutSec, waitBoundS, packet.id, runContext?.signal);
+    const run = await this.spawnWorker(args, sdkWorkdir, timeoutSec, waitBoundS, packet.id, runContext?.signal, thinking?.lock?.started);
+    // The empty folder is the step's alone, and nothing in it is the step's work: removed whatever the outcome.
+    if (sdkWorkdir !== workdir) {
+      try { rmSync(sdkWorkdir, { recursive: true, force: true }); } catch { /* a folder left behind never fails the step */ }
+    }
 
     const after = takeInventory(workdir, { exclude: [outDir] });
 
     // Read whatever the exit status: a failed delegation still spent tokens. A worker that wrote nothing (killed
-    // before it could) is billed its last heartbeat's usage.
+    // before it could) is billed its last heartbeat's usage; one the engine stopped after its last receipt, that
+    // receipt brought up to its last heartbeat (receiptUpToHeartbeat).
     const sidecar = readJsonIfPresent(usageFile);
-    const bill = sidecar
-      ? this.bill(sidecar, { started: dispatchDate, answered: run.ok, stopped: AntigravityWorkerAdapter.stoppedBy(run.killed) })
+    const stopped = AntigravityWorkerAdapter.stoppedBy(run.killed);
+    const caughtUp = stopped && sidecar && run.lastBeat ? receiptUpToHeartbeat(sidecar, run.lastBeat, stopped) : null;
+    const receipt = caughtUp ?? sidecar;
+    const bill = receipt
+      ? this.bill(receipt, { started: dispatchDate, answered: run.ok, stopped })
       : run.lastBeat
-        ? this.billHeartbeat(run.lastBeat, { started: dispatchDate, stopped: AntigravityWorkerAdapter.stoppedBy(run.killed) })
+        ? this.billHeartbeat(run.lastBeat, { started: dispatchDate, stopped })
         : null;
+    const fromBeat = run.lastBeat !== null && (caughtUp !== null || receipt === null);
     const tokens = bill?.tokens ?? mapSidecarTokens(null);
     const cost = bill?.cost_usd ?? 0;
     const latency = Date.now() - started;
@@ -463,11 +535,12 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       unreadable_n: diff.unreadable.length,
     });
 
-    // The worker's own reason when it gave one (a refusal, a stall, an interrupted answer, the work limit).
+    // The worker's own reason when it gave one (a refusal, a stall, an interrupted answer, the work limit); a stopped
+    // worker's says what its tokens were read from.
     const error = run.ok
       ? undefined
       : run.killed !== null
-        ? run.error
+        ? `${run.error}${fromBeat ? "; its tokens are its last heartbeat's" : ""}. ${run.tail}`
         : typeof sidecar?.error === "string" && sidecar.error
           ? `The agent worker exited ${run.code}: ${sidecar.error}`
           : run.error;
@@ -496,10 +569,14 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       diff,
       briefFile: basename(taskFile),
       usageFile: basename(usageFile),
+      ...(thinking ? { systemFile: basename(systemFile) } : {}),
       gemini: bill?.gemini,
     });
 
     const record = bill ? { gemini: bill.gemini, ...(bill.unpriced_models.length ? { unpriced_models: bill.unpriced_models } : {}) } : {};
+    // A thinking step's summary, read whatever the worker's exit: a step that failed or ran out of its budget still says
+    // what was accepted and owed, and which conversation to carry on.
+    const summary = thinking ? readJsonIfPresent(summaryFile) ?? null : null;
     if (!run.ok) {
       const attempt: AttemptRecord = {
         attempt_number: 1,
@@ -513,10 +590,11 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         ...(status !== undefined ? { error_status: status } : {}),
         price_basis: price.basis,
         ...(unavailable ? { unavailable } : {}),
+        ...(unavailable && typeof sidecar?.unserved_since === "string" ? { unserved_since: sidecar.unserved_since } : {}),
         ...record,
       };
       return {
-        result: null,
+        result: summary,
         tokens,
         cost_usd: cost,
         latency_ms: latency,
@@ -526,17 +604,22 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         attempts: [attempt],
         terminal_reason: "vendor_error",
         workspace_changes: [...diff.added, ...diff.modified, ...diff.removed],
+        // How the engine stopped the worker, when it did: a thinking step carries on one the kill rule stopped
+        // (thinking.ts), never one the person stopped, nor one that ended by itself.
+        ...(stopped ? { worker_stopped: stopped } : {}),
       };
     }
 
     // Worker prints the final message on stdout. `{ raw }` fallback matches
     // the model tier's shape.
     const text = run.stdout.trim();
-    let parsed: any;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = { raw: text };
+    let parsed: any = summary;
+    if (parsed === null) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = { raw: text };
+      }
     }
 
     const attempt: AttemptRecord = {
@@ -570,7 +653,11 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
    * process would leave them running (holding the workdir, still talking to
    * Vertex). Signalling the negative pid takes the whole group. `shell: false`
    * (default) prevents re-parsing user paths in the argv. The group is stopped
-   * only by the heartbeat kill rule, or by the request's own stop.
+   * only by the heartbeat kill rule, or by the request's own stop, while this
+   * server runs. Its stdin is a pipe this server holds open and never writes:
+   * the worker watches it (--watch-stdin), so the pipe's end, which comes with
+   * this server's end however it ends, stops the worker's group as the kill
+   * rule would. `started` is told the worker's process id as it starts.
    */
   private spawnWorker(
     args: string[],
@@ -579,7 +666,8 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     waitBoundS: number,
     packetId: string,
     signal?: AbortSignal,
-  ): Promise<{ ok: boolean; stdout: string; error: string; code: number | null; killed: string | null; lastBeat: Heartbeat | null }> {
+    started?: (pid: number) => void,
+  ): Promise<{ ok: boolean; stdout: string; error: string; tail: string; code: number | null; killed: string | null; lastBeat: Heartbeat | null }> {
     const spawnStarted = Date.now();
     return new Promise((resolveRun) => {
       const child = spawn(this.python, args, {
@@ -589,8 +677,16 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
           project: this.project,
           location: this.location,
         }),
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
+      // A step's lock names the worker the moment it runs; a lock that cannot say so never leaves the worker unwatched.
+      if (child.pid !== undefined && started) {
+        try {
+          started(child.pid);
+        } catch (err: any) {
+          log("warn", "agsdk.worker_not_recorded", { packet_id: packetId, pid: child.pid, error: err?.message ?? String(err) });
+        }
+      }
 
       let stdout = "";
       let stderr = "";
@@ -624,7 +720,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       };
 
       child.on("error", (err) => {
-        settle({ ok: false, stdout, code: null, killed: null, lastBeat: watch.lastBeat, error: `Could not start the agent worker with '${this.python}': ${err.message}` });
+        settle({ ok: false, stdout, code: null, killed: null, lastBeat: watch.lastBeat, tail: "", error: `Could not start the agent worker with '${this.python}': ${err.message}` });
       });
 
       child.on("close", (code) => {
@@ -644,17 +740,15 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
         const tailText = tail(withoutHeartbeats(stderr));
         if (killed !== null) {
           if (killed !== STOPPED_BY_REQUEST) log("warn", "agsdk.backstop_kill", { packet_id: packetId, reason: killed });
-          settle({
-            ok: false, stdout, code, killed, lastBeat: watch.lastBeat,
-            error: `The agent worker was stopped: ${killed}${watch.lastBeat ? "; its tokens are its last heartbeat's" : ""}. ${tailText}`,
-          });
+          // Why it was stopped; execute() adds what its tokens were read from, which only its receipt can tell.
+          settle({ ok: false, stdout, code, killed, lastBeat: watch.lastBeat, tail: tailText, error: `The agent worker was stopped: ${killed}` });
           return;
         }
         if (code !== 0) {
-          settle({ ok: false, stdout, code, killed: null, lastBeat: watch.lastBeat, error: `The agent worker exited ${code}. ${tailText}` });
+          settle({ ok: false, stdout, code, killed: null, lastBeat: watch.lastBeat, tail: tailText, error: `The agent worker exited ${code}. ${tailText}` });
           return;
         }
-        settle({ ok: true, stdout, code, killed: null, lastBeat: watch.lastBeat, error: "" });
+        settle({ ok: true, stdout, code, killed: null, lastBeat: watch.lastBeat, tail: tailText, error: "" });
       });
     });
   }
@@ -713,15 +807,16 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
 function keepEarlierDispatch(outDir: string, stem: string): void {
   const record = join(outDir, `worker-delegation-${stem}.json`);
   const usage = join(outDir, `worker-usage-${stem}.json`);
-  if (!existsSync(record) && !existsSync(usage)) return;
-  const taken = new RegExp(`^worker-(?:delegation|usage)-${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.(\\d+)\\.json$`);
+  const summary = join(outDir, `worker-summary-${stem}.json`);
+  if (!existsSync(record) && !existsSync(usage) && !existsSync(summary)) return;
+  const taken = new RegExp(`^worker-(?:delegation|usage|summary)-${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.(\\d+)\\.json$`);
   let n = 0;
   for (const name of readdirSync(outDir)) {
     const m = taken.exec(name);
     if (m) n = Math.max(n, Number(m[1]));
   }
   n += 1;
-  for (const [from, prefix] of [[record, "worker-delegation"], [usage, "worker-usage"]] as const) {
+  for (const [from, prefix] of [[record, "worker-delegation"], [usage, "worker-usage"], [summary, "worker-summary"]] as const) {
     if (existsSync(from)) renameSync(from, join(outDir, `${prefix}-${stem}.${n}.json`));
   }
   log("info", "agsdk.record.kept", { stem, as: n });

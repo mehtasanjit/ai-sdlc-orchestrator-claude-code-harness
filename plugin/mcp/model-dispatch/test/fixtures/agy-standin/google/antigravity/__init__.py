@@ -5,9 +5,13 @@ it from its harness: each step update is a new Step appended to `agent.conversat
 pulled (resolve(), text(), tool_calls), an error step carries Google's HTTP status in `http_code`, a held request
 sends nothing until cancel(), cancel() makes the turn raise AntigravityCancelledError and keeps the session's usage
 and its connection, a turn that ends with an SDK error closes the session's connection (as 0.1.22's harness does: a
-chat() after it raises ConnectionClosedOK), and the history is trimmed from the front past its size cap. It records
-what the worker asked of it in a log: each session (Agent) with its location, project, retry settings and the proxy
-settings it saw, each chat() with its message, each cancel(), and when start-up and teardown began and ended.
+chat() after it raises ConnectionClosedOK), and the history is trimmed from the front past its size cap. A step that
+calls one of the worker's own tools (its configuration's `tools`, plain functions) runs it once per call id, as
+0.1.22's ToolRunner runs one: a synchronous function in a worker thread (asyncio.to_thread), so the worker's event
+loop and its heartbeat go on while a long tool runs, and an asynchronous one on the loop. It records what the worker
+asked of it in a log: each session (Agent) with its location, project, retry settings and the proxy settings it saw,
+each chat() with its message, each tool call as it starts and ends, each cancel(), and when start-up and teardown
+began and ended.
 
 Environment:
   AGY_STANDIN_SCRIPT  the JSON script below (a session that is not scripted answers nothing and ends at once)
@@ -19,6 +23,7 @@ Script:
    "max_history": 10000}                       the SDK's history size cap
   SESSION = {"aenter_delay": s,                start-up time before the session is ready
              "aexit": {"raise": NAME, "message": "..."} | {"block": s},   teardown raises, or blocks the event loop
+             "no_conversation_id": true,       the session reports no conversation id (conversation_id is None)
              "turns": [TURN, ...]}             the n-th chat() of the session gets the n-th (the last one repeats)
   TURN = [EVENT, ...], each at `at` seconds after its chat():
     {"at": s, "step": {type, source, status, target, content, content_delta, thinking_delta, tool_calls, error,
@@ -30,10 +35,16 @@ Script:
     {"at": s, "hold": true}                   nothing more until cancel()
     {"at": s, "os_sleep": seconds}            the computer sleeps that long (sitecustomize.py moves its clocks)
     {"at": s, "freeze": true}                 the worker's process stops itself (SIGSTOP), as a frozen worker does
+
+A session's "agent" log line also says how its configuration was built: `validated` (true when built by its
+constructor, as the SDK's pydantic models are validated there; false for a model_copy), `capabilities` (the SDK's own
+tools it leaves on), `tools` (the worker's own tools, by name), `system_instructions` (their text, or null) and
+`thinking_level` (the model's, from its endpoint options, or null).
 """
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import signal
@@ -113,9 +124,12 @@ def _attr(obj, name, default=None):
 class Conversation:
     """The session's history, usage and current turn, with the SDK's public names."""
 
-    def __init__(self, session: int, script: dict):
+    def __init__(self, session: int, script: dict, tools=None):
         self._session = session
         self._script = script
+        # The worker's own tools (its configuration's `tools`, plain functions), run when a step calls one by name.
+        self._tools = {getattr(f, "__name__", ""): f for f in (tools or []) if callable(f)}
+        self._ran = set()
         self._steps: list = []
         self._max = int(_script().get("max_history", 10_000))
         self._usage = types.UsageMetadata()
@@ -159,8 +173,9 @@ class Conversation:
         return ""
 
     @property
-    def conversation_id(self) -> str:
-        return f"standin-{self._session}"
+    def conversation_id(self) -> str | None:
+        # A session scripted with "no_conversation_id" reports none, as an SDK that gives no id after a turn.
+        return None if self._script.get("no_conversation_id") else f"standin-{self._session}"
 
     @property
     def is_idle(self) -> bool:
@@ -217,6 +232,22 @@ class Conversation:
                     self._steps.append(step)
                     if self._max and len(self._steps) > self._max:
                         self._steps = self._steps[len(self._steps) - self._max:]
+                    # A call of one of the worker's own tools runs it, once per call id, as the SDK's harness does:
+                    # a synchronous tool in a worker thread, so the event loop goes on while it runs (0.1.22's
+                    # ToolRunner._execute_fn: asyncio.to_thread); an asynchronous one on the loop.
+                    for call in step.tool_calls:
+                        fn = self._tools.get(call.name)
+                        key = call.id or f"{call.name}#{len(self._steps)}"
+                        if fn is not None and key not in self._ran:
+                            self._ran.add(key)
+                            log("tool_start", session=self._session, turn=self._turns, name=call.name)
+                            if inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(getattr(fn, "__call__", None)):
+                                out = fn(**call.args)
+                            else:
+                                out = await asyncio.to_thread(fn, **call.args)
+                            if asyncio.iscoroutine(out):
+                                out = await out
+                            log("tool_run", session=self._session, turn=self._turns, name=call.name, result=str(out)[:2000])
                     yield step
                 if "usage" in ev:
                     self._usage = self._usage + types.UsageMetadata(**ev["usage"])
@@ -266,16 +297,26 @@ class Agent:
         endpoint = _attr(model, "endpoint")
         location = _attr(endpoint, "location") or _attr(cfg, "location")
         retry = _attr(_attr(cfg, "retry_config"), "api_retry")
+        caps = _attr(cfg, "capabilities")
+        system = _attr(cfg, "system_instructions")
         self._script = _session_script(str(location))
         log("agent", session=self._n, location=location, project=_attr(endpoint, "project") or _attr(cfg, "project"),
             model=_attr(model, "name"),
+            # Whether the configuration was built by its constructor (validated), the SDK's own tools it leaves on, and
+            # the worker's own tools by name.
+            validated=getattr(cfg, "_validated", None),
+            capabilities=None if caps is None else {"enable_subagents": _attr(caps, "enable_subagents"),
+                                                    "enabled_tools": [getattr(t, "value", t) for t in _attr(caps, "enabled_tools") or []]},
+            tools=[getattr(f, "__name__", str(f)) for f in _attr(cfg, "tools") or []],
+            system_instructions=system if system is None or isinstance(system, str) else _attr(system, "text"),
+            thinking_level=getattr(_attr(_attr(endpoint, "options"), "thinking_level"), "value", None),
             retry=None if retry is None else {k: _attr(retry, k) for k in ("max_retries", "initial_sleep_duration_ms", "exponential_multiplier", "jitter_range")},
             http_headers=_attr(endpoint, "http_headers"),
             continuation=str(_attr(cfg, "session_continuation_mode")) if _attr(cfg, "session_continuation_mode") is not None else None,
             conversation_id=_attr(cfg, "conversation_id"), save_dir=_attr(cfg, "save_dir"),
             no_proxy=os.environ.get("NO_PROXY"), no_proxy_lower=os.environ.get("no_proxy"),
             https_proxy=os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"))
-        self.conversation = Conversation(self._n, self._script)
+        self.conversation = Conversation(self._n, self._script, _attr(cfg, "tools"))
 
     async def __aenter__(self):
         log("aenter_start", session=self._n)

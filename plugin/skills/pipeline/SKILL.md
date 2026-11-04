@@ -82,7 +82,12 @@ Rules for executor mode:
 
 - **Skip** `cache_project_header` and `plan_task_packets`: the spec's units are the work list, and
   `execute_stage` builds each brief by code, shared part first.
-- **Architecture:** invoke the `architect` subagent with `requirements.md`, the output directory
+- **Architecture:** the route table decides who designs (orchestrator.md, "Thinking steps follow the policy").
+  When it gives `architecture_design` to a Gemini leaf (`engine, thinking`), call `run_thinking_step` with
+  `role: "architect"`, `requirements_path` and the brief as `inputs`: the step hands the same sections in to the
+  same checks and finalizes the spec, so Gate 2 shows the same design.md, and a Gate 2 `revise` goes back to it
+  as `revise`, with the comments. Otherwise, as before,
+  invoke the `architect` subagent with `requirements.md`, the output directory
   and the words "executor mode". It hands the spec over through `submit_spec_section` (header,
   then units in batches) and closes with `finalize_spec`, which writes `<output_dir>/spec.json`
   and `<output_dir>/design.md`. Gate 2 shows that design.md. If `finalize_spec` reports missing
@@ -141,7 +146,10 @@ Rules for executor mode:
   `not_run`, leaves its criteria not checked with that reason, and is routed nowhere). Each failure
   in the receipt names its route. `architect` means an install or audit failed (a version choice):
   invoke the `architect` subagent with the words "acceptance fix", the receipt's failure and its
-  `log_path`, then send the entries it replies with to `execute_stage` repair as `failures`.
+  `log_path`, then send the entries it replies with to `execute_stage` repair as `failures` (when the
+  route table gives the architect to `engine, thinking`, call `run_thinking_step` with `role: "architect"`,
+  the run's `telemetry_path`, and that failure and `log_path` as `acceptance_fix`: the entries are its reply's
+  `acceptance_fix.failures`).
   `repair` means a check failed (code): send it to `execute_stage` repair as a `failures` entry (the
   file the failing check names, the receipt's lines as the problem). Then call the acceptance stage
   again. After three re-checks its receipt is final and a further call runs nothing; report what is
@@ -242,9 +250,9 @@ Read `<brief.md>` (passed in $ARGUMENTS) and produce `<output_dir>/requirements.
 - **Acceptance criteria** (numbered, executable)
 - **Open questions for HITL** (if any)
 
-### Phase 2 — architecture_design (delegated to `architect` subagent)
+### Phase 2 — architecture_design (the `architect` subagent, or `run_thinking_step`, as the route table says)
 
-The orchestrator invokes the `architect` subagent passing `<output_dir>/requirements.md`. Architect writes `<output_dir>/design.md` (see architect.md for content spec).
+When the route table gives `architecture_design` to a Gemini leaf (`engine, thinking`), call `run_thinking_step` with `role: "architect"` (orchestrator.md, "Thinking steps follow the policy"); otherwise the orchestrator invokes the `architect` subagent passing `<output_dir>/requirements.md`, as before. Architect writes `<output_dir>/design.md` (see architect.md for content spec).
 
 ### Phase 4 — plan_task_packets
 
@@ -302,7 +310,7 @@ every dispatch inside the loop below already logs itself via the MCP server (`ro
 
 For each packet, in dependency order:
 
-**Direct-tier work (subagent handles it, no MCP dispatch):** the orchestrator (Opus) writes the file directly. Estimate tokens via `chars/3.8` heuristic for both inputs and outputs; take pricing constants from this model's `effective_price.rates` in the `load_policy` result (the dated price list's card for the day, or the policy's block only under `pricing_override: true`: the price the server and the post-run collector bill at; see orchestrator rule 6); log a TelemetryEvent via `log_telemetry`.
+**Direct-tier work (subagent handles it, no MCP dispatch):** the orchestrator (Opus) writes the file directly. Estimate tokens via `chars/3.8` heuristic for both inputs and outputs; take pricing constants from this model's `effective_price.rates` in the `load_policy` result (`session_model_price.rates` when the policy names a `session_model`) (the dated price list's card for the day, or the policy's block only under `pricing_override: true`: the price the server and the post-run collector bill at; see orchestrator rule 6); log a TelemetryEvent via `log_telemetry`.
 
 **Mechanical-tier work (routed to another model):** call `execute_with_model` with the packet, `policy_name`, `project_root: $(pwd)`, and `cache_context`. The server routes per policy. Pass `project_root` on every dispatch, exactly as pre-flight received it: it is what lets the loader prefer a repo-local `routing-policy.yaml` over the shipped preset, and omitting it is the historical bug — the preview named the user's policy while the billed calls quietly routed under a different one. Validate the returned structured output against the schema; if invalid, construct a *refined* packet (new id, `retry_count+1`, with the validation error appended to instruction) and re-dispatch. After 2 mechanical-tier retries fail, the policy escalates to the subagent's own tier automatically (rule with `retry_count: { gte: 2 }`). A result with `halt` is not a failed attempt: Google could not serve the model (none of its calls was served for 300 s while they kept being refused or held). Do not re-dispatch or refine the packet; stop the run and tell the user the reason as given.
 
@@ -310,7 +318,7 @@ Write the returned file content to disk at the packet's stated `artifact_path`.
 
 ### Phase 6 — senior_code_review
 
-Invoke `senior-reviewer` subagent for each module. Collect refinement packets. Re-dispatch them via Phase 5 mechanics.
+For each module: when the route table gives `senior_code_review` to a Gemini leaf (`engine, thinking`), call `run_thinking_step` with `role: "senior-reviewer"`, `code_dir` and that module's `review_path`; otherwise invoke the `senior-reviewer` subagent, as before. Collect refinement packets. Re-dispatch them via Phase 5 mechanics.
 
 ### Phase 7 — test_run
 
@@ -334,7 +342,8 @@ cd <repo-root>   # NOT <output_dir> — the app-under-test is the user's actual 
 If codegen introduced new required env vars (via `existing_file_edit` on `.env.example`):
 1. Append the new keys to `.env.example` (this IS a permitted write — .env.example is in the allowlist by default and holds no values, only key names).
 2. Print the list of new keys to the operator with a mini-gate: *"Codegen introduced N new required env vars: X, Y, Z. Populate them in your .env before Phase 7 continues, or say `skip` to run Phase 7 anyway (tests requiring these keys will fail)."*
-3. Wait for the user's response before invoking the test command.
+3. Wait for the user's response before invoking the test command. Under `gates: auto-approve` no one can populate
+   the person's `.env`: take `skip`, and the final report names the keys to populate.
 
 The test command in brownfield is `baseline.test_command` (confirmed at Gate 0), not hardcoded `npm test`. Working directory is the repo root (not `<output_dir>`); in monorepos, use the per-package scope from `baseline.monorepo.packages[].test_command` for whichever package the changed files belong to.
 
@@ -348,7 +357,7 @@ On failure:
 
 ### Phase 8 — security_review
 
-Invoke `security-reviewer` subagent. Writes `<output_dir>/security_review.md`.
+When the route table gives `security_review` to a Gemini leaf (`engine, thinking`), call `run_thinking_step` with `role: "security-reviewer"` and `code_dir`; otherwise invoke the `security-reviewer` subagent, as before. Either writes `<output_dir>/security_review.md`.
 
 ### Phase 9 — generate_final_report
 
@@ -451,6 +460,9 @@ before emitting the message** — except in brownfield, where the write contract
 `.sdlc/` outside the run's own folder and the run's own log (`gate.open`, `gate.resolved`) is the record: a
 brownfield run that never ended is found from its contract's freeze record when the next `/mmo:brownfield`
 starts (the brownfield guide's step 1).
+
+Under `gates: auto-approve` (`/mmo:pass --gates=auto-approve`) no gate bubbles up: the orchestrator approves each
+one itself and logs it as the flag's (orchestrator.md rule 3), so a headless run goes to its end.
 
 ### Gate 0 — Brownfield only, before Gate 1
 

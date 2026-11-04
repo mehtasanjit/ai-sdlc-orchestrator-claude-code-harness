@@ -90,13 +90,15 @@ typists' briefs to `<output_dir>/briefs/`, and writes `<output_dir>/packets.json
 
 Exit 0: read the summary line and any warnings, then open Gate 2 for the jobs that have one ("The jobs",
 above). Exit 1: the spec is not complete, breaks one of the job's rules, or no longer matches the files; re-delegate the architect with the printed lines ("Fix these spots in your
-section files with Edit, check each changed file again with plan-lint --section, and return"), then run
-the command again. A line that names the write contract's allowlist is not fixed by re-delegating, and neither
+section files with Edit, check each changed file again with plan-lint --section, and return"), or, when the
+route table gives `architecture_design` to a Gemini leaf (`engine, thinking`), call `run_thinking_step` again
+(role `brownfield-architect`) with the printed lines as `revise`; then run the command again. A line that names the write contract's allowlist is not fixed by re-delegating, and neither
 is an architect that returns saying it cannot meet a printed rule (a test file the bug needs outside the
 allowlist, a step its job may not hold): what the run may write is fixed at Gate 0, so stop and tell the person
 what the run needs and why (the allowlist is the person's decision). Never edit the spec, the rendered plan or a
 packet yourself: a hand edit here is Opus re-typing the work the typists do. On a Gate 2 `revise`, the architect
-edits its sections and you run the command again.
+edits its sections (a Gemini architect: `run_thinking_step` again, with the comments as `revise`) and you run the
+command again.
 
 ## Phase 4 — plan_task_packets
 
@@ -274,7 +276,9 @@ receipt in your context however many files it types.
 
 ## Phase 6 — senior_code_review
 
-Invoke `brownfield-senior-reviewer` instead of `senior-reviewer`, once for the whole change (every derived
+Invoke `brownfield-senior-reviewer` instead of `senior-reviewer` (or, when the route table gives
+`senior_code_review` to a Gemini leaf, call `run_thinking_step` with role `brownfield-senior-reviewer`), once for
+the whole change (every derived
 packet's module is `spec`), writing its review JSON to `<output_dir>/review.json`. Its findings become fix
 packets by code (below); it writes no packets.
 
@@ -329,7 +333,9 @@ Instead of SKILL.md's "Any other failure" bullet:
 
 ## Phase 8 — security_review
 
-Invoke `brownfield-security-reviewer` instead of `security-reviewer`, and instead of the Intent matrix's
+Invoke `brownfield-security-reviewer` instead of `security-reviewer` (or, when the route table gives
+`security_review` to a Gemini leaf, call `run_thinking_step` with role `brownfield-security-reviewer`), and instead
+of the Intent matrix's
 Phase 8 column: it reviews every file the run touched by the file's kind, whatever the job (a test or docs run
 that edits a source file gets that file's full review). Writes `<output_dir>/security_review.md`: findings
 only, each with its file. The fixes the person accepts at Gate 3 go through "Fix packets by code" (Phase 6):

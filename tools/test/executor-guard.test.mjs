@@ -9,9 +9,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { record, decide, MARKER } from "../../plugin/scripts/executor-guard.mjs";
+import * as guard from "../../plugin/scripts/executor-guard.mjs";
 
 const project = () => mkdtempSync(join(tmpdir(), "guard-"));
 const stageCall = (agent_id, spec_path = ".sdlc/spec.json") => ({ hook_event_name: "PostToolUse", tool_name: "mcp__plugin_mmo_model-dispatch__execute_stage", tool_input: { stage: "codegen", spec_path }, ...(agent_id ? { agent_id, agent_type: "mmo:orchestrator" } : {}) });
@@ -162,4 +165,83 @@ test("a code folder that is or holds the record folder never takes the record fo
   // The record folder named as the code folder: nothing tells the record from the product, so the record folder stays writable.
   record(passCall("orch-3", "out/", "out"), dir);
   assert.equal(decide(writeCall("orch-3", "out/SUMMARY.md"), dir), null);
+});
+
+// ── The route table holds: a helper is not hired for a phase the run gives to a Gemini thinking step ──────────────────
+// Review: the pipeline skill told the orchestrator to delegate the Claude architect and reviewers unconditionally,
+// and nothing made the route table hold, so an orchestrator that ignored it would quietly run a Gemini-routed phase on
+// Claude. Pre-flight's reply carries the run's route table; the guard keeps the chat's latest one and refuses such a
+// delegation, naming run_thinking_step.
+const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const GUARD = join(REPO, "plugin", "scripts", "executor-guard.mjs");
+/** A pre-flight reply's route table: requirements and the design on Argon through the server, the reviews in the session. */
+const TABLE = [
+  { phase: "discovery", model: "claude-opus-5-5", model_id: null, who: "session", reason: "a Claude helper; a rule for it has no effect" },
+  { phase: "requirements_analysis", model: "gemini-4-argon", model_id: "argon", who: "engine, thinking", reason: "r" },
+  { phase: "architecture_design", model: "gemini-4-argon", model_id: "argon", who: "engine, thinking", reason: "r" },
+  { phase: "senior_code_review", model: "claude-opus-5-5", model_id: null, who: "session", reason: "the policy's rule" },
+  { phase: "security_review", model: "claude-opus-5-5", model_id: null, who: "session", reason: "the policy's rule" },
+  { phase: "codegen", model: "gemini-4-argon", model_id: "argon", who: "engine, typing", reason: "r" },
+];
+const preflightCall = (session_id, reply, shape = (r) => [{ type: "text", text: JSON.stringify(r) }]) => ({
+  hook_event_name: "PostToolUse", session_id, tool_name: "mcp__plugin_mmo_model-dispatch__preflight_dispatch",
+  tool_input: { auth_mode: "estimated", run_id: "r1" }, tool_response: shape(reply), agent_id: "orch-1", agent_type: "mmo:orchestrator",
+});
+const hire = (session_id, subagent_type, caller = { agent_id: "orch-2", agent_type: "mmo:orchestrator" }) => ({
+  hook_event_name: "PreToolUse", session_id, tool_name: "Agent", tool_input: { subagent_type, prompt: "x" }, ...caller,
+});
+
+test("a helper for a phase the run's route table gives to a Gemini thinking step is refused, naming run_thinking_step; a session route passes", () => {
+  const dir = project();
+  guard.recordRoutes(preflightCall("s1", { ok: true, route_table: TABLE }), dir);
+  // The orchestrator that hires the helper is re-invoked after each gate (another agent id): the chat's table holds.
+  for (const [helper, phase] of [["mmo:architect", "architecture_design"], ["brownfield-architect", "architecture_design"]]) {
+    const out = decide(hire("s1", helper), dir);
+    assert.ok(denied(out), helper);
+    assert.match(out.hookSpecificOutput.permissionDecisionReason, new RegExp(`gives ${phase} to gemini-4-argon`));
+    assert.match(out.hookSpecificOutput.permissionDecisionReason, /call run_thinking_step with role "(brownfield-)?architect"/);
+  }
+  for (const helper of ["mmo:senior-reviewer", "mmo:brownfield-security-reviewer", "mmo:discovery", "general-purpose"]) assert.equal(decide(hire("s1", helper), dir), null, `${helper}: its phase is the session's`);
+  // Another chat, the main chat, and someone else's agent of the same bare name outside the plugin's orchestrator.
+  assert.equal(decide(hire("s2", "mmo:architect"), dir), null, "another chat's run");
+  assert.equal(decide(hire("s1", "mmo:architect", {}), dir), null, "the main chat hires nothing for a run");
+  assert.equal(decide(hire("s1", "architect", { agent_id: "x", agent_type: "my-own-agent" }), dir), null, "not the plugin's orchestrator");
+});
+
+test("the chat's latest pre-flight decides: a later one that routes the design to the session lets the architect through; a failed one keeps nothing", () => {
+  const dir = project();
+  guard.recordRoutes(preflightCall("s1", { ok: true, route_table: TABLE }), dir);
+  assert.ok(denied(decide(hire("s1", "mmo:architect"), dir)));
+  const claude = TABLE.map((r) => (r.phase === "architecture_design" ? { ...r, who: "session", model: "claude-opus-5-5", model_id: "opus" } : r));
+  guard.recordRoutes(preflightCall("s1", { ok: true, route_table: claude }, (r) => JSON.stringify(r)), dir);
+  assert.equal(decide(hire("s1", "mmo:architect"), dir), null, "a reply given as one JSON string is read too");
+  guard.recordRoutes(preflightCall("s1", { ok: true, route_table: TABLE }, (r) => ({ content: [{ type: "text", text: JSON.stringify(r) }] })), dir);
+  assert.ok(denied(decide(hire("s1", "mmo:architect"), dir)));
+  guard.recordRoutes(preflightCall("s1", { ok: false, halt_reason: "x", route_table: TABLE }), dir);
+  assert.equal(decide(hire("s1", "mmo:architect"), dir), null, "a pre-flight that stopped its run leaves no table for it");
+  // A reply that cannot be read records nothing, and the guard fails open.
+  guard.recordRoutes(preflightCall("s1", null, () => "not json"), dir);
+  assert.equal(decide(hire("s1", "mmo:architect"), dir), null);
+});
+
+test("the guard is wired as Claude Code runs it: pre-flight's PostToolUse records, the Agent call's PreToolUse refuses", () => {
+  const hooks = JSON.parse(readFileSync(join(REPO, "plugin", "hooks", "hooks.json"), "utf8")).hooks;
+  const post = hooks.PostToolUse.find((e) => e.hooks.some((h) => / executor-guard\.mjs preflight$/.test(h.command)));
+  assert.ok(post, "a PostToolUse entry runs the guard on pre-flight");
+  for (const name of ["mcp__plugin_mmo_model-dispatch__preflight_dispatch", "mcp__model-dispatch__preflight_dispatch"]) assert.ok(new RegExp(`^(?:${post.matcher})$`).test(name), name);
+  const pre = hooks.PreToolUse.find((e) => e.hooks.some((h) => / executor-guard\.mjs pre$/.test(h.command)));
+  assert.ok(new RegExp(`^(?:${pre.matcher})$`).test("Agent"), "the PreToolUse entry sees Agent calls");
+  const dir = project();
+  const run = (mode, payload) => spawnSync(process.execPath, [GUARD, mode], { input: JSON.stringify(payload), encoding: "utf8", env: { ...process.env, CLAUDE_PROJECT_DIR: dir } });
+  assert.equal(run("preflight", preflightCall("s1", { ok: true, route_table: TABLE })).status, 0);
+  const r = run("pre", hire("s1", "mmo:architect"));
+  assert.equal(JSON.parse(r.stdout || "null")?.hookSpecificOutput?.permissionDecision, "deny", r.stdout + r.stderr);
+  assert.equal(run("pre", hire("s1", "mmo:senior-reviewer")).stdout, "");
+});
+
+test("the guard's helpers serve the phases thinking.ts gives their roles", () => {
+  const src = readFileSync(join(REPO, "plugin", "mcp", "model-dispatch", "src", "thinking.ts"), "utf8");
+  const roles = Object.fromEntries([...src.matchAll(/^\s+"?([a-z-]+)"?: \{ phase: "([a-z_]+)", instructions: \{ agent: "([a-z-]+)" \} \},$/gm)].map((m) => [m[3], m[2]]));
+  assert.ok(Object.keys(roles).length >= 6, JSON.stringify(roles));
+  assert.deepEqual(guard.THINKING_HELPERS, roles);
 });

@@ -54,6 +54,55 @@ export const HARDCODED_OFF_LIMITS = [
 ];
 
 /**
+ * Files that hold credentials, kept from every model on top of HARDCODED_OFF_LIMITS: registry and git tokens, private
+ * keys and key stores, cloud credentials, infrastructure state, and Claude Code's shared settings (its env block can
+ * carry an API key). A read list only: whether a run may write one stays the write rule's (HARDCODED_OFF_LIMITS and the
+ * contract), unchanged. The server keeps the same list (model-dispatch apply.ts), and apply.test.mjs asserts it.
+ */
+export const CREDENTIAL_FILES = [
+  ".claude/settings.json",
+  ".npmrc",
+  ".yarnrc.yml",
+  ".pypirc",
+  ".netrc",
+  ".git-credentials",
+  ".vault-token",
+  ".terraformrc",
+  ".docker/config.json",
+  ".kube/config",
+  ".ssh/**",
+  ".aws/**",
+  ".azure/**",
+  ".gnupg/**",
+  ".config/gcloud/**",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.pfx",
+  "*.jks",
+  "*.keystore",
+  "id_rsa*",
+  "id_dsa*",
+  "id_ecdsa*",
+  "id_ed25519*",
+  "credentials.json",
+  "*-credentials.json",
+  "*service-account*.json",
+  "*service_account*.json",
+  "application_default_credentials.json",
+  "*.tfstate",
+  "*.tfstate.backup",
+];
+
+/** What no model is ever sent: the always-off-limits list and every credential file. */
+export const READ_OFF_LIMITS = [...HARDCODED_OFF_LIMITS, ...CREDENTIAL_FILES];
+
+/** A private key's own marker, in any file: the read rule keeps such a file from models whatever its name. */
+export function holdsPrivateKey(text) {
+  return /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/.test(String(text));
+}
+
+/**
  * The write contract's glob dialect (`**` any depth, `*` within one folder, `?` one character), as the hook
  * (write-contract-check.mjs) and the server's writer (model-dispatch apply.ts) match it.
  */
@@ -80,15 +129,23 @@ export function matchesAtAnyDepth(target, pattern) {
  * first, then the run contract's own `off_limits` as written — the order the server's writer refuses in.
  *
  * Why case-insensitive: macOS and Windows disks treat `.ENV` and `.env` as one file, so a pattern matched by case
- * alone would let a path spelt in other letters through to the same bytes.
+ * alone would let a path spelt in other letters through to the same bytes. Names are compared in one Unicode form
+ * with case folded (`ſ` is `s`, as macOS's disk treats it); a file that exists is also judged by its own name on the
+ * disk (lib/change-spec.mjs realRel). `base` is the always-off-limits list: HARDCODED_OFF_LIMITS for a write, and
+ * READ_OFF_LIMITS for what a model reads.
  */
-export function offLimitsMatch(rel, contractOffLimits = []) {
-  const path = String(rel).toLowerCase();
-  for (const pattern of HARDCODED_OFF_LIMITS) {
-    if (matchesAtAnyDepth(path, pattern.toLowerCase())) return { pattern, source: "hardcoded" };
+export function offLimitsMatch(rel, contractOffLimits = [], base = HARDCODED_OFF_LIMITS) {
+  const path = foldName(rel);
+  for (const pattern of base) {
+    if (matchesAtAnyDepth(path, foldName(pattern))) return { pattern, source: "hardcoded" };
   }
   for (const pattern of Array.isArray(contractOffLimits) ? contractOffLimits : []) {
-    if (typeof pattern === "string" && matchGlob(path, pattern.toLowerCase())) return { pattern, source: "contract" };
+    if (typeof pattern === "string" && matchGlob(path, foldName(pattern))) return { pattern, source: "contract" };
   }
   return null;
+}
+
+/** A name in the one form the off-limits match compares: Unicode NFC with case folded both ways (`ſ` to `s`). */
+export function foldName(s) {
+  return String(s).normalize("NFC").toUpperCase().toLowerCase();
 }

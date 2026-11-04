@@ -18,14 +18,15 @@
  * checks that passed on their files before the change), `change-spec.json`, `change_plan.md`, `briefs/`,
  * `packets.json`.
  */
-import { spawn } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bashDenyRules, deniedBy } from "../ambient/lib/bash-rules.mjs";
 import { serverCommandUnchecked } from "../ambient/lib/own-steps.mjs";
-import { matchGlob, offLimitsMatch } from "./off-limits.mjs";
+import { HARDCODED_OFF_LIMITS, READ_OFF_LIMITS, holdsPrivateKey, matchGlob, matchesAtAnyDepth, offLimitsMatch } from "./off-limits.mjs";
 import { runEnded } from "./run-log.mjs";
 import { loadServerLib } from "./server-lib.mjs";
 
@@ -236,10 +237,14 @@ export function liveContract(projectRoot) {
   }
 }
 
-/** A path relative to the project's real folder, through every link, or null when it does not resolve inside it. */
+/**
+ * A path relative to the project's real folder, through every link and spelt as the disk spells it, or null when it
+ * does not resolve inside it. The disk's own spelling matters: macOS opens `.MCP.JSON` or `.mcp.jſon` as `.mcp.json`,
+ * and realpathSync keeps the spelling it was given where realpathSync.native returns the disk's (tried).
+ */
 function realRel(projectRoot, p) {
   try {
-    const rel = relative(realpathSync(projectRoot), realpathSync(resolve(projectRoot, p))).split(sep).join("/");
+    const rel = relative(realpathSync.native(projectRoot), realpathSync.native(resolve(projectRoot, p))).split(sep).join("/");
     return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : null;
   } catch {
     return null;
@@ -248,13 +253,60 @@ function realRel(projectRoot, p) {
 
 const offLimitsLabel = (hit) => `${hit.source === "hardcoded" ? "always" : "the write contract"}: ${hit.pattern}`;
 
-/** Off-limits for this path, by its own name and, when it is a link, by the file it reaches. */
-function offLimitsOf(projectRoot, p, offLimits) {
-  const hit = offLimitsMatch(p, offLimits);
+// Folders the search for another name of a refused file skips: git's own store (refused whole) and installed
+// dependencies and caches, which hold no file of the person's.
+// The search for another name of a refused file passes over only git's store and installed dependencies, which hold no
+// file of the project's own: a refused file can sit in a build or cache folder (a copied .env), and a hard link to it is
+// that file (review: a link to coverage/.env was read).
+const NAME_SEARCH_SKIP = new Set([".git", "node_modules", ".venv", "venv"]);
+const REFUSED_FILE_IDS_MS = 60_000;
+const refusedFileIds = new Map();
+
+/**
+ * The device and inode of each refused file in the project that has more than one name: a hard link to `.env` under
+ * another name is `.env`'s bytes. Found once per project, list and contract, and kept for a minute.
+ */
+function refusedIdsWithLinks(projectRoot, offLimits, base) {
+  const key = `${projectRoot}\0${JSON.stringify(offLimits)}\0${base.length}`;
+  const kept = refusedFileIds.get(key);
+  if (kept && Date.now() - kept.at < REFUSED_FILE_IDS_MS) return kept.ids;
+  const ids = new Set();
+  const walk = (abs, rel) => {
+    let entries;
+    try { entries = readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    for (const d of entries) {
+      const childRel = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) {
+        if (!NAME_SEARCH_SKIP.has(d.name)) walk(join(abs, d.name), childRel);
+      } else if (d.isFile() && offLimitsMatch(childRel, offLimits, base)) {
+        try {
+          const st = statSync(join(abs, d.name));
+          if (st.nlink > 1) ids.add(`${st.dev}:${st.ino}`);
+        } catch {}
+      }
+    }
+  };
+  walk(projectRoot, "");
+  refusedFileIds.set(key, { at: Date.now(), ids });
+  return ids;
+}
+
+/**
+ * Off-limits for this path, by its own name, by the file it reaches (through links, as the disk spells it), and, for
+ * a file with more than one name, by being the same file as a refused one.
+ */
+function offLimitsOf(projectRoot, p, offLimits, base = HARDCODED_OFF_LIMITS) {
+  const hit = offLimitsMatch(p, offLimits, base);
   if (hit) return offLimitsLabel(hit);
   const real = realRel(projectRoot, p);
-  const viaLink = real && real !== p ? offLimitsMatch(real, offLimits) : null;
-  return viaLink ? `${offLimitsLabel(viaLink)}, through the link to ${real}` : null;
+  const viaLink = real && real !== p ? offLimitsMatch(real, offLimits, base) : null;
+  if (viaLink) return `${offLimitsLabel(viaLink)}, through the link to ${real}`;
+  let st;
+  try { st = statSync(resolve(projectRoot, p)); } catch { return null; }
+  if (st.isFile() && st.nlink > 1 && refusedIdsWithLinks(projectRoot, offLimits, base).has(`${st.dev}:${st.ino}`)) {
+    return "the same file as an off-limits one, under another name (a hard link)";
+  }
+  return null;
 }
 
 /**
@@ -262,11 +314,180 @@ function offLimitsOf(projectRoot, p, offLimits) {
  * depth) or the live contract's off_limits — the one read rule for everything a model is sent (the server's
  * hydrateInputs applies the same). The run's own folder, `.sdlc/runs/<run-id>/`, is exempt: its briefs live there.
  */
+/** The project baseline's folder (discovery writes it; agents/brownfield-architect.md reads it). */
+const BASELINE = ".sdlc/baseline/";
+
 export function readRefusal(projectRoot, runId, p, offLimits = liveContract(projectRoot)?.off_limits ?? []) {
   const own = typeof runId === "string" ? `.sdlc/runs/${runId}/` : null;
   if (own && p.startsWith(own) && (realRel(projectRoot, p) ?? p).startsWith(own)) return null;
-  const why = offLimitsOf(projectRoot, p, offLimits);
+  // The project baseline is discovery's record of the project, which the brownfield architect's instructions read: the
+  // contract's list (whose default holds .sdlc/**) does not keep it from a model, the always list does, and a link out
+  // of it is judged where it leads (review: the Gemini architect could not read .sdlc/baseline/stack-profile.md).
+  if (p.startsWith(BASELINE) && (realRel(projectRoot, p) ?? p).startsWith(BASELINE)) {
+    const why = offLimitsOf(projectRoot, p, [], READ_OFF_LIMITS);
+    return why ? `${p} is off-limits (${why})` : null;
+  }
+  // A model reads by the read list: the always-off-limits list and every credential file.
+  const why = offLimitsOf(projectRoot, p, offLimits, READ_OFF_LIMITS);
   return why ? `${p} is off-limits (${why})` : null;
+}
+
+/**
+ * The read rule over a file's text as well as its name, as read_file judges it (thinking-tools.mjs): why a model may not
+ * be sent the project file at `p`, or null. Its name (readRefusal), or a private key in its text, whatever its name.
+ */
+export function readProblem(projectRoot, runId, p, offLimits = liveContract(projectRoot)?.off_limits ?? []) {
+  const why = readRefusal(projectRoot, runId, p, offLimits);
+  if (why) return why;
+  let text;
+  try { text = readFileSync(resolve(projectRoot, p), "utf8"); } catch { return null; } // not a file: judged where it is read
+  return holdsPrivateKey(text) ? `${p} holds a private key` : null;
+}
+
+/**
+ * The first word of a command line that names a file the read rule keeps from models, or null: in the project, any
+ * file readProblem refuses; in the home folder, the credential files of the read list. A check command is the plan's,
+ * which a model wrote, and what it prints goes back to a model, so one that names such a file is refused before it
+ * runs, at hand-in (headerErrors) and again when it runs (runFileCheck) (review of 0.10.1: `cat .env && test -s
+ * {path}` was accepted, and the reviewer's check answered with .env's value). A file a command reaches without naming
+ * it is kept out of what it prints instead (withoutProtectedText).
+ */
+export function commandNamesProtected(projectRoot, runId, cmd) {
+  const home = homedir();
+  for (const raw of String(cmd).split(/[\s;&|<>()`]+/)) {
+    const word = raw.replace(/^['"]+|['"]+$/g, "");
+    // An option, a shell expansion or the checked file's own place: none names a file here.
+    if (!word || word.startsWith("-") || word.includes("$") || word.includes("{path}")) continue;
+    const abs = word.startsWith("~/") ? join(home, word.slice(2)) : resolve(projectRoot, word);
+    const inProject = relative(projectRoot, abs);
+    if (!inProject.startsWith("..") && !isAbsolute(inProject)) {
+      if (inProject && readProblem(projectRoot, runId, inProject.split(sep).join("/"))) return word;
+      continue;
+    }
+    const inHome = relative(home, abs);
+    if (!inHome.startsWith("..") && !isAbsolute(inHome) && READ_OFF_LIMITS.some((g) => matchesAtAnyDepth(inHome.split(sep).join("/"), g))) return word;
+  }
+  return null;
+}
+
+/** What stands in, in a command's output, for text the read rule keeps from models. */
+export const KEPT_BY_READ_RULE = "[kept from you by the read rule]";
+
+/**
+ * The files whose text the read rule keeps from models and a command run in the project could print: in the project,
+ * every file the read list names (git lists them, ignored or not; outside git, a bounded walk), and .git/config, whose
+ * remote can carry a token; in the home folder, the credential files of the read list.
+ */
+function protectedFiles(projectRoot) {
+  const files = new Set([join(projectRoot, ".git", "config")]);
+  const listed = spawnSync("git", ["-C", projectRoot, "ls-files", "-z", "--cached", "--others", "--exclude=node_modules", "--", ...READ_OFF_LIMITS.flatMap((g) => [`:(glob)${g}`, `:(glob)**/${g}`])], { encoding: "utf8", timeout: 30_000, maxBuffer: 50_000_000 });
+  if (listed.status === 0) for (const f of listed.stdout.split("\0").filter(Boolean)) files.add(join(projectRoot, f));
+  else walkFiles(projectRoot, (rel) => READ_OFF_LIMITS.some((g) => matchesAtAnyDepth(rel, g)), files);
+  // In the home folder, the files that hold credentials themselves (HOME_SECRET_FILES): never a whole folder, whose
+  // logs and settings hold no secret and would only blank out ordinary words.
+  const home = homedir();
+  for (const f of HOME_SECRET_FILES) files.add(join(home, f));
+  for (const dir of [".config/gcloud/legacy_credentials", ".azure"]) walkFiles(join(home, dir), (rel) => /\.json$/i.test(rel), files, [], 1);
+  return files;
+}
+
+/**
+ * The home folder's files that hold credentials, each one the read list protects (READ_OFF_LIMITS; a test holds every
+ * entry to it): registry, git and vault tokens, cloud credentials, a container registry's auths, a cluster's tokens,
+ * Google's application default credentials, and Claude Code's settings, whose env block can carry an API key.
+ */
+export const HOME_SECRET_FILES = [".npmrc", ".pypirc", ".netrc", ".git-credentials", ".vault-token", ".terraformrc", ".yarnrc.yml", ".docker/config.json", ".kube/config", ".aws/credentials", ".config/gcloud/application_default_credentials.json", ".claude/settings.json"];
+
+/** Each file under `root` whose relative path `keep` takes, into `into`: no deeper than `depth`, skipping `skip` and caches. */
+function walkFiles(root, keep, into, skip = [], depth = 8) {
+  const SKIP = new Set(["node_modules", ".git", ...skip]);
+  let seen = 0;
+  const walk = (dir, rel, left) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (++seen > 20_000) return;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { if (left > 0 && !SKIP.has(e.name)) walk(join(dir, e.name), r, left - 1); }
+      else if (e.isFile() && keep(r)) into.add(join(dir, e.name));
+    }
+  };
+  walk(root, "", depth);
+}
+
+/**
+ * A command's output with every piece of text the read rule keeps from models put out of it: each private key block,
+ * whatever printed it, and what the protected files hold (protectedFiles): each line of eight characters or more, each
+ * value of a `key = value` or `key: value` line of six or more, and each run of twelve or more characters a token is
+ * made of. A check command is the plan's, written by a model, and it can reach a protected file without naming it
+ * (`cat "$(printf …)"`, a test that prints its configuration); what it prints is what reaches the model, so the rule is
+ * held there (review of 0.10.1: a reviewer's check answered `exit 0\nSECRET=hunter2`). Output that holds none of it is
+ * returned as it is.
+ */
+export function withoutProtectedText(projectRoot, output) {
+  let out = String(output).replace(/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|$)/g, KEPT_BY_READ_RULE);
+  for (const v of protectedValues(projectRoot)) if (out.includes(v)) out = out.split(v).join(KEPT_BY_READ_RULE);
+  return out;
+}
+
+// Per project: the protected files, listed again after half a minute, and their values, read again when one changes.
+const protectedCache = new Map();
+function protectedValues(projectRoot) {
+  let c = protectedCache.get(projectRoot);
+  if (!c || Date.now() - c.listedAt > 30_000) {
+    c = { listedAt: Date.now(), files: [...protectedFiles(projectRoot)].sort(), stamp: null, values: [] };
+    protectedCache.set(projectRoot, c);
+  }
+  const stamp = c.files.map((f) => { try { const st = statSync(f); return `${st.size}:${st.mtimeMs}`; } catch { return "-"; } }).join("|");
+  if (stamp !== c.stamp) { c.values = valuesOf(c.files); c.stamp = stamp; }
+  return c.values;
+}
+
+/** A key that names a secret: what its value holds is kept from models, whatever its shape. */
+const SECRET_KEY = /(secret|passw|passphrase|pwd|token|api[_-]?key|access[_-]?key|key[_-]?data|private|credential|auth|client[_-]?id|session|salt|signing|encrypt|cookie|bearer|(^|[_.-])key$)/i;
+/** A URL that carries its own login (scheme://user:password@host), and the password in it. */
+const URL_LOGIN = /[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:([^\s/@]+)@[^\s/"']+[^\s"']*/gi;
+/** A value shaped like a token: sixteen or more printable characters, with letters and digits. */
+const tokenLike = (v) => v.length >= 16 && /[A-Za-z]/.test(v) && /\d/.test(v) && /^[\x21-\x7e]+$/.test(v);
+
+/**
+ * What the protected files hold that output must not carry, longest first: each secret value, never a file's other
+ * lines or words, which would blank out ordinary text and break a tool's JSON.
+ * A JSON file (a service account, a token cache, Claude Code's settings, Terraform's state): every string under a key
+ * that names a secret. An env, INI or YAML file: each value whose key names a secret, and each token-shaped value. A
+ * .netrc: its passwords. A .vault-token: the token. Any file: the login in each URL that carries one.
+ */
+export function valuesOf(files) {
+  const values = new Set();
+  const add = (raw) => { const v = String(raw).trim().replace(/^["']|["'],?$/g, ""); if (v.length >= 4) values.add(v); };
+  for (const f of files) {
+    let text;
+    try { if (statSync(f).size > 1_000_000) continue; text = readFileSync(f, "utf8"); } catch { continue; }
+    for (const m of text.matchAll(URL_LOGIN)) { values.add(m[0]); add(m[1]); }
+    const name = basename(f);
+    if (/\.(json|tfstate|tfstate\.backup)$/i.test(name)) {
+      let data = null;
+      try { data = JSON.parse(text); } catch { /* not JSON after all: nothing more to take */ }
+      const walk = (x, key) => {
+        if (typeof x === "string") { if (SECRET_KEY.test(key)) add(x); }
+        else if (Array.isArray(x)) for (const y of x) walk(y, key);
+        else if (x && typeof x === "object") for (const [k, v] of Object.entries(x)) walk(v, k);
+      };
+      walk(data, "");
+      continue;
+    }
+    if (name === ".vault-token") { add(text); continue; }
+    if (name === ".netrc") { for (const m of text.matchAll(/\bpassword\s+(\S+)/g)) add(m[1]); continue; }
+    for (const line of text.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#") || t.startsWith(";")) continue;
+      const kv = t.match(/^(?:export\s+)?([^=\s][^=]*?)\s*=\s*(.*)$/) ?? t.match(/^([\w.-]+)\s*:\s+(.+)$/);
+      if (!kv) continue;
+      const v = kv[2].trim().replace(/^["']|["'],?$/g, "");
+      if (SECRET_KEY.test(kv[1]) || tokenLike(v)) add(v);
+    }
+  }
+  return [...values].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0));
 }
 
 /**
@@ -377,7 +598,11 @@ export function checkUnits(units, ctx) {
     if (u.action !== "edit" && u.sites) errors.push(`${at}: only an edit has sites`);
     if (u.action === "tooling" && !u.run) errors.push(`${at}: a tooling unit names its shell step in run`);
     if (u.action !== "tooling" && (u.run || u.cwd)) errors.push(`${at}: only a tooling unit has run and cwd`);
-    if (u.action === "edit" && exists) {
+    // A model cannot edit a file it may not read, and nothing of such a file is quoted back (review of 0.10.1: a site
+    // check answered `line 2 of .env reads "SECRET=…"`, and a site over several lines quoted its last line).
+    const unreadable = u.action === "edit" && exists ? readProblem(projectRoot, runId, u.path, offLimits) : null;
+    if (unreadable) errors.push(`${at}: ${unreadable}: its text is never sent to a model, so no model can edit it`);
+    if (u.action === "edit" && exists && !unreadable) {
       hashOf(u.path);
       const ls = linesOf(u.path);
       const seen = new Set();
@@ -463,36 +688,42 @@ export function checkEnv(env = process.env) {
 /**
  * One check command, as the server runs its checks: a shell in the project root, its output kept to the last
  * `tailChars`, and at its time limit the whole process group is stopped (spawned detached, killed by the negative pid),
- * so a runner's own children cannot hold it past the limit. Resolves { ok, exit, timedOut, output }.
+ * so a runner's own children cannot hold it past the limit. The check runs under the check supervisor, through the
+ * server's own client of it (checkSupervisor.ts runSupervised), which keeps that limit and stops the check's group at
+ * once when this process ends, however it ends: this process can end with its worker's process group, and a limit
+ * kept here ended with it (review: a check ran on with no limit). Resolves { ok, exit, timedOut, output }.
  */
-function runCheck(cmd, cwd, timeoutSec, tailChars) {
-  return new Promise((done) => {
-    let output = "";
-    let timedOut = false;
-    let settled = false;
-    const finish = (r) => { if (!settled) { settled = true; done(r); } };
-    const keep = (d) => { output += d; if (output.length > tailChars * 2) output = output.slice(-tailChars); };
-    let child;
-    try {
-      child = spawn(cmd, { cwd, shell: true, detached: true, env: checkEnv(), stdio: ["ignore", "pipe", "pipe"] });
-    } catch (e) {
-      finish({ ok: false, exit: null, timedOut: false, output: String(e?.message ?? e) });
-      return;
-    }
-    child.stdout.on("data", keep);
-    child.stderr.on("data", keep);
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
-      child.stdout.destroy();
-      child.stderr.destroy();
-    }, timeoutSec * 1000);
-    child.on("error", (e) => { clearTimeout(timer); finish({ ok: false, exit: null, timedOut, output: String(e?.message ?? e) }); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      finish({ ok: code === 0 && !timedOut, exit: timedOut ? null : code, timedOut, output: output.trim().slice(-tailChars) });
-    });
-  });
+async function runCheck(cmd, cwd, timeoutSec, tailChars) {
+  const { checkSupervisor } = await loadServerLib();
+  let output = "";
+  const keep = (d) => { output += d; if (output.length > tailChars * 2) output = output.slice(-tailChars); };
+  const r = await checkSupervisor.runSupervised({ shell: "/bin/sh", command: cmd, cwd, env: checkEnv(), limitMs: timeoutSec * 1000, onOutput: keep });
+  if (r.error !== undefined) return { ok: false, exit: null, timedOut: r.timedOut, output: r.error };
+  return { ok: r.code === 0 && !r.timedOut, exit: r.timedOut ? null : r.code, timedOut: r.timedOut, output: withoutProtectedText(cwd, output.trim().slice(-tailChars)) };
+}
+
+/**
+ * One declared file check on one file, run as the server and plan-lint run checks: the command filled with the path
+ * (quotePath, fillPath), refused when the person's Bash deny rules forbid it or when it cannot be read for them, run
+ * without the vendor credentials (checkEnv), and at its time limit the whole process group stopped (runCheck). A path
+ * that starts with `-` is refused: a command would read it as an option. Resolves { ok, verdict, output } or
+ * { refused }. A Gemini reviewer's run_file_check (thinking-tools.mjs) runs its checks through this.
+ */
+export async function runFileCheck(projectRoot, check, path, tailChars) {
+  if (typeof path !== "string" || path.startsWith("-")) return { refused: `${path} starts with "-", which a command reads as an option: name the file another way` };
+  let template;
+  let cmd;
+  try { template = quotePath(check.run); cmd = fillPath(template, path); } catch (e) { return { refused: String(e?.message ?? e) }; }
+  const rule = deniedBy(cmd, projectRoot);
+  if (rule) return { refused: `the check runs \`${cmd}\`, which the person's Claude settings deny (${rule})` };
+  const named = commandNamesProtected(projectRoot, undefined, cmd);
+  if (named) return { refused: `the check runs \`${cmd}\`, which names ${named}, a file the read rule keeps from models: a check may not read it` };
+  if (bashDenyRules(projectRoot).length > 0 && serverCommandUnchecked({ template, path })) {
+    return { refused: `the check runs \`${cmd}\`, whose shell syntax cannot be checked against the person's deny rules` };
+  }
+  const limit = check.timeout_s ?? 120;
+  const r = await runCheck(cmd, projectRoot, limit, tailChars);
+  return { ok: r.ok, verdict: r.timedOut ? `timed out after ${limit}s` : r.exit === null ? "could not run" : `exit ${r.exit}`, output: r.output };
 }
 
 /**
@@ -520,8 +751,13 @@ function runCheck(cmd, cwd, timeoutSec, tailChars) {
  * (ambient/lib/own-steps.mjs serverCommandUnchecked: `$`, backquotes, brackets, redirects, quotes beyond the path's own,
  * or a path that is not a plain path) is not run either: its baseline is left to dispatch, where the call keeps Claude
  * Code's prompt.
+ *
+ * With `runCommands: false` no command runs at all: only the static check against the person's deny rules, and every
+ * baseline is left to dispatch, after the person approves the plan at Gate 2. A Gemini thinking step's hand-in checks
+ * this way (thinking-tools.mjs write_section): the commands are the model's own, and running them, or sending it their
+ * output, would give it the shell it is denied (review: `cat .env` as a file check sent .env's value back).
  */
-export async function baselineErrors(units, { projectRoot, runDir, header }) {
+export async function baselineErrors(units, { projectRoot, runDir, header, runCommands = true }) {
   const { executorRun } = await loadServerLib();
   const tail = executorRun.RECEIPT_MAX_BYTES;
   const checkById = new Map((header?.file_checks ?? []).map((c) => [c.id, c]));
@@ -577,6 +813,7 @@ export async function baselineErrors(units, { projectRoot, runDir, header }) {
     if (u.action === "tooling") continue;
     const denied = deniedErrors(u);
     if (denied.length) { errors.push(...denied); continue; }
+    if (!runCommands) continue;
     // A new file's style file is its baseline; a style unit's file does not exist until that unit is typed.
     const target = u.action === "edit" ? u.path : u.style_from?.path;
     if (!target || fileLines(projectRoot, target) === null) continue;
@@ -621,7 +858,7 @@ export function assembleSpec(runDir, projectRoot, runId) {
   if (!header) errors.push("no header section was accepted");
   const units = parts.filter((p) => p.section === "units").flatMap((p) => p.value);
   if (!units.length) errors.push("no units section was accepted");
-  if (header) errors.push(...headerErrors(header).map((e) => `header ${e}`));
+  if (header) errors.push(...headerErrors(header, { projectRoot, runId }).map((e) => `header ${e}`));
   if (header && units.length) errors.push(...checkUnitsQuietly(units, projectRoot, runId, header));
   for (const p of parts) {
     for (const [file, hash] of Object.entries(p.hashes ?? {})) {
@@ -643,12 +880,23 @@ function checkUnitsQuietly(units, projectRoot, runId, header) {
  * A header's own rules beyond its shape: every `{path}` of a file check stands where code can quote it (quotePath).
  * Returns error lines naming the field.
  */
-export function headerErrors(header) {
+export function headerErrors(header, { projectRoot, runId } = {}) {
   const errors = [];
   for (const [i, c] of (header?.file_checks ?? []).entries()) {
     for (const field of ["run", "fix"]) {
       const problem = typeof c?.[field] === "string" ? pathPlacementError(c[field]) : null;
       if (problem) errors.push(`/file_checks/${i}/${field}: ${problem}`);
+    }
+  }
+  // Every command of the plan, judged by the read rule before it can run (commandNamesProtected).
+  if (projectRoot) {
+    for (const [list, fields] of [["file_checks", ["run", "fix"]], ["project_checks", ["run"]]]) {
+      for (const [i, c] of (header?.[list] ?? []).entries()) {
+        for (const field of fields) {
+          const named = typeof c?.[field] === "string" ? commandNamesProtected(projectRoot, runId, c[field]) : null;
+          if (named) errors.push(`/${list}/${i}/${field}: names ${named}, a file the read rule keeps from models: a check may not read it`);
+        }
+      }
     }
   }
   return errors;

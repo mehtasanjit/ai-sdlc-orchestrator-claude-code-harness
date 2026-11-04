@@ -171,6 +171,17 @@ test("a receipt with unavailable gives a typist result and its attempt the reaso
   assert.equal(out.attempts[0].error_status, 429);
 });
 
+// E-thinking-busy: the worker's account of when its unserved stretch began reaches the attempt the run's ledger reads.
+test("an agent door attempt Google could not serve carries when the worker's unserved stretch began", async () => {
+  const reason = "refused at global (7 requests over 104 s; last HTTP 429 RESOURCE_EXHAUSTED)";
+  const sidecar = v2([tryOf({ location: "global", ended_by: "refused", http_codes: [429, 429], start_s: 0, end_s: 104, usage: usage(0, 0, 0, 0, null) })],
+    { finish_output: null, text: "", error: "AntigravityExecutionError: model unreachable: Error 429", error_type: "AntigravityExecutionError", error_status: 429, unavailable: reason, unserved_since: "2026-11-10T09:58:16.000Z", failovers: 0 });
+  const out = await dispatchWith(sidecar, FLASH, new Date("2026-11-10T10:00:00Z"), { code: 1 });
+  assert.equal(out.attempts[0].unserved_since, "2026-11-10T09:58:16.000Z", JSON.stringify(out.attempts[0]));
+  const answered = await dispatchWith({ ...sidecar, unavailable: undefined, unserved_since: undefined }, FLASH, new Date("2026-11-10T10:00:00Z"), { code: 1 });
+  assert.equal(answered.attempts[0].unserved_since, undefined);
+});
+
 // E-direct-route-same: the direct route behaves the same and gains only the record.
 test("the direct Gemini route's attempt keeps every field and gains a gemini record of backend, project, location and served tier", async () => {
   const saved = { b: process.env.GEMINI_BACKEND, p: process.env.GOOGLE_CLOUD_PROJECT, l: process.env.GOOGLE_CLOUD_LOCATION, k: process.env.GEMINI_API_KEY };

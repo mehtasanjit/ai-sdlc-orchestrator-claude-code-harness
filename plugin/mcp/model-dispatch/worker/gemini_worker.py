@@ -31,7 +31,8 @@ Contract:
                      between tries are not counted
   --api-retries N, --api-retry-initial-ms MS   the harness's own retry of a
                      busy answer; unset, the SDK's unstated defaults
-  --locations, --stall-sec, --stall-tries, --busy-budget-sec, --heartbeat-sec
+  --locations, --stall-sec, --stall-tries, --busy-budget-sec, --heartbeat-sec,
+  --watch-stdin, --term-grace-sec
                      the call supervisor's settings (agy_supervisor.py)
 
 stdout carries the reply, and only on success (exit 0); a failed session exits
@@ -160,21 +161,27 @@ class AgentSession:
         self.location = location0
         self.ok = False
         self.written = False
+        # The SDK's own id of the conversation the session last ran: a caller that carries it on later (a thinking
+        # step's revise) resumes this one, never another found by guessing.
+        self.conversation_id = None
         self.save_dir = os.path.join(args.out_dir, "_gemini_worker_save")
         self.thinking = _thinking_level(args.thinking)
 
-    def config(self, location: str, resume_id=None):
+    def config(self, location: str, resume_id=None, extra=None):
+        """The session's SDK configuration, built by LocalAgentConfig's constructor, which validates it (a pydantic
+        model_copy(update=) would not). `extra`: more of its fields, for a worker with its own (the thinking worker's
+        capabilities, tools and system instructions)."""
         a = self.args
         opts = types.GeminiModelOptions(thinking_level=self.thinking) if self.thinking else None
-        extra = {}
+        fields = {}
         if a.api_retries is not None:
-            extra["retry_config"] = types.RetryConfig(api_retry=types.ModelAPIRetryConfig(
+            fields["retry_config"] = types.RetryConfig(api_retry=types.ModelAPIRetryConfig(
                 max_retries=a.api_retries, initial_sleep_duration_ms=a.api_retry_initial_ms, exponential_multiplier=2.0))
         if resume_id:
             # The conversation the harness saved, carried on at another location (its contents and thought signatures
             # included): settled on the fake endpoint before this was built.
-            extra["conversation_id"] = resume_id
-            extra["session_continuation_mode"] = types.SessionContinuationMode.RESUME
+            fields["conversation_id"] = resume_id
+            fields["session_continuation_mode"] = types.SessionContinuationMode.RESUME
         return ag.LocalAgentConfig(
             model=types.ModelTarget(
                 name=a.model, types=[types.ModelType.TEXT],
@@ -184,7 +191,8 @@ class AgentSession:
             policies=[policy.allow_all()],
             workspaces=[a.workdir],
             save_dir=self.save_dir,
-            **extra,
+            **fields,
+            **(extra or {}),
         )
 
     def sidecar(self) -> dict:
@@ -250,6 +258,7 @@ class AgentSession:
                 agent = session.agent
                 end = await sup.run_turn(agent, message, t, limit_s=limit, collect=self.tools.collect)
                 conv = getattr(agent, "conversation", None)
+                self.conversation_id = getattr(conv, "conversation_id", None) or getattr(agent, "conversation_id", None) or self.conversation_id
                 sup.end_try(t, end, conv)
                 tool_ran = tool_ran or end.tool_ran
                 plan = None
@@ -328,7 +337,7 @@ async def run(args) -> AgentSession:
     sup = sv.Supervisor(
         model=args.model, locations=locations, stall_sec=args.stall_sec, stall_tries=args.stall_tries,
         busy_budget_s=args.busy_budget_sec, heartbeat_s=args.heartbeat_sec, timeout_s=args.timeout,
-        sdk_version=SDK_VERSION,
+        sdk_version=SDK_VERSION, watch_stdin=args.watch_stdin, term_grace_s=args.term_grace_sec,
         retry_initial_s=args.api_retry_initial_ms / 1000 if args.api_retries is not None and args.api_retry_initial_ms else None,
         work_limit_reason=(f"the session's own work time reached the policy's limit (worker_timeout_sec): {args.timeout} s, "
                            "the time Google held or refused its calls not counted"),
@@ -362,6 +371,10 @@ def main():
     p.add_argument("--stall-tries", type=int, default=2)
     p.add_argument("--busy-budget-sec", type=int, default=120)
     p.add_argument("--heartbeat-sec", type=int, default=10)
+    # The engine holds this worker's stdin open; once it closes, the worker stops as the engine's kill rule would, its
+    # SIGKILL --term-grace-sec after its SIGTERM (agy_supervisor.py).
+    p.add_argument("--watch-stdin", action="store_true")
+    p.add_argument("--term-grace-sec", type=float, default=10)
     args = p.parse_args()
     try:
         s = asyncio.run(run(args))

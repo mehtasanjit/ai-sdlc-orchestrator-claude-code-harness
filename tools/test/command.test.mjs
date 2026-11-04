@@ -371,3 +371,37 @@ test("both commands tell the chat to show no cost total before the run ends", ()
     assert.match(body, /leave out what this session and its helpers cost/, `${file} says why`);
   }
 });
+
+test("a headless run's gates are answered by --gates=auto-approve alone, in both modes, and the record says so", () => {
+  // Live test of 0.10.1: a headless /mmo:pass with --gates=auto-approve stopped at Gate 1. Only a sentence added after
+  // the brief ("approve every HITL gate yourself ...") carried it on: /mmo:pass parsed --gates for brownfield's Gate 0
+  // alone, the orchestrator's gate rule said "pause and prompt" whatever the flag, the brownfield guide said "do not
+  // answer on their behalf", and pass.md claimed a headless run approved its gates by itself.
+  const pass = read(FULL);
+  const greenfield = pass.slice(0, pass.indexOf("## Brownfield-mode flags"));
+  assert.match(greenfield, /`--gates=<prompt\|auto-approve>`/, "greenfield parses --gates");
+  assert.doesNotMatch(pass, /all four HITL gates auto-approve/, "nothing approves a gate because the run is headless");
+  for (const agent of [AGENT, "plugin/agents/brownfield-orchestrator.md"]) {
+    const text = read(agent);
+    const rule = text.slice(text.indexOf("3. **HITL gates.**"), text.indexOf("4. **TaskPacket discipline.**"));
+    assert.match(rule, /Under `gates: auto-approve` no one is asked and you do not stop/, `${agent}: the gate rule applies the flag`);
+    assert.match(text, /--by=auto-approve/, `${agent}: an approval no person gave is logged as the flag's`);
+    assert.match(text, /\*\*Read the brief first\.\*\*[^\n]*\n[^\n]*\n?[^\n]*Under `gates: auto-approve`/, `${agent}: an unclear brief is an assumption written down, not a question`);
+  }
+  const guide = read("plugin/skills/brownfield-guide/SKILL.md");
+  const step6 = guide.slice(guide.indexOf("# 6. Run the pipeline"), guide.indexOf("# 7."));
+  assert.match(step6, /- `gates: /, "the guide hands the flag to the brownfield orchestrator");
+  assert.match(step6, /Under `gates: auto-approve`/, "and does not relay a gate the flag answers");
+  for (const doc of ["docs/running.md", "docs/logging.md"]) {
+    assert.doesNotMatch(read(doc), /run end to end without stopping/, `${doc}: the flag alone, no sentence after the brief`);
+  }
+  // The setup script prints headless runs too, and they must run as the docs' do (review of 0.10.1: without the flag
+  // a headless run stops at Gate 1).
+  const setup = read("tools/setup.mjs");
+  const headless = setup.match(/claude --print "\/mmo:pass [^"]*"[^\n]*\n[^\n]*/g) ?? [];
+  assert.ok(headless.length >= 2, "the setup script prints its headless runs");
+  for (const h of headless) {
+    assert.match(h, /--gates=auto-approve/, h);
+    assert.match(h, /--allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch"/, h);
+  }
+});

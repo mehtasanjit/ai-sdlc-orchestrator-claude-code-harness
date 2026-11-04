@@ -291,9 +291,10 @@ console.log(`
     > /mmo:pass --auth=estimated --run-id=pass1 examples/workforce-ops/brief.md
 
   ${c.bold}Headless${c.reset} (unattended, captured to a log file):
-    ${c.dim}# opus-only baseline under vendor mode${c.reset}
-    claude --print "/mmo:pass --auth=vendor --run-id=pass1 examples/workforce-ops/brief.md" \\
-      --permission-mode acceptEdits \\
+    ${c.dim}# opus-only baseline under vendor mode; a headless run has no one to answer a gate or a${c.reset}
+    ${c.dim}# permission prompt, so it approves its gates (--gates) and allows what it runs (docs/running.md)${c.reset}
+    claude --print "/mmo:pass --auth=vendor --gates=auto-approve --run-id=pass1 examples/workforce-ops/brief.md" \\
+      --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \\
       --output-format stream-json --verbose \\
       > examples/workforce-ops/passes/pass1/live-run.log
     ${c.dim}# keep live-run.log: its last line is Claude Code's own cost receipt. It is written when${c.reset}
@@ -301,8 +302,8 @@ console.log(`
     node plugin/scripts/collect-orchestrator-usage.mjs examples/workforce-ops/passes/pass1 --project-root "$(pwd)"
 
     ${c.dim}# opus + Gemini Flash multi-model under vendor mode${c.reset}
-    claude --print "/mmo:pass --auth=vendor --policy=opus-plus-flash --run-id=pass2 examples/workforce-ops/brief.md" \\
-      --permission-mode acceptEdits \\
+    claude --print "/mmo:pass --auth=vendor --gates=auto-approve --policy=opus-plus-flash --run-id=pass2 examples/workforce-ops/brief.md" \\
+      --permission-mode acceptEdits --allowedTools "Bash,Read,mcp__plugin_mmo_model-dispatch" \\
       --output-format stream-json --verbose \\
       > examples/workforce-ops/passes/pass2/live-run.log
 
