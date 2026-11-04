@@ -9,11 +9,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { alive, beat, fakeWorkerPython, withEnv } from "./agyFakes.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { alive, beat, fakeWorkerPython, groupAlive, withEnv } from "./agyFakes.mjs";
+import { NO_PYTHON, PYTHON, STANDIN, step } from "./agyStandin.mjs";
 
 const DIST = join(dirname(fileURLToPath(import.meta.url)), "..", "dist");
 const { AgyTypist } = await import(join(DIST, "executor", "typists.js"));
@@ -163,6 +165,48 @@ test("the kill rule sends SIGTERM first: a worker that answers it with its recei
   } finally {
     process.kill = kill;
     stubborn.cleanup();
+  }
+});
+
+// E-typist-server-gone. Review: a typist worker outlived its server: after the server was gone it went on with its call,
+// up to its own limits, its spend never recorded. The real typist worker and the SDK stand-in, under a server killed
+// with SIGKILL, which it cannot see coming.
+test("a typist worker ends with its server, however the server ends: it stops as the kill rule stops it, and its receipt is written", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "typist-server-gone-"));
+  // The call is out, billed so far, and never answered.
+  writeFileSync(join(dir, "script.json"), JSON.stringify({ sessions: [{ turns: [[{ at: 0, step: step.user() }, { at: 0.1, usage: BILLED }, { at: 0.1, hold: true }]] }] }));
+  writeFileSync(join(dir, "shared.txt"), "");
+  const log = join(dir, "standin.jsonl");
+  const python = join(dir, "python");
+  writeFileSync(python, `#!/bin/sh\nexport PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${JSON.stringify(STANDIN)} AGY_STANDIN_SCRIPT=${JSON.stringify(join(dir, "script.json"))} AGY_STANDIN_LOG=${JSON.stringify(log)}\nexec ${JSON.stringify(PYTHON)} "$@"\n`);
+  chmodSync(python, 0o755);
+  const scratch = join(dir, "tmp");
+  mkdirSync(scratch);
+  // The server: one typing call through the agent typist, as a stage runs it.
+  const server = join(dir, "server.mjs");
+  writeFileSync(server, [
+    `import { AgyTypist } from ${JSON.stringify(pathToFileURL(join(DIST, "executor", "typists.js")).href)};`,
+    `const typist = new AgyTypist(${JSON.stringify(FLASH)}, { effort: "LOW", maxModelCalls: 3, timeoutSec: 600, apiRetries: 6, apiRetryInitialMs: 2000 });`,
+    `await typist.type({ unit: { id: "u1", path: "a.txt" }, packet: { id: "u1", outputSchema: { type: "object" } }, framed: "brief", shared: "", sharedFile: ${JSON.stringify(join(dir, "shared.txt"))}, contract: "file", passId: "r" });`,
+  ].join("\n"));
+  const events = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const child = spawn(process.execPath, [server], { env: { ...process.env, GEMINI_WORKER_PYTHON: python, GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global", TMPDIR: scratch }, stdio: "ignore" });
+  try {
+    for (const until = Date.now() + 30_000; !events().some((e) => e.ev === "usage") && Date.now() < until; ) await sleep(50);
+    const worker = events().find((e) => e.ev === "agent")?.pid;
+    assert.ok(worker && events().some((e) => e.ev === "usage"), `the worker started and its call was billed: ${JSON.stringify(events().map((e) => e.ev))}`);
+    child.kill("SIGKILL");
+    for (const until = Date.now() + 8_000; (alive(worker) || groupAlive(worker)) && Date.now() < until; ) await sleep(50);
+    assert.equal(alive(worker), false, "the typist worker outlived its server");
+    assert.equal(groupAlive(worker), false, "a process of the worker's group outlived its server");
+    assert.ok(events().some((e) => e.ev === "cancel" && e.pid === worker), "it ended its call in flight, as on the kill rule's SIGTERM");
+    const [folder] = readdirSync(scratch).filter((f) => f.startsWith("mmo-agy-typist-"));
+    const receipt = JSON.parse(readFileSync(join(scratch, folder, "receipt.json"), "utf8"));
+    assert.equal(receipt.usage.prompt_token_count, BILLED.prompt_token_count, "its receipt says what its call cost");
+  } finally {
+    try { child.kill("SIGKILL"); } catch { /* gone */ }
+    for (const e of events()) if (alive(e.pid)) { try { process.kill(-e.pid, "SIGKILL"); } catch { /* gone */ } }
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

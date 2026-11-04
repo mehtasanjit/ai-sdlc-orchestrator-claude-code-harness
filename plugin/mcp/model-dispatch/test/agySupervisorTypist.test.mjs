@@ -343,6 +343,17 @@ describe("the typist worker's call supervisor", { skip: NO_PYTHON, concurrency: 
     assert.ok(r.elapsedMs < 6_000, `exited ${r.elapsedMs} ms after start`);
   });
 
+  // W-engine-gone. Review: a typist worker outlived its server, calling Gemini with nobody to record it. The engine
+  // holds the worker's stdin open (--watch-stdin), so the pipe's end is the engine's, however the engine ended.
+  test("a worker whose engine's end of its stdin closes stops as on SIGTERM: it cancels its turn and writes its receipt with the usage so far", async () => {
+    const r = await runWorker("typist", { script: { sessions: [holding([{ at: 0.1, usage: BILLED }])] }, args: ["--watch-stdin", "--term-grace-sec", "10"], closeStdinAfterMs: 1500 });
+    const rc = r.receipt;
+    assert.ok(rc, `no receipt after the engine's end closed: ${tail(r)}`);
+    assert.deepEqual(tokensOf(rc.usage), tokensOf(BILLED));
+    assert.ok(r.cancels.length >= 1, "the turn is cancelled");
+    assert.ok(r.elapsedMs < 6_000, `exited ${r.elapsedMs} ms after start, not at the call's stall limit`);
+  });
+
   // W-noproxy: the SDK's websocket to its own harness must not go through a proxy.
   test("with a proxy set and no NO_PROXY, the worker adds localhost and 127.0.0.1 to NO_PROXY before it opens a session, keeping what was there", async () => {
     for (const given of [undefined, "corp.example"]) {

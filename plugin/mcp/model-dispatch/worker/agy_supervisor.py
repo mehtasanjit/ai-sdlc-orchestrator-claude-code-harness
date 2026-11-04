@@ -30,10 +30,10 @@ Worker flags, both workers, each optional:
   --busy-budget-sec N    seconds a call may keep meeting refusals (default 120)
   --heartbeat-sec N      heartbeat interval (default 10)
   The agent worker also takes --api-retries N and --api-retry-initial-ms N, as the typist worker already did.
-  The agent door's workers (gemini_worker.py, thinking_worker.py) also take --watch-stdin and --term-grace-sec N: the
-  engine holds the worker's stdin open while it waits on the worker, and once it closes (the engine is gone, however
-  it ended) the worker stops its process group as the engine's kill rule would, SIGTERM, then SIGKILL N s later
-  (default 10, the kill rule's own wait) if it still runs.
+  Every worker (typist_worker.py, gemini_worker.py, thinking_worker.py) also takes --watch-stdin and --term-grace-sec N:
+  the engine holds the worker's stdin open while it waits on the worker, and once it closes (the engine is gone,
+  however it ended) the worker stops its process group as the engine's kill rule would, SIGTERM, then SIGKILL N s
+  later (default 10, the kill rule's own wait) if it still runs.
 
 Receipt (typist) and usage sidecar (agent): every key they had before, plus
   tries          one entry per session (typist) or per segment of a session (agent door), in order:

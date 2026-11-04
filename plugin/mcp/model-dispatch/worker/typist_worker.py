@@ -37,7 +37,8 @@ Contract:
                       leaf with failover_locations (no retry for the run-start probe's
                       call pinned to one of its locations). Unset: the SDK's unstated
                       defaults.
-  --locations, --stall-sec, --stall-tries, --busy-budget-sec, --heartbeat-sec
+  --locations, --stall-sec, --stall-tries, --busy-budget-sec, --heartbeat-sec,
+  --watch-stdin, --term-grace-sec
                       the call supervisor's settings (agy_supervisor.py)
 
 Receipt: {"finish_output", "text", "usage", "sdk", "sdk_version",
@@ -269,12 +270,17 @@ def main() -> None:
     p.add_argument("--stall-tries", type=int, default=2)
     p.add_argument("--busy-budget-sec", type=int, default=120)
     p.add_argument("--heartbeat-sec", type=int, default=10)
+    # The engine holds this worker's stdin open; once it closes, the worker stops as the engine's kill rule would, its
+    # SIGKILL --term-grace-sec after its SIGTERM (agy_supervisor.py).
+    p.add_argument("--watch-stdin", action="store_true")
+    p.add_argument("--term-grace-sec", type=float, default=10)
     a = p.parse_args()
     region = a.region or os.environ.get("GOOGLE_CLOUD_LOCATION")
     locations = [x.strip() for x in a.locations.split(",") if x.strip()] if a.locations else ([region] if region else [])
     sup = sv.Supervisor(
         model=a.model, locations=locations, stall_sec=a.stall_sec, stall_tries=a.stall_tries,
         busy_budget_s=a.busy_budget_sec, heartbeat_s=a.heartbeat_sec, timeout_s=a.timeout, sdk_version=SDK_VERSION,
+        watch_stdin=a.watch_stdin, term_grace_s=a.term_grace_sec,
         retry_initial_s=a.api_retry_initial_ms / 1000 if a.api_retries is not None and a.api_retry_initial_ms else None,
         work_limit_reason=f"the session did not finish within {a.timeout} s of work (time Google held or refused it excluded)",
     )
