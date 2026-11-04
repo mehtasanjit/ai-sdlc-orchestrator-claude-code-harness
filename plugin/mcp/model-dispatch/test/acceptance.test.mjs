@@ -6,9 +6,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { groupAlive, serverKilledMidCommand } from "./agyFakes.mjs";
 
 import { SPEC_HEADER_SCHEMA, validate } from "../dist/spec/schema.js";
 import { submitSpecSection, finalizeSpec } from "../dist/spec/store.js";
@@ -175,6 +176,25 @@ test("a command that runs past the plan's own time limit is stopped; its criteri
   const results = JSON.parse(readFileSync(join(o, "acceptance.json"), "utf8"));
   assert.deepEqual(results.criteria.map((c) => [c.id, c.verdict]), [["AC-3", "not checked"]]);
   assert.match(readFileSync(join(o, "acceptance.md"), "utf8"), /\| server check \| check \| not run: not run to the end: stopped at the plan's time limit/);
+});
+
+// A command's time limit was a timer in the server: a server killed while a command ran left it running in its own
+// process group, with no limit.
+test("a command that runs when the server ends ends with it, however the server ends", async () => {
+  const code = project({});
+  const o = out();
+  const settings = mkdtempSync(join(tmpdir(), "acc-settings-"));
+  let pid = 0;
+  try {
+    const spec = plan([{ name: "server check", run: "echo $$ > cmd.pid; sleep 30", cwd: ".", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 20 }], { no_audit_reason: "test" });
+    pid = await serverKilledMidCommand(`const { runAcceptance } = await import(${JSON.stringify(new URL("../dist/executor/acceptance.js", import.meta.url).href)});\nawait runAcceptance(${JSON.stringify(spec)}, ${JSON.stringify({ codeDir: code, outDir: o })});`, join(code, "cmd.pid"),
+      { env: { CLAUDE_CONFIG_DIR: settings, MMO_MANAGED_SETTINGS: join(settings, "managed.json"), CLAUDE_PROJECT_DIR: code } });
+    for (let i = 0; i < 100 && groupAlive(pid); i++) await new Promise((res) => setTimeout(res, 50));
+    assert.equal(groupAlive(pid), false, "the command's process group ran on after the server was gone");
+  } finally {
+    if (pid && groupAlive(pid)) process.kill(-pid, "SIGKILL");
+    for (const d of [code, o, settings]) rmSync(d, { recursive: true, force: true });
+  }
 });
 
 test("a command whose program the shell cannot find (exit 127) is not run: its criteria are not checked with that reason, and it is never sent for repair", async () => {

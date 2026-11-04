@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { makeScratchCopy, runInScratch } from "../dist/handoff/scratch.js";
+import { groupAlive, serverKilledMidCommand } from "./agyFakes.mjs";
 import { recordLanding, undoLanding, landings } from "../dist/handoff/landing.js";
 
 function project({ git = true } = {}) {
@@ -142,6 +143,32 @@ test("a command runs in the copy: its exit code and output come back, and one th
     assert.doesNotMatch(long.output, /line 0\n/, "its start is cut");
     assert.match(long.output, /^\[earlier output cut\]/);
   } finally { copy.remove(); p.cleanup(); }
+});
+
+// A command's time limit was a timer in the server: a server killed while a hand-off's command ran left it running
+// in its own process group, with no limit.
+test("a command run in the copy ends with the server, however the server ends; the person's Stop still ends it at once", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mmo-scratch-gone-"));
+  const started = (name) => { try { return Number(readFileSync(join(dir, name), "utf8").trim()); } catch { return 0; } };
+  let gone = 0, stopped = 0;
+  try {
+    gone = await serverKilledMidCommand(`const { runInScratch } = await import(${JSON.stringify(new URL("../dist/handoff/scratch.js", import.meta.url).href)});\nawait runInScratch(${JSON.stringify(dir)}, "echo $$ > run.pid; sleep 30", { timeoutMs: 20000 });`, join(dir, "run.pid"));
+    for (let i = 0; i < 100 && groupAlive(gone); i++) await new Promise((res) => setTimeout(res, 50));
+    assert.equal(groupAlive(gone), false, "the command's process group ran on after the server was gone");
+    // While the server runs, the person's Stop ends the command's whole group at once, as before.
+    const stop = new AbortController();
+    const run = runInScratch(dir, "echo $$ > stop.pid; sleep 30", { timeoutMs: 20000, signal: stop.signal });
+    for (let i = 0; i < 500 && !(stopped > 0); i++) { await new Promise((res) => setTimeout(res, 20)); stopped = started("stop.pid"); }
+    const t0 = Date.now();
+    stop.abort();
+    const r = await run;
+    assert.ok(Date.now() - t0 < 5_000, `the stopped command ended ${Date.now() - t0} ms after the Stop`);
+    assert.equal(r.timedOut, false);
+    assert.equal(groupAlive(stopped), false, "the stopped command's group ran on");
+  } finally {
+    for (const pid of [gone, stopped]) if (pid && groupAlive(pid)) process.kill(-pid, "SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a landed hand-off is recorded with what each file held before, and one call undoes it", () => {

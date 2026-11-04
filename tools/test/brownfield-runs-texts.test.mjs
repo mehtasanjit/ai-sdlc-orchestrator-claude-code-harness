@@ -349,7 +349,11 @@ test("the dispatch_failed, no_content and escalate rows say what the loop counts
 // does not reach: the texts say how, once, so the orchestrator neither re-runs them nor expects a denied one to run.
 test("Phase 4 says how the server runs a packet's commands, how plan-lint tries them first, and what a fix round's packets take", () => {
   const shell = SRC("apply.ts");
-  assert.match(shell, /spawn\("\/bin\/sh", \["-c", cmd\], \{ cwd, env: commandEnv\(process\.env\), stdio: \[[^\]]*\], detached: true \}\)/);
+  assert.match(shell, /runSupervised\(\{ shell: "\/bin\/sh", command: cmd, cwd, env: commandEnv\(process\.env\), limitMs/);
+  // The check supervisor runs it as `<shell> -c <command>` in a process group of its own, and kills that group at the limit.
+  const supervisor = read("plugin/scripts/lib/check-supervisor.mjs");
+  assert.match(supervisor, /spawn\(shell, \["-c", command\], \{ cwd, detached: true,/);
+  assert.match(supervisor, /timer = setTimeout\(\(\) => \{\n\s+timedOut = true;\n\s+stopGroup\(\);/);
   const checks = flat(part(RUNS, "- `apply.checks`", "- The spec's project checks"));
   for (const r of [/in its own process group/, /without the vendor credentials the server holds/, /killed whole at its time limit/, /refused when the person's Claude settings deny it/]) assert.match(checks, r);
   assert.match(checks, /a reproducing check's write form never runs/);

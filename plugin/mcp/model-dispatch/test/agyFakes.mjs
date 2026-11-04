@@ -10,6 +10,7 @@
  * is logged with its arguments, process id and process group, so a test can read the flags the engine passed and
  * whether the process is still alive.
  */
+import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -107,6 +108,29 @@ export function alive(pid) {
 /** Whether any process is left in a process group (a worker leads its own). */
 export function groupAlive(pgid) {
   try { process.kill(-pgid, 0); return true; } catch (e) { return e.code === "EPERM"; }
+}
+
+/**
+ * Stands in for the server: runs `code` (an ES module's body) in a Node process of its own until the command it starts
+ * has written its shell's process id to `pidFile`, then kills that process with SIGKILL, which it cannot see coming.
+ * Returns the command's process id, which is its process group's: the server starts each command in a group of its own.
+ */
+export async function serverKilledMidCommand(code, pidFile, { env = {}, limitMs = 15_000 } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "server-standin-"));
+  writeFileSync(join(dir, "server.mjs"), code);
+  const server = spawn(process.execPath, [join(dir, "server.mjs")], { env: { ...process.env, ...env }, stdio: "ignore" });
+  try {
+    let pid = 0;
+    for (const until = Date.now() + limitMs; !(pid > 0) && Date.now() < until; ) {
+      await new Promise((done) => setTimeout(done, 20));
+      try { pid = Number(readFileSync(pidFile, "utf8").trim()); } catch { /* not started yet */ }
+    }
+    if (!(pid > 0)) throw new Error(`the server's command never started (nothing in ${pidFile})`);
+    return pid;
+  } finally {
+    server.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** Runs `fn` with the given process environment variables set, then puts every one back. */

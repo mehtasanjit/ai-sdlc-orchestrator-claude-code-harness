@@ -22,10 +22,11 @@
  * Nothing is written into the repository to make the copy (no commit, no worktree): the file lists come from
  * `git ls-files`, and the copy lives under the system's temp folder until `remove()`.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { constants, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { runSupervised } from "../checkSupervisor.js";
 import { gitInstalled, gitRoot } from "../git.js";
 
 // `cause: "no-git"`: the one refusal the person is told about in their own words (the hook's receipt
@@ -127,36 +128,27 @@ export interface ScratchRun { code: number | null; output: string; timedOut: boo
 /**
  * Runs the person's own command in the copy (through `sh -c`, as they would type it), both output streams together.
  * CI=1 tells test runners not to wait for a person (no watch mode, no prompts). A command past its time limit is
- * stopped, its whole process group with it.
+ * stopped, its whole process group with it, and its output read until it closes; the person's Stop ends the group at
+ * once. The command runs under the check supervisor (checkSupervisor.ts), which keeps the limit and ends the group at
+ * once when this server ends, however it ends.
  */
 export function runInScratch(dir: string, command: string, opts: { timeoutMs: number; cwd?: string; env?: Record<string, string | undefined>; signal?: AbortSignal }): Promise<ScratchRun> {
-  return new Promise((done) => {
-    const started = Date.now();
-    const child = spawn("sh", ["-c", command], { cwd: opts.cwd ? join(dir, opts.cwd) : dir, env: { ...(opts.env ?? process.env), CI: "1" } as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    let output = "";
-    let cut = false;
-    let timedOut = false;
-    const keep = (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-      if (output.length > RUN_OUTPUT_KEPT_CHARS * 2) { output = output.slice(-RUN_OUTPUT_KEPT_CHARS); cut = true; }
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
-    }, opts.timeoutMs);
-    // The person stopped the hand-off: the command's whole process group ends at once.
-    const onAbort = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ } };
-    if (opts.signal?.aborted) onAbort(); else opts.signal?.addEventListener("abort", onAbort, { once: true });
-    child.stdout.on("data", keep);
-    child.stderr.on("data", keep);
-    child.on("error", (e) => { output += String(e); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      opts.signal?.removeEventListener("abort", onAbort);
-      if (output.length > RUN_OUTPUT_KEPT_CHARS) { output = output.slice(-RUN_OUTPUT_KEPT_CHARS); cut = true; }
-      // A cut never starts in the middle of a line.
-      if (cut) output = "[earlier output cut]\n" + output.slice(output.indexOf("\n") + 1);
-      done({ code: timedOut ? (code ?? 124) : code, output, timedOut, ms: Date.now() - started });
-    });
+  const started = Date.now();
+  let output = "";
+  let cut = false;
+  const keep = (chunk: Buffer) => {
+    output += chunk.toString("utf8");
+    if (output.length > RUN_OUTPUT_KEPT_CHARS * 2) { output = output.slice(-RUN_OUTPUT_KEPT_CHARS); cut = true; }
+  };
+  return runSupervised({
+    shell: "sh", command, cwd: opts.cwd ? join(dir, opts.cwd) : dir, env: { ...(opts.env ?? process.env), CI: "1" }, limitMs: opts.timeoutMs,
+    onOutput: keep, keepOutputAtLimit: true, ...(opts.signal ? { signal: opts.signal } : {}),
+  }).then((r) => {
+    // A command the shell could not start says so as Node's own error does.
+    if (r.error !== undefined) output += `Error: ${r.error}`;
+    if (output.length > RUN_OUTPUT_KEPT_CHARS) { output = output.slice(-RUN_OUTPUT_KEPT_CHARS); cut = true; }
+    // A cut never starts in the middle of a line.
+    if (cut) output = "[earlier output cut]\n" + output.slice(output.indexOf("\n") + 1);
+    return { code: r.timedOut ? (r.code ?? 124) : r.code, output, timedOut: r.timedOut, ms: Date.now() - started };
   });
 }

@@ -12,7 +12,7 @@
  */
 
 import { closeSync, constants as FS, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
@@ -26,6 +26,7 @@ import { contractShape, isTransient, parseAnswer } from "./executor/typists.js";
 import { checkAnswer } from "./executor/checks.js";
 import { isSafeRelativePath } from "./spec/store.js";
 import { commandEnv } from "./executor/acceptance.js";
+import { runSupervised } from "./checkSupervisor.js";
 import { BusyLedger } from "./busyLedger.js";
 
 /** `{path, content}` — what every apply packet returns; substituted when the packet omits outputSchema. */
@@ -1027,48 +1028,26 @@ export interface ShellResult {
  * started outlives it; and without the vendor credentials the server holds (acceptance.ts commandEnv), because a
  * check runs the project's own code and its failing output goes into the next attempt's prompt. Once the command
  * ends, whatever it left running in its group is stopped too. Its output (stdout and stderr, in the order written) is
- * kept as a tail while it streams.
+ * kept as a tail while it streams. The command runs under the check supervisor (checkSupervisor.ts), which keeps the
+ * limit and ends the command's group at once when this server ends, however it ends. Its exit code and signal are
+ * those of an end before the limit; one the limit stopped is reported as timed out, with neither.
  */
 export function runShell(cmd: string, cwd: string, timeoutSec: number): Promise<ShellResult> {
-  return new Promise((done) => {
-    const t0 = Date.now();
-    let kept = Buffer.alloc(0);
-    const keep = (b: Buffer) => {
-      kept = Buffer.concat([kept, b]);
-      if (kept.length > OUTPUT_KEEP_BYTES) kept = kept.subarray(kept.length - OUTPUT_KEEP_BYTES);
-    };
-    let child: ChildProcess;
-    try {
-      child = spawn("/bin/sh", ["-c", cmd], { cwd, env: commandEnv(process.env), stdio: ["ignore", "pipe", "pipe"], detached: true });
-    } catch (e: any) {
-      done({ code: null, signal: null, timedOut: false, output: "", ms: Date.now() - t0, error: e?.message ?? String(e) });
-      return;
-    }
-    let code: number | null = null;
-    let signal: string | null = null;
-    let exited = false, timedOut = false, finished = false;
-    let error: string | undefined;
-    const killGroup = () => { try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* the group is gone */ } };
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(timer);
-      done({ code, signal, timedOut, output: kept.toString("utf8"), ms: Date.now() - t0, ...(error ? { error } : {}) });
-    };
-    const timer = setTimeout(() => {
-      if (!exited) timedOut = true;
-      killGroup();
-      // Whatever still holds the output open (something that left the group) no longer delays the verdict.
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      finish();
-    }, Math.min(Math.max(1, timeoutSec) * 1000, MAX_TIMER_MS));
-    child.stdout!.on("data", keep);
-    child.stderr!.on("data", keep);
-    child.on("error", (e) => { error = e.message; finish(); });
-    child.on("exit", (c, s) => { exited = true; code = c; signal = s; killGroup(); });
-    child.on("close", finish);
-  });
+  const t0 = Date.now();
+  let kept = Buffer.alloc(0);
+  const keep = (b: Buffer) => {
+    kept = Buffer.concat([kept, b]);
+    if (kept.length > OUTPUT_KEEP_BYTES) kept = kept.subarray(kept.length - OUTPUT_KEEP_BYTES);
+  };
+  const limitMs = Math.min(Math.max(1, timeoutSec) * 1000, MAX_TIMER_MS);
+  return runSupervised({ shell: "/bin/sh", command: cmd, cwd, env: commandEnv(process.env), limitMs, onOutput: keep, stopGroupOnExit: true }).then((r) => ({
+    code: r.exited ? r.code : null,
+    signal: r.exited ? r.signal : null,
+    timedOut: r.timedOut && !r.exited,
+    output: kept.toString("utf8"),
+    ms: Date.now() - t0,
+    ...(r.error ? { error: r.error } : {}),
+  }));
 }
 
 /**
