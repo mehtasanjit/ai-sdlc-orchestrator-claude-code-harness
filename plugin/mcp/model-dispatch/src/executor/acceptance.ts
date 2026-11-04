@@ -86,15 +86,18 @@ const cut = (s: string) => (s.length > LINE_CHARS ? `${s.slice(0, LINE_CHARS)}â€
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "command";
 
 /**
- * Runs one command line in its own process group, output to a file; the group is killed at the limit. The command runs
- * under the check supervisor (checkSupervisor.ts), which keeps the limit and ends the command's group at once when
- * this server ends, however it ends; the command writes into the log file itself, as before.
+ * Runs one command line in its own process group, output to a file; the group is killed at the limit. Once the command
+ * ends, whatever it left running in its group is stopped too, as a packet's checks are (apply.ts runShell): a command
+ * must finish by itself (the architect's acceptance list), and a server a failed check left running would answer the
+ * next round's requests with the code it was started on. The command runs under the check supervisor
+ * (checkSupervisor.ts), which keeps the limit and ends the command's group at once when this server ends, however it
+ * ends; the command writes into the log file itself, as before.
  */
 function runCommand(run: string, cwd: string, env: Record<string, string>, logPath: string, timeoutMs: number): Promise<{ code: number | null; timedOut: boolean; seconds: number }> {
   return new Promise((done) => {
     const t0 = Date.now();
     const fd = openSync(logPath, "w");
-    void runSupervised({ shell: "/bin/sh", command: run, cwd, env, limitMs: timeoutMs, logFd: fd }).then((r) => {
+    void runSupervised({ shell: "/bin/sh", command: run, cwd, env, limitMs: timeoutMs, logFd: fd, stopGroupOnExit: true }).then((r) => {
       try { closeSync(fd); } catch { /* closed */ }
       done({ code: r.error !== undefined ? null : r.code, timedOut: r.timedOut, seconds: Math.round((Date.now() - t0) / 100) / 10 });
     });

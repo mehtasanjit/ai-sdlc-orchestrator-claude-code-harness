@@ -197,6 +197,26 @@ test("a command that runs when the server ends ends with it, however the server 
   }
 });
 
+// A command's leftovers outlived it: a server check that failed before it stopped its server left the server running,
+// and the next round's requests reached that server, started on the earlier round's code.
+test("whatever a command leaves running in its process group is stopped once the command ends", async () => {
+  const code = project({});
+  const o = out();
+  let pid = 0;
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  try {
+    const r = await runAcceptance(plan([{ name: "server check", run: "sleep 30 & echo $! > server.pid", cwd: ".", role: "check", checks: [], pass: { exit_code: 0 }, timeout_s: 20 }], { no_audit_reason: "test" }), { codeDir: code, outDir: o });
+    assert.deepEqual(r.failed, [], "the command itself passed");
+    pid = Number(readFileSync(join(code, "server.pid"), "utf8"));
+    assert.ok(pid > 0, "the command recorded the process it left running");
+    for (let i = 0; i < 100 && alive(); i++) await new Promise((res) => setTimeout(res, 50));
+    assert.equal(alive(), false, "the process the command left running outlived it");
+  } finally {
+    if (pid && alive()) process.kill(pid, "SIGKILL");
+    for (const d of [code, o]) rmSync(d, { recursive: true, force: true });
+  }
+});
+
 test("a command whose program the shell cannot find (exit 127) is not run: its criteria are not checked with that reason, and it is never sent for repair", async () => {
   assert.equal(NOT_FOUND_EXIT, 127, "POSIX: the shell's exit status for a command it cannot find");
   assert.equal(programOf("FOO=1 npm run build"), "npm");
