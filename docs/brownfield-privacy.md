@@ -60,7 +60,9 @@ A brownfield run runs your repository's own commands, by these routes:
 | The end-of-run project checks (`verify_deferred`: the project checks the spec names, which the architect is told to make the typecheck and the full suite, and in a bugfix the reproducing test once more), the test run, and `tooling` units (a deps run's install) | The orchestrator, with its `Bash` tool | Yes |
 
 The server and `plan-lint.mjs` run a command with a shell, in its own process group, and stop the whole group at its
-time limit, so a runner's own children do not outlive it. `plan-lint.mjs` stops each at its own `timeout_s`. The
+time limit, so a runner's own children do not outlive it. `plan-lint.mjs` stops each at its own `timeout_s`, and so
+does a Gemini reviewer's `run_file_check`: each check runs under a small process of its own that keeps that limit and
+stops the check's whole group at once if the program that asked for it ends first, a stopped step or a closed chat. The
 server runs every command of a file (its checks, their write forms, their run on the file before the change, and the
 red checks) under one limit, the largest `timeout_s` the spec gives that file's checks, which the file's packet
 carries; a fix round's packet keeps its unit's. A command gets their environment minus the vendor credentials they

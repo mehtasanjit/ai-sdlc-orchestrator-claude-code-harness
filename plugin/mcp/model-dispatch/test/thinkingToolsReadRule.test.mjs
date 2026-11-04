@@ -7,11 +7,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { alive } from "./agyFakes.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const { ThinkingTools } = await import(pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "thinking-tools.mjs")).href);
@@ -188,6 +189,49 @@ test("run_file_check runs a check as the engine does: no vendor credentials, the
   const denied = await fileReviewer(checkProject({ permissions: { deny: ["Bash(node:*)"] } })).call("run_file_check", { path: "test/env.test.js", check_id: "unit" });
   assert.ok(denied.error, `a check the person's settings deny is refused: ${text(denied)}`);
   assert.match(denied.error, /deny/);
+});
+
+// E-check-caller-gone. Review: a file check's limit was a timer in the process that ran it, so when that process ended
+// (a thinking step's tools end with their worker's process group: the kill rule, the person's Stop) the check ran on in
+// its own group with no limit: one with a 5 s limit still ran 8 s after its caller was gone.
+test("a file check ends with the tools process that runs it, however that process ends", { timeout: 60_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "mmo-filecheck-gone-"));
+  const put = (rel, body) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), body); };
+  const ids = join(root, "ids.json");
+  // The check starts a child of its own, says which processes it is, then waits; its limit is far past what the test waits.
+  put("test/held.test.js", `const c = require("child_process").spawn("sleep", ["30"], { stdio: "inherit" }); require("fs").writeFileSync(${JSON.stringify(ids)}, JSON.stringify({ check: process.pid, parent: process.ppid, child: c.pid })); setTimeout(() => {}, 60000);\n`);
+  put(".sdlc/runs/r1/change-spec.json", JSON.stringify({ header: { file_checks: [{ id: "unit", run: "node {path}", timeout_s: 20 }] } }));
+  const tools = pathToFileURL(resolve(HERE, "..", "..", "..", "scripts", "thinking-tools.mjs")).href;
+  // The tools process, in a process group of its own as a worker's is: it runs the check, and once the check has
+  // started it does `end`.
+  const caller = (end) => spawn(process.execPath, ["--input-type=module", "-e", [
+    `const { ThinkingTools } = await import(${JSON.stringify(tools)});`,
+    `const { existsSync } = await import("node:fs");`,
+    `new ThinkingTools({ role: "brownfield-senior-reviewer", project_root: ${JSON.stringify(root)}, run_id: "r1", output_dir: ".sdlc/runs/r1", outputs: { review: ".sdlc/runs/r1/review.json" } }).call("run_file_check", { path: "test/held.test.js", check_id: "unit" });`,
+    `const started = setInterval(() => { if (existsSync(${JSON.stringify(ids)})) { clearInterval(started); ${end} } }, 20);`,
+  ].join("\n")], { detached: true, stdio: "ignore" });
+  const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+  const started = [];
+  try {
+    for (const [how, end, stop] of [
+      ["killed with its process group, as the kill rule's SIGKILL takes a worker's tools", "setInterval(() => {}, 1 << 30);", (p) => process.kill(-p.pid, "SIGKILL")],
+      ["ending on its own", "process.exit(0);", () => {}],
+    ]) {
+      rmSync(ids, { force: true });
+      const p = caller(end);
+      started.push(p.pid);
+      for (const until = Date.now() + 15_000; !existsSync(ids) && Date.now() < until; ) await sleep(20);
+      assert.ok(existsSync(ids), `${how}: the check never started`);
+      const check = JSON.parse(readFileSync(ids, "utf8"));
+      started.push(check.check, check.parent, check.child);
+      stop(p);
+      const running = () => [check.check, check.child, check.parent].filter((pid) => alive(pid));
+      for (const until = Date.now() + 5_000; running().length && Date.now() < until; ) await sleep(50);
+      assert.deepEqual(running(), [], `${how}: the check ran on after its caller ended (${JSON.stringify(check)})`);
+    }
+  } finally {
+    for (const pid of started) if (alive(pid)) { try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } }
+  }
 });
 
 test("a hand-in is written only inside the step's own folder, never beside the project or into its source", async () => {
