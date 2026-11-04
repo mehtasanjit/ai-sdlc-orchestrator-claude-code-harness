@@ -11,7 +11,8 @@
  * again, Google's status is read, a refused call can move to the leaf's failover_locations, and the usage sidecar is
  * written on every outcome with each try's own usage and location. This adapter prices each try at its own location,
  * day and served tier, and stops the worker only by the heartbeat kill rule (executor/stall.ts) or the request's own
- * stop, which the result then names (`worker_stopped`).
+ * stop, which the result then names (`worker_stopped`). A worker never outlives this server: it watches its stdin,
+ * which the server holds open, and stops itself as the kill rule would once the server is gone.
  */
 
 import { spawn } from "node:child_process";
@@ -416,6 +417,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       heartbeatSec: HEARTBEAT_SEC,
       apiRetries: retry.retries,
       apiRetryInitialMs: retry.initialMs,
+      termGraceSec: this.backstop?.termGraceS,
     });
     if (thinking) {
       // A step waits out a model Google serves nothing of for the run's busy window, carrying on its own conversation,
@@ -427,6 +429,8 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
       // A dispatch that carries on one the kill rule stopped: the worker continues its saved conversation.
       if (thinking.carryOn) args.push("--carry-on");
       args.push("--summary-file", summaryFile);
+      // The step lock's token, by which a call taking over the lock tells this worker from a process that took its id.
+      if (thinking.lock) args.push("--lock-token", thinking.lock.token);
     }
 
     // Inventoried as late as possible so nothing this adapter wrote appears
@@ -459,7 +463,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
 
     // The kill rule's bound for one call: the worker's own stall tries, harness retry rule and busy budget.
     const waitBoundS = callWaitBoundSec(stallSec, { tries: STALL_TRIES, retry, busyBudgetSec: BUSY_BUDGET_SEC });
-    const run = await this.spawnWorker(args, sdkWorkdir, timeoutSec, waitBoundS, packet.id, runContext?.signal);
+    const run = await this.spawnWorker(args, sdkWorkdir, timeoutSec, waitBoundS, packet.id, runContext?.signal, thinking?.lock?.started);
     // The empty folder is the step's alone, and nothing in it is the step's work: removed whatever the outcome.
     if (sdkWorkdir !== workdir) {
       try { rmSync(sdkWorkdir, { recursive: true, force: true }); } catch { /* a folder left behind never fails the step */ }
@@ -649,7 +653,11 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
    * process would leave them running (holding the workdir, still talking to
    * Vertex). Signalling the negative pid takes the whole group. `shell: false`
    * (default) prevents re-parsing user paths in the argv. The group is stopped
-   * only by the heartbeat kill rule, or by the request's own stop.
+   * only by the heartbeat kill rule, or by the request's own stop, while this
+   * server runs. Its stdin is a pipe this server holds open and never writes:
+   * the worker watches it (--watch-stdin), so the pipe's end, which comes with
+   * this server's end however it ends, stops the worker's group as the kill
+   * rule would. `started` is told the worker's process id as it starts.
    */
   private spawnWorker(
     args: string[],
@@ -658,6 +666,7 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
     waitBoundS: number,
     packetId: string,
     signal?: AbortSignal,
+    started?: (pid: number) => void,
   ): Promise<{ ok: boolean; stdout: string; error: string; tail: string; code: number | null; killed: string | null; lastBeat: Heartbeat | null }> {
     const spawnStarted = Date.now();
     return new Promise((resolveRun) => {
@@ -668,8 +677,16 @@ export class AntigravityWorkerAdapter implements ModelAdapter {
           project: this.project,
           location: this.location,
         }),
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
+      // A step's lock names the worker the moment it runs; a lock that cannot say so never leaves the worker unwatched.
+      if (child.pid !== undefined && started) {
+        try {
+          started(child.pid);
+        } catch (err: any) {
+          log("warn", "agsdk.worker_not_recorded", { packet_id: packetId, pid: child.pid, error: err?.message ?? String(err) });
+        }
+      }
 
       let stdout = "";
       let stderr = "";

@@ -612,9 +612,11 @@ export interface RunContext {
    * (how the step runs, and the helper's instructions); `task` the step's first message (the invocation, or on a
    * resumed conversation the changes asked for). The packet's instruction stays the whole text. `carryOn`: this
    * dispatch carries on one whose worker the kill rule stopped, so the worker continues the saved conversation
-   * (`resumeId`) with the harness's own words instead of sending its task again.
+   * (`resumeId`) with the harness's own words instead of sending its task again. `lock`: the step's lock (thinking.ts
+   * takeStepLock), whose token goes on the worker's command line and which `started` tells the worker's process id, so
+   * a call that takes the lock over after this server stopped can tell that worker and stop it first.
    */
-  thinking?: { role: string; toolsConfig: string; saveDir: string; resumeId?: string; carryOn?: boolean; timeoutSec: number; system: string; task: string };
+  thinking?: { role: string; toolsConfig: string; saveDir: string; resumeId?: string; carryOn?: boolean; timeoutSec: number; system: string; task: string; lock?: { token: string; started: (pid: number) => void } };
 }
 
 export type RuleMatcher = {

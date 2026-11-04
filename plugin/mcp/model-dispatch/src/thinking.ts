@@ -20,6 +20,7 @@ import { basename, dirname, isAbsolute, join, posix as posixPath, relative, reso
 
 import { holdsPrivateKey, modelReadOf } from "./apply.js";
 import { evidenceDir } from "./delegation/evidence.js";
+import { BACKSTOP } from "./executor/stall.js";
 import { loggerTouched } from "./log.js";
 import { round6 } from "./pricing.js";
 import { openedSpec, PREVIOUS_DIR, SPEC_RECORDS } from "./spec/store.js";
@@ -491,7 +492,7 @@ function sumTokens(results: ExecutionResult[]): ExecutionResult["tokens"] {
   return { input: 0, input_cached: 0, output: 0, ...out } as ExecutionResult["tokens"];
 }
 
-interface StepLock { pid?: unknown; started_at?: unknown; token?: unknown }
+interface StepLock { pid?: unknown; started_at?: unknown; token?: unknown; worker_pid?: unknown }
 
 /** A step's lock as its file holds it; undefined when there is none, null when it cannot be read. */
 function readLock(path: string): StepLock | null | undefined {
@@ -517,22 +518,83 @@ function lockLive(lock: StepLock): boolean {
   return lock.pid === process.pid ? typeof lock.token === "string" && HELD_LOCKS.has(lock.token) : processAlive(lock.pid);
 }
 
+/** Whether any process is in this process group: a worker leads its own, as the agent door starts it detached. */
+function groupAlive(pgid: number): boolean {
+  try { process.kill(-pgid, 0); return true; } catch (e: any) { return e?.code === "EPERM"; }
+}
+
+/** A process's command line: null when no process has this id, undefined when it cannot be read. Linux answers from /proc, elsewhere ps does. */
+function commandLine(pid: number): string | null | undefined {
+  if (existsSync("/proc/self/cmdline")) {
+    try { return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim(); } catch (e: any) { return e?.code === "ENOENT" ? null : undefined; }
+  }
+  const ps = spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], { encoding: "utf8", timeout: 10_000 });
+  if (ps.error || (ps.status !== 0 && ps.status !== 1)) return undefined;
+  return (ps.stdout ?? "").trim() || null;
+}
+
+/**
+ * The worker a lock names (worker_pid), while it still runs: the process with that id, when its command line carries
+ * the lock's token (the agent door passes it, --lock-token). A process that took the id after the worker ended has no
+ * such token and is never taken for it. "unknown" when that process's command line cannot be read.
+ */
+function lockWorker(lock: StepLock): number | "unknown" | null {
+  if (typeof lock.token !== "string" || !processAlive(lock.worker_pid)) return null;
+  const line = commandLine(lock.worker_pid as number);
+  if (line === undefined) return "unknown";
+  return line !== null && ` ${line} `.includes(` --lock-token ${lock.token} `) ? (lock.worker_pid as number) : null;
+}
+
+/** How long a worker's group may take to be gone after its SIGKILL. */
+const KILLED_GONE_MS = 2_000;
+
+/**
+ * Stops a step's earlier worker as the agent door's kill rule stops one (executor/stall.ts watchWorker): SIGTERM to its
+ * process group, which it answers by ending its call and writing its receipt, then SIGKILL `graceMs` later. Resolves
+ * whether neither it nor anything in its group runs any more.
+ */
+async function stopWorker(pid: number, graceMs: number): Promise<boolean> {
+  const gone = () => !processAlive(pid) && !groupAlive(pid);
+  const signal = (sig: NodeJS.Signals) => { try { process.kill(-pid, sig); } catch { try { process.kill(pid, sig); } catch { /* gone */ } } };
+  const goneWithin = async (ms: number) => {
+    for (const end = Date.now() + ms; !gone() && Date.now() < end; ) await new Promise((done) => setTimeout(done, 50));
+    return gone();
+  };
+  signal("SIGTERM");
+  if (await goneWithin(graceMs)) return true;
+  signal("SIGKILL");
+  return goneWithin(KILLED_GONE_MS);
+}
+
 /** A step as a person names it: its role, its review file when it has one, and its run. */
 function stepName(args: ThinkingArgs): string {
   return `the ${args.role} step${args.review_path ? ` for ${args.review_path}` : ""}${args.run_id ? ` of run ${args.run_id}` : ""}`;
 }
 
+/** A call's hold on its step's lock (takeStepLock). */
+export interface HeldStepLock {
+  /** The lock's token: on the command line of each worker the call starts (--lock-token). */
+  token: string;
+  /** Names a worker the call started in the lock, by its process id. */
+  worker: (pid: number) => void;
+  release: () => void;
+}
+
 /**
  * One call of a step at a time. The call holds `<stepDir>/<key>.lock`, created exclusively and holding the server's
- * process id and the call's start time; it is removed when the call returns. A second call of the step while it is held
- * is refused before it writes anything, so two workers never share one save folder, tools config, record and packet
- * (review: nothing refused it). A lock whose call no longer runs is taken over: its process is gone (process.kill(pid,
- * 0) finds none: the server stopped mid-step), or it names this server's process id but no call of this server holds
- * it, or it cannot be read. In one server, taking the lock is one synchronous step, so two calls there can never both
- * hold it; between servers, a lock being taken over is first moved aside, in one step, and one that turns out to be
- * another call's live lock is put back. Returns the release.
+ * process id and the call's start time, and once the call starts a worker, that worker's process id; it is removed when
+ * the call returns. A second call of the step while it is held is refused before it writes anything, so two workers
+ * never share one save folder, tools config, record and packet (review: nothing refused it). A lock whose call no
+ * longer runs is taken over: its process is gone (process.kill(pid, 0) finds none: the server stopped mid-step), or it
+ * names this server's process id but no call of this server holds it, or it cannot be read. Its worker may still run (a
+ * worker ends with its server, but not at once), and it is gone before the lock is taken (review: a call after a server
+ * restart started a second worker on the step's files): a worker whose command line carries the lock's token is
+ * stopped as the kill rule stops one, SIGTERM to its group, then SIGKILL `termGraceS` later; a process that only took
+ * its id is never signalled. In one server, taking a lock whose worker is gone is one synchronous step, so two calls
+ * there can never both hold it; between servers, a lock being taken over is first moved aside, in one step, and one
+ * that turns out to be another call's live lock is put back.
  */
-export function takeStepLock(lockPath: string, step: string): () => void {
+export async function takeStepLock(lockPath: string, step: string, o: { termGraceS?: number } = {}): Promise<HeldStepLock> {
   const mine = { pid: process.pid, started_at: new Date().toISOString(), token: randomUUID() };
   const running = (held: StepLock) => new Error(`run_thinking_step: ${step} is already running (process ${String(held.pid)}, since ${String(held.started_at)}; its lock is ${lockPath}); nothing was sent. Two calls of one step would share its save folder, tools config and record: wait for that call to return.`);
   for (let tries = 0; ; tries++) {
@@ -541,6 +603,12 @@ export function takeStepLock(lockPath: string, step: string): () => void {
     const held = readLock(lockPath);
     if (held === undefined) continue;
     if (held && lockLive(held)) throw running(held);
+    const worker = held ? lockWorker(held) : null;
+    if (worker === "unknown") throw new Error(`run_thinking_step: ${step}'s lock ${lockPath} names its worker, process ${String(held?.worker_pid)}, and that process's command line cannot be read to tell whether it is the step's worker, still running; nothing was sent. Stop that process if it is the step's worker, or remove the lock, then call the step again.`);
+    if (worker !== null) {
+      if (!(await stopWorker(worker, (o.termGraceS ?? BACKSTOP.termGraceS) * 1000))) throw new Error(`run_thinking_step: ${step}'s earlier worker, process ${worker}, still runs after SIGTERM and SIGKILL (its lock is ${lockPath}); nothing was sent`);
+      continue;
+    }
     const aside = `${lockPath}.${mine.token}.stale`;
     try { renameSync(lockPath, aside); } catch (e: any) { if (e?.code === "ENOENT") continue; throw e; }
     const moved = readLock(aside);
@@ -552,9 +620,18 @@ export function takeStepLock(lockPath: string, step: string): () => void {
     rmSync(aside, { force: true });
   }
   HELD_LOCKS.add(mine.token);
-  return () => {
-    HELD_LOCKS.delete(mine.token);
-    if (readLock(lockPath)?.token === mine.token) rmSync(lockPath, { force: true });
+  return {
+    token: mine.token,
+    worker: (pid) => {
+      if (readLock(lockPath)?.token !== mine.token) return;
+      const next = `${lockPath}.${mine.token}.next`;
+      writeFileSync(next, JSON.stringify({ ...mine, worker_pid: pid }) + "\n");
+      renameSync(next, lockPath);
+    },
+    release: () => {
+      HELD_LOCKS.delete(mine.token);
+      if (readLock(lockPath)?.token === mine.token) rmSync(lockPath, { force: true });
+    },
   };
 }
 
@@ -587,16 +664,16 @@ export async function runThinkingStep(args: ThinkingArgs, deps: ThinkingDeps): P
   // module's conversation, and both read one brief). One call of a step runs at a time: a second call while it runs is
   // refused before it writes anything of the step's, its input copies and tools config included (takeStepLock).
   const key = stepKey(args);
-  const release = takeStepLock(join(stepDir, `${key}.lock`), stepName(args));
+  const lock = await takeStepLock(join(stepDir, `${key}.lock`), stepName(args));
   try {
-    return await lockedStep(args, deps, role, brownfield, requirementsPath, stepDir, key);
+    return await lockedStep(args, deps, role, brownfield, requirementsPath, stepDir, key, lock);
   } finally {
-    release();
+    lock.release();
   }
 }
 
 /** The step itself, while its call holds the step's lock: its inputs, its route, its dispatch and its reply. */
-async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: ThinkingRole, brownfield: boolean, requirementsPath: string | undefined, stepDir: string, key: string): Promise<ThinkingReply> {
+async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: ThinkingRole, brownfield: boolean, requirementsPath: string | undefined, stepDir: string, key: string, lock: HeldStepLock): Promise<ThinkingReply> {
   // The step's inputs, through the read rule, before anything is routed or spent.
   const inputCopies = stepInputsCopied(args.project_root, args.output_dir, args.inputs);
 
@@ -684,7 +761,9 @@ async function lockedStep(args: ThinkingArgs, deps: ThinkingDeps, role: Thinking
     return seen.filter((p) => !mine(p));
   };
   const send = async (thinking: NonNullable<RunContext["thinking"]>) => {
-    const { result, events } = await deps.dispatch(packet, thinking);
+    // Each worker is named in the step's lock as it starts, so a call that takes the lock over after this server
+    // stopped can stop that worker first (takeStepLock).
+    const { result, events } = await deps.dispatch(packet, { ...thinking, lock: { token: lock.token, started: lock.worker } });
     dispatched.push(result);
     const changed = changedSince();
     deps.record(events.map((e) => ({ ...e, judgment_role: args.role })));

@@ -5,25 +5,29 @@
  *   - an agent step is done only when every piece is accepted; a step that cannot finish stops, with no other model;
  *   - a project file that changed while the step ran stops it;
  *   - a revise carries on the saved conversation;
- *   - the step's tools are configured for its own fixed paths, and its packet is routed as the route table reads it.
+ *   - the step's tools are configured for its own fixed paths, and its packet is routed as the route table reads it;
+ *   - one call of a step runs at a time; its worker ends with its server, and a lock a server left is taken over only
+ *     once that lock's worker is gone.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { THINKING_ROLES, outputDirProblem, roleInstructions, roleOutputs, runThinkingStep, stepKey } from "../dist/thinking.js";
+import { THINKING_ROLES, outputDirProblem, roleInstructions, roleOutputs, runThinkingStep, stepKey, takeStepLock } from "../dist/thinking.js";
 import { AntigravityWorkerAdapter } from "../dist/adapters/AntigravityWorkerAdapter.js";
 import { configureSinks, log as pluginLog } from "../dist/log.js";
 import { submitSpecSection } from "../dist/spec/store.js";
-import { alive, beat, fakeWorkerPython, flagValue, withEnv } from "./agyFakes.mjs";
+import { alive, beat, fakeWorkerPython, flagValue, groupAlive, withEnv } from "./agyFakes.mjs";
 import { NO_PYTHON, PYTHON, STANDIN, step as standinStep, textAnswer } from "./agyStandin.mjs";
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const DIST = resolve(dirname(fileURLToPath(import.meta.url)), "..", "dist");
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const CLAUDE = { id: "opus", adapter: "builtin-anthropic", model_name: "claude-opus-5-5" };
 const AGENT = { id: "argon", adapter: "antigravity-worker", model_name: "gemini-4-argon" };
 const COMPLETION = { id: "flash", adapter: "mcp:model-dispatch", model_name: "gemini-3.8-flash" };
@@ -466,6 +470,88 @@ test("a second call of a step while it runs is refused at once; a lock left by a
   assert.deepEqual(readdirSync(join(root, ".sdlc", "runs", "r1", "thinking")).filter((f) => /lock/.test(f)), [], "nothing of the lock is left behind");
 });
 
+// E-thinking-lock-worker. Review: the step lock held only its server's process id, so after a server restart a call took
+// it over at once and started a second worker on the step's save folder, tools state, record and evidence while the
+// first one still ran.
+test("while a step's worker runs, the step's lock names it: its process id, and the lock's token on its command line", { timeout: 30_000 }, async () => {
+  const summary = { done: true, missing: [], accepted: ["header.json", "units-001.json"], conversation_id: "c1", text: "" };
+  const fake = fakeWorkerPython({ runs: [{ holdMs: 300, sidecar: { sdk_version: "0.1.22", usage: { prompt_token_count: 10 } }, summary }] });
+  const root = project();
+  const lock = join(root, ".sdlc", "runs", "r1", "thinking", "brownfield-architect.lock");
+  try {
+    await withEnv({ GEMINI_WORKER_PYTHON: fake.python, GOOGLE_CLOUD_PROJECT: "p", GOOGLE_CLOUD_LOCATION: "global" }, async () => {
+      const door = new AntigravityWorkerAdapter({ id: "flash", adapter: "antigravity-worker", model_name: "gemini-3.8-flash" });
+      let seen;
+      const { d } = deps(AGENT, () => assert.fail("dispatched through the agent door"), {
+        dispatch: async (packet, thinking) => {
+          const out = door.execute(packet, undefined, { project_root: root, work_dir: root, telemetry_path: join(root, "t.jsonl"), thinking });
+          while (fake.runs().length === 0) await sleep(10);
+          seen = JSON.parse(readFileSync(lock, "utf8"));
+          return { result: await out, events: [] };
+        },
+      });
+      assert.equal((await runThinkingStep(args(root), d)).route, "done");
+      const [run] = fake.runs();
+      assert.equal(seen.pid, process.pid);
+      assert.equal(seen.worker_pid, run.pid, "the lock names the worker that runs");
+      assert.equal(flagValue(run.args, "--lock-token"), seen.token, "whose command line carries the lock's token");
+    });
+  } finally {
+    fake.cleanup();
+  }
+});
+
+test("a call that takes over a lock its server left stops that lock's worker first, by its process group, and never a process that only has its id", { timeout: 60_000 }, async () => {
+  const root = project();
+  const stepDir = join(root, ".sdlc", "runs", "r1", "thinking");
+  mkdirSync(stepDir, { recursive: true });
+  const lock = join(stepDir, "brownfield-architect.lock");
+  const gone = spawnSync(process.execPath, ["-e", ""]).pid;
+  const leftBy = (worker) => writeFileSync(lock, JSON.stringify({ pid: gone, started_at: "2026-11-01T09:00:00.000Z", token: "left-behind", worker_pid: worker }) + "\n");
+  const marks = join(root, "marks.txt");
+  const said = () => (existsSync(marks) ? readFileSync(marks, "utf8") : "");
+  // A stand-in for a worker: the thinking worker's command line, in a process group of its own as the adapter starts
+  // one; `onTerm` is what it does on SIGTERM. It says when it is ready, so no signal reaches it before its handler.
+  const started = [];
+  const worker = async (token, onTerm) => {
+    const p = spawn(process.execPath, ["-e", `process.on("SIGTERM", () => { ${onTerm} }); require("fs").appendFileSync(${JSON.stringify(marks)}, "ready " + process.pid + "\\n"); setInterval(() => {}, 1 << 30);`, "--", "worker/thinking_worker.py", "--lock-token", token], { detached: true, stdio: "ignore" });
+    started.push(p.pid);
+    for (const until = Date.now() + 10_000; !said().includes(`ready ${p.pid}\n`) && Date.now() < until; ) await sleep(20);
+    return p.pid;
+  };
+  try {
+    // The lock's own worker answers SIGTERM as a worker does: it writes its receipt (here a mark) and exits.
+    const left = await worker("left-behind", `require("fs").appendFileSync(${JSON.stringify(marks)}, "receipt " + process.pid + "\\n"); process.exit(143);`);
+    leftBy(left);
+    let atSend;
+    const { d } = deps(AGENT, () => result());
+    const r = await runThinkingStep(args(root), { ...d, dispatch: async (packet, thinking) => { atSend = { alive: alive(left), lock: JSON.parse(readFileSync(lock, "utf8")) }; return d.dispatch(packet, thinking); } });
+    assert.equal(r.route, "done", JSON.stringify(r));
+    assert.equal(atSend.alive, false, "the earlier worker still ran when this call sent its own");
+    assert.match(said(), new RegExp(`^receipt ${left}$`, "m"), "stopped with SIGTERM first, as the kill rule stops a worker, so it wrote its receipt");
+    assert.equal(atSend.lock.pid, process.pid, "then the lock was this call's");
+    // A process that took the worker's id after the worker ended has no such token on its command line: never signalled.
+    const other = await worker("another-call", `require("fs").appendFileSync(${JSON.stringify(marks)}, "signalled " + process.pid + "\\n");`);
+    leftBy(other);
+    assert.equal((await runThinkingStep(args(root), deps(AGENT, () => result()).d)).route, "done");
+    assert.equal(alive(other), true, "a process that is not the lock's worker was stopped");
+    assert.doesNotMatch(said(), /^signalled /m);
+    process.kill(-other, "SIGKILL");
+    // A worker that does not end on SIGTERM is killed the kill rule's grace later, and only then is the lock taken.
+    const stuck = await worker("left-behind", "");
+    leftBy(stuck);
+    const from = Date.now();
+    const held = await takeStepLock(lock, "the step", { termGraceS: 1 });
+    assert.ok(Date.now() - from >= 1_000, `taken ${Date.now() - from} ms after SIGTERM, before its grace`);
+    assert.equal(alive(stuck) || groupAlive(stuck), false, "the stuck worker's group was killed");
+    assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, held.token);
+    held.release();
+    assert.equal(existsSync(lock), false);
+  } finally {
+    for (const pid of started) if (alive(pid)) { try { process.kill(-pid, "SIGKILL"); } catch { /* gone */ } }
+  }
+});
+
 test("a step whose worker stopped after every piece was accepted is done; one with pieces owed says what is owed and what was kept", async () => {
   const root = project();
   const failed = (summary) => deps(AGENT, () => result({ success: false, error: "The agent worker exited 1: the step's own work time reached the policy's limit", result: summary }));
@@ -824,5 +910,63 @@ test("a frozen thinking worker is killed, and the step goes on from its saved co
     assert.ok(existsSync(join(root, "out", "spec.json")), "the spec was finalized");
   } finally {
     for (const e of events()) if (alive(e.pid)) { try { process.kill(e.pid, "SIGKILL"); } catch { /* gone */ } }
+  }
+});
+
+// E-thinking-server-gone. Review: a thinking worker outlived its server: after a server restart mid-step it went on
+// calling Gemini up to its budget, its spend never recorded, and the step's next call, taking the lock as stale, started
+// a second worker on the same files. The real thinking worker, its real tools and the SDK stand-in, under a server that
+// is killed with SIGKILL, which it cannot see coming.
+test("a step's worker ends with its server, however the server ends: it stops as the kill rule stops it, keeping its receipt, and the step's next call takes the lock over", { skip: NO_PYTHON, timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "server-gone-"));
+  // The worker hands its requirements in, then its next call is out and never answered.
+  writeFileSync(join(dir, "script.json"), JSON.stringify({ sessions: [{ turns: [[
+    { at: 0, step: standinStep.tool("write_requirements", "ACTIVE", { content: "# Requirements\n\n- FR-1: answer ping.\n" }, "w1") },
+    { at: 0, usage: { prompt_token_count: 10 } },
+    { at: 0, hold: true },
+  ]] }] }));
+  const log = join(dir, "standin.jsonl");
+  const python = join(dir, "python");
+  writeFileSync(python, `#!/bin/sh\nexport PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${JSON.stringify(STANDIN)} AGY_STANDIN_SCRIPT=${JSON.stringify(join(dir, "script.json"))} AGY_STANDIN_LOG=${JSON.stringify(log)}\nexec ${JSON.stringify(PYTHON)} "$@"\n`);
+  chmodSync(python, 0o755);
+  const root = project();
+  // The server: one requirements step through the agent door, as server.ts runs it.
+  const server = join(dir, "server.mjs");
+  writeFileSync(server, [
+    `import { runThinkingStep } from ${JSON.stringify(pathToFileURL(join(DIST, "thinking.js")).href)};`,
+    `import { AntigravityWorkerAdapter } from ${JSON.stringify(pathToFileURL(join(DIST, "adapters", "AntigravityWorkerAdapter.js")).href)};`,
+    `const root = ${JSON.stringify(root)};`,
+    `const leaf = { id: "flash", adapter: "antigravity-worker", model_name: "gemini-3.8-flash" };`,
+    `const door = new AntigravityWorkerAdapter(leaf);`,
+    `await runThinkingStep({ role: "requirements", prompt: "Write requirements.md.", project_root: root, run_id: "r1", output_dir: "out", telemetry_path: root + "/t.jsonl" }, {`,
+    `  pluginRoot: ${JSON.stringify(PLUGIN_ROOT)}, route: () => ({ model: leaf, reason: "test" }), agentDoorProblem: () => null, contractActive: () => false,`,
+    `  thinkingTimeoutSec: 600, record: () => {}, log: () => {},`,
+    `  dispatch: async (packet, thinking) => ({ result: await door.execute(packet, undefined, { project_root: root, work_dir: root, telemetry_path: root + "/t.jsonl", thinking }), events: [] }),`,
+    `});`,
+  ].join("\n"));
+  const events = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const child = spawn(process.execPath, [server], { env: { ...process.env, GEMINI_WORKER_PYTHON: python, GOOGLE_CLOUD_PROJECT: "test-project", GOOGLE_CLOUD_LOCATION: "global" }, stdio: "ignore" });
+  try {
+    for (const until = Date.now() + 30_000; !events().some((e) => e.ev === "tool_run") && Date.now() < until; ) await sleep(50);
+    const worker = events().find((e) => e.ev === "agent")?.pid;
+    assert.ok(worker && events().some((e) => e.ev === "tool_run"), `the worker started and handed its piece in: ${JSON.stringify(events().map((e) => e.ev))}`);
+    await sleep(200);
+    child.kill("SIGKILL");
+    for (const until = Date.now() + 8_000; (alive(worker) || groupAlive(worker)) && Date.now() < until; ) await sleep(50);
+    assert.equal(alive(worker), false, "the worker outlived its server");
+    assert.equal(groupAlive(worker), false, "a process of the worker's group (its tools) outlived its server");
+    assert.ok(events().some((e) => e.ev === "cancel" && e.pid === worker), "it ended its call in flight, as on the kill rule's SIGTERM");
+    const receipt = JSON.parse(readFileSync(join(root, "delegation", "worker-usage-r1-requirements.json"), "utf8"));
+    assert.equal(receipt.usage.prompt_token_count, 10, "its receipt says what its calls cost");
+    assert.ok(existsSync(join(root, "delegation", "worker-summary-r1-requirements.json")), "and its summary is kept");
+    // The lock the killed server left names that worker; the step's next call takes it over.
+    const left = JSON.parse(readFileSync(join(root, "out", "thinking", "requirements.lock"), "utf8"));
+    assert.equal(left.worker_pid, worker);
+    const again = await runThinkingStep(args(root, { role: "requirements", intent: undefined, output_dir: "out" }), deps(AGENT, () => result({ result: { done: true, missing: [], accepted: ["requirements"], conversation_id: "c2" } })).d);
+    assert.equal(again.route, "done", JSON.stringify(again));
+  } finally {
+    try { child.kill("SIGKILL"); } catch { /* gone */ }
+    for (const e of events()) if (alive(e.pid)) { try { process.kill(-e.pid, "SIGKILL"); } catch { /* gone */ } }
+    rmSync(dir, { recursive: true, force: true });
   }
 });

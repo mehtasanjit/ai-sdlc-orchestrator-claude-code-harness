@@ -104,6 +104,11 @@ export function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
 }
 
+/** Whether any process is left in a process group (a worker leads its own). */
+export function groupAlive(pgid) {
+  try { process.kill(-pgid, 0); return true; } catch (e) { return e.code === "EPERM"; }
+}
+
 /** Runs `fn` with the given process environment variables set, then puts every one back. */
 export async function withEnv(vars, fn) {
   const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));

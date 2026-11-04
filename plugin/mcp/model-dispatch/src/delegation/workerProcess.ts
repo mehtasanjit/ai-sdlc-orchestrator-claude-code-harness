@@ -8,7 +8,7 @@
 
 import { join } from "node:path";
 import type { ReasoningConfig, TaskPacket } from "../types.js";
-import { AGENT_API_RETRY, BUSY_BUDGET_SEC, HEARTBEAT_SEC, STALL_TRIES, stallSecFor } from "../executor/stall.js";
+import { AGENT_API_RETRY, BACKSTOP, BUSY_BUDGET_SEC, HEARTBEAT_SEC, STALL_TRIES, stallSecFor } from "../executor/stall.js";
 
 /**
  * The worker's own limit on the session's work time; matches the Python `--timeout` default so the two halves agree.
@@ -93,6 +93,8 @@ export interface WorkerArgsInput {
   heartbeatSec?: number;
   apiRetries?: number;
   apiRetryInitialMs?: number;
+  /** The kill rule's wait between its SIGTERM and its SIGKILL (BACKSTOP.termGraceS), which the worker keeps when its engine is gone. */
+  termGraceSec?: number;
 }
 
 /**
@@ -100,7 +102,9 @@ export interface WorkerArgsInput {
  * fallback for hand runs, but here we want the region in the manifest and
  * the region on the endpoint to match by construction. Every flag the worker
  * declares is passed on every call, the call supervisor's included, with the
- * model's and the executor's defaults when the input omits them.
+ * model's and the executor's defaults when the input omits them. The worker is
+ * told to watch its stdin (--watch-stdin): the adapter's spawn holds it open,
+ * so its end is the engine's.
  */
 export function buildWorkerArgs(i: WorkerArgsInput): string[] {
   const locations = i.locations?.length ? i.locations : [i.region];
@@ -121,6 +125,8 @@ export function buildWorkerArgs(i: WorkerArgsInput): string[] {
     "--heartbeat-sec", String(i.heartbeatSec ?? HEARTBEAT_SEC),
     "--api-retries", String(i.apiRetries ?? AGENT_API_RETRY.retries),
     "--api-retry-initial-ms", String(i.apiRetryInitialMs ?? AGENT_API_RETRY.initialMs),
+    "--watch-stdin",
+    "--term-grace-sec", String(i.termGraceSec ?? BACKSTOP.termGraceS),
   ];
 }
 
